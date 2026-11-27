@@ -435,6 +435,23 @@ export function fightPercent(ctx: Ctx, unit: Unit, fight: Fight): number {
   return percent;
 }
 
+// ------------------------------------------------------------------ vision
+
+/**
+ * How many hexes away a unit sees: the base range, plus what its owner's
+ * modifiers and the abilities of its type add where it stands. Nothing in
+ * the rules is hidden yet; this is what a fog of war will read.
+ */
+export function visionRange(ctx: Ctx, unit: Unit): number {
+  let range: number = KIT.unitVision;
+  if (unit.owner === NO_POLITY) return range;
+  const def = unitDef(unit.type);
+  for (const modifier of unitMods(ctx, unit.owner, def, 'vision')) {
+    if (unitMatches(modifier.unit, def) && hexMatches(ctx, modifier.hex, unit.hex)) range += modifier.range;
+  }
+  return range;
+}
+
 // ------------------------------------------------------------------- sums
 
 /** Sum of `percent` over the polity's modifiers of a type that carry only that. */

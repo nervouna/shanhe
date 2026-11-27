@@ -177,7 +177,7 @@ function pickHexes(ctx: Ctx, city: City): HexScore[] {
 }
 
 /** Morale of a city: 100, less its polity's war weariness, less unrest, plus what modifiers add. */
-function cityMorale(ctx: Ctx, city: City): number {
+export function cityMorale(ctx: Ctx, city: City): number {
   let morale = 100 - polityOf(ctx, city.owner).warWeariness - (city.unrest > 0 ? CITY.unrestMorale : 0);
   for (const modifier of cityMods(ctx, city, 'morale')) {
     if (cityMatches(ctx, modifier.city, city)) morale += modifier.morale;
@@ -185,10 +185,45 @@ function cityMorale(ctx: Ctx, city: City): number {
   return Math.max(0, Math.min(100, morale));
 }
 
+/**
+ * What the city yields before percentages and morale are applied, and the
+ * percentages: the hexes its citizens work, its centre, its population, its
+ * buildings and every modifier.
+ */
+export function cityYieldParts(ctx: Ctx, city: City): { flat: Yields; percent: Yields } {
+  return yieldParts(ctx, city, pickHexes(ctx, city));
+}
+
+/** The yields of one hex for the city that works it, improvements, buildings and modifiers included. */
+export function hexYields(ctx: Ctx, city: City, hex: number): Yields {
+  const out = noYields();
+  const { topo, state } = ctx;
+  out.food = topo.baseFood[hex] as number;
+  out.production = topo.baseProduction[hex] as number;
+  out.gold = topo.baseGold[hex] as number;
+  const improvement = state.improvements[hex];
+  if (improvement !== undefined && (state.pillaged[hex] ?? 0) < state.turn) addYields(out, IMPROVEMENTS[improvement].yields);
+  if (topo.water[hex] === 1) for (const id of city.buildings) addYields(out, BUILDINGS[id].waterYields);
+  for (const bonus of cityMods(ctx, city, 'hexYield')) if (hexMatches(ctx, bonus.hex, hex)) addYields(out, bonus.yields);
+  return out;
+}
+
 /** Puts the citizens on hexes according to the focus and recomputes morale and yields. */
 export function assignCitizens(ctx: Ctx, city: City): void {
   const picked = pickHexes(ctx, city);
+  const { flat: yields, percent } = yieldParts(ctx, city, picked);
+  for (const key of YIELD_KEYS) yields[key] = Math.floor((yields[key] * (100 + percent[key])) / 100);
 
+  city.morale = cityMorale(ctx, city);
+  const factor = CITY.moraleFloor + ((1 - CITY.moraleFloor) * city.morale) / 100;
+  yields.production = city.unrest > 0 ? 0 : Math.floor(yields.production * factor);
+  yields.gold = Math.floor(yields.gold * factor);
+
+  city.worked = picked.map((entry) => entry.hex).sort((a, b) => a - b);
+  city.yields = yields;
+}
+
+function yieldParts(ctx: Ctx, city: City, picked: readonly HexScore[]): { flat: Yields; percent: Yields } {
   const yields: Yields = { ...CITY_CENTRE_YIELD };
   for (const entry of picked) {
     yields.food += entry.food;
@@ -239,15 +274,7 @@ export function assignCitizens(ctx: Ctx, city: City): void {
     yields.culture += CITY_STATE.cultureInCapital * suzerainCount(ctx, owner, 'culture');
     percent.production += CITY_STATE.industryCapitalProductionPercent * suzerainCount(ctx, owner, 'industry');
   }
-  for (const key of YIELD_KEYS) yields[key] = Math.floor((yields[key] * (100 + percent[key])) / 100);
-
-  city.morale = cityMorale(ctx, city);
-  const factor = CITY.moraleFloor + ((1 - CITY.moraleFloor) * city.morale) / 100;
-  yields.production = city.unrest > 0 ? 0 : Math.floor(yields.production * factor);
-  yields.gold = Math.floor(yields.gold * factor);
-
-  city.worked = picked.map((entry) => entry.hex).sort((a, b) => a - b);
-  city.yields = yields;
+  return { flat: yields, percent };
 }
 
 export const YIELD_KEYS = ['food', 'production', 'gold', 'science', 'culture'] as const;
@@ -270,8 +297,13 @@ export function tradePactGoldPercent(ctx: Ctx, polity: number): number {
   return percent;
 }
 
-/** Production the city puts into `item` this turn: its production, plus what its owner's cards add for the kind of item. */
+/** Production the city puts into `item` this turn: its production, plus what modifiers add for the kind of item. */
 export function productionTowards(ctx: Ctx, city: City, item: BuildItem): number {
+  return Math.floor((city.yields.production * (100 + productionPercent(ctx, city, item))) / 100);
+}
+
+/** Percentage modifiers add to the city's production while it builds `item`. */
+export function productionPercent(ctx: Ctx, city: City, item: BuildItem): number {
   let percent = 0;
   for (const modifier of cityMods(ctx, city, 'production')) {
     if (modifier.item !== item.kind) continue;
@@ -284,7 +316,7 @@ export function productionTowards(ctx: Ctx, city: City, item: BuildItem): number
     }
     percent += modifier.percent;
   }
-  return Math.floor((city.yields.production * (100 + percent)) / 100);
+  return percent;
 }
 
 // ----------------------------------------------------------- build items

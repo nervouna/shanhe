@@ -5,7 +5,6 @@ import { Terrain } from '../shared/mapData.ts';
 import {
   BUILDINGS,
   CITY_STATE,
-  EXCLUSIVE_PORTS,
   IMPROVEMENTS,
   PILLAGE,
   ROADS,
@@ -14,7 +13,7 @@ import {
   baseBuilding,
   unitDef,
 } from './data.ts';
-import { KIT } from './kits.ts';
+import { KIT, portOwner } from './kits.ts';
 import { assignCitizens } from './cities.ts';
 import { addInfluence, suzerainCount } from './cityStates.ts';
 import { hexesApart } from './combat.ts';
@@ -289,8 +288,9 @@ export function checkRouteTarget(ctx: Ctx, polity: number, from: number, to: unk
     if (port === undefined) return 'badTarget';
     const self = polityOf(ctx, polity);
     if (port.kind === 'land' ? !self.landPorts : !self.seaExits) return 'portClosed';
-    const reserved = EXCLUSIVE_PORTS[port.nameEn];
-    return reserved !== undefined && reserved !== at(ctx.map.polities, polity).id ? 'portClosed' : null;
+    // A port a nation's trait keeps to itself (`EXCLUSIVE_PORTS` lists the same ports).
+    const reserved = portOwner(port.nameEn);
+    return reserved !== null && reserved !== at(ctx.map.polities, polity).id ? 'portClosed' : null;
   }
   return 'badTarget';
 }

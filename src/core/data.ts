@@ -302,6 +302,8 @@ export const IMPROVEMENTS: Readonly<Record<ImprovementId, ImprovementDef>> = {
   ...UNIQUE_IMPROVEMENTS,
 };
 export const IMPROVEMENT_IDS = Object.keys(IMPROVEMENTS) as ImprovementId[];
+/** The improvements every nation can build. */
+export const GENERIC_IMPROVEMENT_IDS = Object.keys(GENERIC_IMPROVEMENTS) as GenericImprovementId[];
 
 /** The generic kind an improvement is or replaces: what cards and traits that name a kind go by. */
 export function baseImprovement(id: ImprovementId): ImprovementId {

@@ -3,7 +3,7 @@ import { createFixtureMap } from '../shared/fixtureMap.ts';
 import { Terrain } from '../shared/mapData.ts';
 import { itemCost } from './cities.ts';
 import { createCtx } from './context.ts';
-import { BUILDINGS, CITY, FREE_UNITS_PER_CITY, IMPROVEMENTS, UNITS } from './data.ts';
+import { BUILDINGS, CITY, FREE_UNITS_PER_CITY, GENERIC_BUILDING_IDS, GENERIC_IMPROVEMENT_IDS, UNITS } from './data.ts';
 import { NO_POLITY, applyAction, createGame, endTurn, hexOwner } from './game.ts';
 import type { BuildItem, GameEvent, GameState, MutableGameState } from './game.ts';
 import { apply, around, edit, isPlainGround, learn, oneUnitPerHex, put } from './testUtil.ts';
@@ -150,7 +150,7 @@ describe('build queue', () => {
     ).state;
     expect(withGranary.cities[0]!.yields.food).toBe(plain.cities[0]!.yields.food + 2);
     expect(withGranary.polities[JIA]!.upkeep).toBe(plain.polities[JIA]!.upkeep + BUILDINGS.granary.upkeep);
-    expect(Object.keys(BUILDINGS)).toHaveLength(16);
+    expect(GENERIC_BUILDING_IDS).toHaveLength(16);
   });
 
   it('places an improvement on a chosen hex of the city\'s zone', () => {
@@ -158,7 +158,7 @@ describe('build queue', () => {
       (hex) => isPlainGround(map, hex) && (map.terrain[hex] === Terrain.Plains || map.terrain[hex] === Terrain.Grassland) && map.feature[hex] === 0,
     )!;
     const hill = topo.workHexes[0]!.find((hex) => map.hills[hex] === 1)!;
-    expect(Object.keys(IMPROVEMENTS).sort()).toEqual(['canal', 'farm', 'fishery', 'irrigationCanal', 'mine', 'pasture']);
+    expect([...GENERIC_IMPROVEMENT_IDS].sort()).toEqual(['canal', 'farm', 'fishery', 'irrigationCanal', 'mine', 'pasture']);
     expect(applyAction(base, { type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'improvement', improvement: 'farm', hex: hill } })).toMatchObject({ ok: false, reason: 'badHex' });
     expect(applyAction(base, { type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'improvement', improvement: 'fishery', hex: farmland } })).toMatchObject({ ok: false, reason: 'badHex' });
     const foreign = topo.workHexes[3]![0]!;
