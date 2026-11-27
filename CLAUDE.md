@@ -42,6 +42,53 @@ The ones that constrain all work:
 
 ## Technology
 
-Language, build tooling and project layout are not chosen yet. Record them here, with the build, run and test commands, once they are.
+### Stack
 
-Three.js's WebGPU API changes fast: check the current documentation before relying on a specific API.
+- TypeScript in strict mode, built with Vite, tested with Vitest, linted with ESLint and typescript-eslint. npm is the package manager; Node 24 or later.
+- Three.js, imported from `three/webgpu`. `WebGPURenderer` uses WebGPU where the browser has it and switches to its WebGL 2 backend by itself during `await renderer.init()`; `renderer.backend.isWebGPUBackend` tells which one is active. Three.js's WebGPU API changes fast: check the current documentation or the installed package's sources before relying on a specific API.
+- The UI is plain DOM. There is no UI framework and no state-management library.
+- TypeScript stays on 6.0.x until typescript-eslint supports TypeScript 7.
+
+### Layout
+
+| Path | Content |
+|---|---|
+| `src/shared/` | Types, hex maths (`hex.ts`), the `MapData` contract (`mapData.ts`), the fixture map (`fixtureMap.ts`), i18n (`i18n.ts`) |
+| `src/core/` | Rules. Pure functions on plain data; runs in Node |
+| `src/render/` | Three.js |
+| `src/ui/` | Plain DOM |
+| `src/main.ts` | Wires the layers and exposes `window.__shanhe = { backend, state }` for automated checks |
+| `tools/` | Node scripts (`sim.ts`, `check-assets.ts`) and `tools/pipeline/`, the build-time map pipeline |
+| `public/data/` | Generated map files: `.json` and `.bin` only |
+
+### Layer rules
+
+Dependencies go one way, and tools enforce them:
+
+- `src/shared` imports nothing from the other layers.
+- `src/core` imports only `src/shared`. Neither of the two may use the DOM, `three`, `src/render` or `src/ui`.
+- `src/render` may not import `src/ui`. `src/ui` may not import `three`.
+- `npm run lint` fails on a forbidden import (`no-restricted-imports` in `eslint.config.js`). `npm run typecheck` checks `src/core` and `src/shared` with `tsconfig.core.json`, which has no DOM lib, so using `document` or `localStorage` there fails.
+
+Conventions that keep this working:
+
+- Relative imports carry the `.ts` extension and there are no path aliases, so Node can run `tools/*.ts` directly and the lint patterns cannot be bypassed.
+- Only erasable TypeScript syntax: no `enum`, no namespaces, no parameter properties. Use `as const` objects for codes.
+- Every user-facing string goes through `t()` in `src/shared/i18n.ts`, with a Chinese and an English entry. Only `src/ui` touches `localStorage`.
+- Tests sit next to the code as `*.test.ts`.
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `npm ci` | Install dependencies |
+| `npm run dev` | Start the Vite dev server |
+| `npm run build` | Production build into `dist/` |
+| `npm run preview` | Serve the production build |
+| `npm test` | Run the tests once |
+| `npm run typecheck` | Type-check the core without the DOM, then the app, then the tools |
+| `npm run lint` | ESLint, including the layer rules |
+| `npm run check:assets` | Fail if a model, texture, image, audio, video or font file is tracked outside `docs/images/` |
+| `npm run sim` | Run the rules core headless on the fixture map |
+
+CI (`.github/workflows/ci.yml`) runs lint, typecheck, test, build and check:assets on pushes to `main` and on pull requests.
