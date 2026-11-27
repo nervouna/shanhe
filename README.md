@@ -43,4 +43,10 @@ The design lives in [docs/design](docs/design/00-overview.md) and is the source 
 
 ## License
 
-[MIT](LICENSE). Geographic datasets used as input keep their own licences, listed with the data pipeline once it exists.
+[MIT](LICENSE).
+
+The map in `public/data/` is derived from public geographic datasets, which keep their own licences. They are described in [tools/pipeline/DATA.md](tools/pipeline/DATA.md):
+
+- Borders, coastline, lakes and rivers: made with [Natural Earth](https://www.naturalearthdata.com/) (public domain).
+- Elevation and sea floor: NOAA National Centers for Environmental Information, 2022: ETOPO 2022 15 Arc-Second Global Relief Model, https://doi.org/10.25921/fd45-gt74 (CC0 1.0).
+- Climate, from which terrain and vegetation are derived: Beck, H.E., N.E. Zimmermann, T.R. McVicar, N. Vergopolan, A. Berg, E.F. Wood: Present and future Köppen-Geiger climate classification maps at 1-km resolution, Nature Scientific Data, 2018, https://doi.org/10.6084/m9.figshare.6396959, licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The climate classes were sampled per hex and turned into the game's terrain classes.

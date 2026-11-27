@@ -5,7 +5,7 @@ export default defineConfig({
     target: 'es2023',
   },
   test: {
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'tools/**/*.test.ts'],
     environment: 'node',
   },
 });

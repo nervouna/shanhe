@@ -16,6 +16,8 @@
     "lint": "eslint .",
     "check:assets": "node tools/check-assets.ts",
     "sim": "node tools/sim.ts",
+    "pipeline": "node tools/pipeline/build.ts",
+    "pipeline:check": "node tools/pipeline/check.ts",
     "e2e": "playwright test -c e2e/playwright.config.ts"
   },
   "devDependencies": {
