@@ -15,7 +15,9 @@
     "typecheck": "tsc -p tsconfig.core.json && tsc -p tsconfig.app.json && tsc -p tsconfig.node.json",
     "lint": "eslint .",
     "check:assets": "node tools/check-assets.ts",
-    "sim": "node tools/sim.ts"
+    "sim": "node tools/sim.ts",
+    "pipeline": "node tools/pipeline/build.ts",
+    "pipeline:check": "node tools/pipeline/check.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

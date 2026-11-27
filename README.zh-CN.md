@@ -31,4 +31,10 @@
 
 ## 许可证
 
-[MIT](LICENSE)。作为输入的地理数据集各有自己的许可证，数据管线建好后会随之列出。
+[MIT](LICENSE)。
+
+`public/data/` 里的地图由公开地理数据集生成，这些数据集各有自己的许可证，说明见 [tools/pipeline/DATA.md](tools/pipeline/DATA.md)：
+
+- 边界、海岸线、湖泊和河流：使用 [Natural Earth](https://www.naturalearthdata.com/) 制作（公有领域）。
+- 高程和海底地形：NOAA National Centers for Environmental Information, 2022: ETOPO 2022 15 Arc-Second Global Relief Model, https://doi.org/10.25921/fd45-gt74（CC0 1.0）。
+- 气候分区（地形和植被由它推导）：Beck, H.E., N.E. Zimmermann, T.R. McVicar, N. Vergopolan, A. Berg, E.F. Wood: Present and future Köppen-Geiger climate classification maps at 1-km resolution, Nature Scientific Data, 2018, https://doi.org/10.6084/m9.figshare.6396959，采用 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) 许可证。本项目按六边形格采样气候分区，并转换成游戏的地形类别。

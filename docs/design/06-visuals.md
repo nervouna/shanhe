@@ -10,9 +10,9 @@ Public geographic datasets are input data, not art assets, and are allowed:
 
 - elevation and bathymetry from a public global elevation dataset;
 - national and province borders, rivers and lakes from Natural Earth (public domain);
-- vegetation and climate zones from a public land-cover dataset.
+- vegetation and climate zones from a public climate-classification dataset.
 
-A build-time script turns these into one heightmap and one hex-grid data file. Because small nations and city-states are enlarged (see [01-world-and-map.md](01-world-and-map.md)), the script applies the same warp to every dataset — elevation, borders, rivers, land cover — before gridding, so terrain and borders stay aligned. The game loads only those two. The exact datasets are to be chosen, and their licences checked, when the pipeline is built.
+A build-time script turns these into one heightmap and one hex-grid data file. Because small nations and city-states are enlarged (see [01-world-and-map.md](01-world-and-map.md)), the script applies the same warp to every dataset — elevation, borders, rivers, climate — before gridding, so terrain and borders stay aligned. The game loads only those two. The datasets and their licences are listed in `tools/pipeline/DATA.md`, the method in `tools/pipeline/README.md`.
 
 ## Terrain
 
