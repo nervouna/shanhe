@@ -466,7 +466,7 @@ export function processDiplomacy(ctx: Ctx): void {
     else if (deal.until <= state.turn) endDeal(ctx, deal, 'expired');
   }
   for (const offer of [...state.offers]) {
-    if (state.turn - offer.turn >= DIPLOMACY.offerTurns) dropOffer(ctx, offer);
+    if (state.turn - offer.turn >= DIPLOMACY.offerTurns - 1) dropOffer(ctx, offer);
   }
 
   const standings = new Map<string, Standing>();

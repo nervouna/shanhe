@@ -386,7 +386,7 @@ export function pillage(ctx: Ctx, unit: Unit): void {
   const improvement = state.improvements[hex];
   if (improvement !== undefined && pillageableImprovement(ctx, unit.owner, hex)) {
     const gold = Math.floor((IMPROVEMENTS[improvement].cost * PILLAGE.goldPercentOfCost) / 100);
-    state.pillaged[hex] = state.turn + PILLAGE.turns;
+    state.pillaged[hex] = state.turn + PILLAGE.turns - 1;
     self.gold += gold;
     self.grossIncome += gold;
     ctx.events.push({
@@ -398,7 +398,7 @@ export function pillage(ctx: Ctx, unit: Unit): void {
   }
   for (const route of pillageableRoutes(ctx, unit.owner, hex)) {
     const gold = routeIncome(ctx, route) * TRADE.pillageIncomeTurns;
-    route.pillagedUntil = state.turn + TRADE.pillageTurns;
+    route.pillagedUntil = state.turn + TRADE.pillageTurns - 1;
     route.income = 0;
     self.gold += gold;
     self.grossIncome += gold;
