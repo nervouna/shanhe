@@ -21,6 +21,7 @@ import {
   setWarFlag,
 } from './context.ts';
 import type { Ctx } from './context.ts';
+import { modsOf, percentOf } from './modifiers.ts';
 import {
   addFavour,
   alliesOf,
@@ -99,13 +100,33 @@ export function checkAgreement(ctx: Ctx, polity: number, target: number, kind: A
     if (alliesOf(ctx, target).length >= DIPLOMACY.maxAlliances) return 'tooManyAlliances';
   }
   if (kind === 'vassalage' && (self.overlord !== NO_POLITY || other.overlord !== NO_POLITY)) return 'vassal';
+  if (kind === 'vassalage' && modsOf(ctx, target, 'noVassal').length > 0) return 'refused';
   return null;
+}
+
+/**
+ * What the modifiers of the two add to the favour an AI needs before it
+ * accepts the agreement between them (negative: it agrees sooner).
+ */
+export function favourShift(ctx: Ctx, a: number, b: number, kind: AgreementKind): number {
+  let shift = 0;
+  for (const [self, other] of [
+    [a, b],
+    [b, a],
+  ] as const) {
+    for (const modifier of modsOf(ctx, self, 'favourNeeded')) {
+      if (!modifier.agreements.includes(kind)) continue;
+      if (modifier.vsStronger === true && militaryStrength(ctx, other) <= militaryStrength(ctx, self)) continue;
+      shift += modifier.favour;
+    }
+  }
+  return shift;
 }
 
 /** True if the AI-run `target` agrees to the agreement `proposer` asks for. */
 export function acceptsAgreement(ctx: Ctx, target: number, proposer: number, kind: AgreementKind): boolean {
   const major = ctx.state.majors.includes(target);
-  const favour = favourOf(ctx, target, proposer);
+  const favour = favourOf(ctx, target, proposer) - favourShift(ctx, target, proposer, kind);
   switch (kind) {
     case 'tradePact':
       return !major || favour >= AI.tradePactFavour;
@@ -318,9 +339,16 @@ export function checkDeal(
   return polityOf(ctx, buyer).gold >= goldPerTurn ? null : 'notEnoughGold';
 }
 
-/** The price per turn the AI asks and pays for a resource. */
+/** The price per turn the AI asks and pays for a resource, before what the seller's modifiers add. */
 export function dealPrice(resource: string): number {
   return isStrategic(resource) ? DEAL.strategicPrice : DEAL.specialtyPrice;
+}
+
+/** The price per turn the AI asks and pays for a resource that `seller` sells. */
+export function dealPriceFrom(ctx: Ctx, seller: number, resource: string): number {
+  const price = dealPrice(resource);
+  if (isStrategic(resource)) return price;
+  return Math.min(DEAL.maxGoldPerTurn, Math.floor((price * (100 + percentOf(ctx, seller, 'specialtySale'))) / 100));
 }
 
 /** True if the resource is worth buying to `polity`: a strategic one for a unit it knows, or a specialty it has room for. */
@@ -341,7 +369,7 @@ export function acceptsDeal(
   resource: string,
   goldPerTurn: number,
 ): boolean {
-  const price = dealPrice(resource);
+  const price = dealPriceFrom(ctx, seller, resource);
   if (decider === seller) return goldPerTurn >= price && favourOf(ctx, decider, other) >= DEAL.minFavour;
   const self = polityOf(ctx, decider);
   const spare = self.yields.gold + self.routeIncome - self.upkeep;

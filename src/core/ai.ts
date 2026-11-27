@@ -17,12 +17,14 @@ import {
   AIR_STRIKE,
   BUILDINGS,
   BUILDING_IDS,
+  buildingFor,
   CITY,
   CITY_STATE,
   FOCUS_WEIGHTS,
   FREE_UNITS_PER_CITY,
   IMPROVEMENTS,
   IMPROVEMENT_IDS,
+  improvementFor,
   POLICIES,
   PROJECT,
   ROSTER,
@@ -32,9 +34,9 @@ import {
   WAR,
   unitDef,
 } from './data.ts';
-import type { PolicyId } from './data.ts';
-import { checkStep, isSettleSite, militaryStrength, upgradeCost, validate } from './actions.ts';
-import { checkItem, hasBuilding, improvementFits, improvesHills } from './cities.ts';
+import type { ImprovementDef, PolicyId } from './data.ts';
+import { checkStep, isSettleSite, militaryStrength, upgradePrice, validate } from './actions.ts';
+import { canImprove, checkItem, hasBuilding, improvableHexes } from './cities.ts';
 import {
   attackStrength,
   checkDemandVassalage,
@@ -45,7 +47,8 @@ import {
 } from './combat.ts';
 import { at, atWar, bordersOpen, cityAtHex, polityOf, relationOf, terrainAllows } from './context.ts';
 import type { Ctx } from './context.ts';
-import { dealPrice, wantsResource } from './diplomacy.ts';
+import { dealPriceFrom, wantsResource } from './diplomacy.ts';
+import { nationOf } from './modifiers.ts';
 import { openPolicies } from './policies.ts';
 import { alliesOf, enemiesOf, favourOf, isNation, partnersIn, vassalsOf } from './relations.ts';
 import { bestUnit, knows, ownsResource, pursuesScience, researches, suggestResearch, upgradeTargetFor } from './tech.ts';
@@ -298,7 +301,8 @@ function statecraft(ctx: Ctx, polity: number, cities: City[], act: Act): void {
     for (const resource of map.resources) {
       if (!ownsResource(ctx, polity, resource.id) || !wantsResource(ctx, target, resource.id)) continue;
       return {
-        type: 'proposeDeal', polity, target, seller: polity, resource: resource.id, goldPerTurn: dealPrice(resource.id),
+        type: 'proposeDeal', polity, target, seller: polity, resource: resource.id,
+        goldPerTurn: dealPriceFrom(ctx, polity, resource.id),
       };
     }
     return null;
@@ -508,14 +512,18 @@ function fieldUnit(ctx: Ctx, polity: number, plans: Plans): BuildItem {
 
 function chooseImprovement(ctx: Ctx, city: City, hexes: readonly number[]): BuildItem | null {
   const weights = FOCUS_WEIGHTS.balanced;
+  const nation = nationOf(ctx, city.owner);
   let best: BuildItem | null = null;
   let bestGain = 0;
   for (const hex of hexes) {
     if (ctx.state.improvements[hex] !== undefined) continue;
     for (const improvement of IMPROVEMENT_IDS) {
-      const def = IMPROVEMENTS[improvement];
+      const def: ImprovementDef = IMPROVEMENTS[improvement];
+      // Its own unique improvements, and never the generic one it replaces.
+      if (def.nation !== undefined && def.nation !== nation) continue;
+      if (improvementFor(nation, improvement) !== improvement) continue;
       if (!knows(ctx, city.owner, def.tech)) continue;
-      if (!improvementFits(ctx, def, hex, improvesHills(ctx, def, city.owner))) continue;
+      if (!canImprove(ctx, city.owner, improvement, hex)) continue;
       const gain =
         def.yields.food * weights.food + def.yields.production * weights.production + def.yields.gold * weights.gold;
       if (gain > bestGain) {
@@ -564,7 +572,9 @@ function chooseBuild(ctx: Ctx, polity: number, city: City, cities: City[], plans
   if (recruiting && (plans.atWar || plans.military * 2 < plans.wanted)) return fieldUnit(ctx, polity, plans);
   const worked = chooseImprovement(ctx, city, city.worked);
   if (worked !== null) return worked;
-  for (const building of AI.buildingOrder.slice(0, AI.coreBuildings)) {
+  const own = nationOf(ctx, polity);
+  const order = AI.buildingOrder.map((building) => buildingFor(own, building));
+  for (const building of order.slice(0, AI.coreBuildings)) {
     const item: BuildItem = { kind: 'building', building };
     if (can(item)) return item;
   }
@@ -575,7 +585,7 @@ function chooseBuild(ctx: Ctx, polity: number, city: City, cities: City[], plans
       return { kind: 'unit', unit: SETTLER };
     }
   }
-  for (const building of AI.buildingOrder) {
+  for (const building of order) {
     const item: BuildItem = { kind: 'building', building };
     if (can(item)) return item;
   }
@@ -583,7 +593,7 @@ function chooseBuild(ctx: Ctx, polity: number, city: City, cities: City[], plans
     const item: BuildItem = { kind: 'building', building };
     if (can(item)) return item;
   }
-  return chooseImprovement(ctx, city, at(ctx.topo.workHexes, city.zone));
+  return chooseImprovement(ctx, city, improvableHexes(ctx, city));
 }
 
 // ------------------------------------------------------------------ units
@@ -770,7 +780,7 @@ function commandUnits(ctx: Ctx, polity: number, major: boolean, cities: City[], 
     const upgrade = upgradeTargetFor(ctx, unit);
     if (
       upgrade !== null &&
-      self.gold >= upgradeCost(unit, upgrade) + AI.upgradeReserve &&
+      self.gold >= upgradePrice(ctx, unit, upgrade) + AI.upgradeReserve &&
       act({ type: 'upgrade', polity, unit: unit.id })
     ) {
       continue;

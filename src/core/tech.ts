@@ -10,17 +10,20 @@ import {
   ERAS,
   PROJECT,
   RESEARCH,
-  ROSTER,
   SETTLER,
   STRATEGIC_RESOURCES,
   TECHS,
   TECH_IDS,
   isTechId,
+  rosterFor,
   unitDef,
 } from './data.ts';
-import type { TechId, UnitDef } from './data.ts';
+import type { ROSTER, TechId, UnitDef } from './data.ts';
 import { at, atWar, polityOf, seaLevelOf } from './context.ts';
 import type { Ctx } from './context.ts';
+import { kitOfNation } from './kits.ts';
+import { forgetMods, modsOf, nationOf } from './modifiers.ts';
+import type { Modifier } from './mods.ts';
 import { growSlots } from './policies.ts';
 import { NO_POLITY } from './types.ts';
 import type { GameState, RejectReason, Unit } from './types.ts';
@@ -65,6 +68,21 @@ export function worldEra(state: GameState): number {
   return era;
 }
 
+/** The modifiers of the polity's kit: its trait and its leader's buff. They need no context. */
+function kitMods(state: GameState, polity: number): readonly Modifier[] {
+  const entry = state.map.polities[polity];
+  const kit = entry === undefined || entry.kind !== 'nation' ? null : kitOfNation(entry.id);
+  return kit === null ? [] : [...kit.trait, ...kit.leader];
+}
+
+/** True if the polity's kit shows it the strategic resource whatever it has researched. */
+function revealedByKit(state: GameState, polity: number, resource: string): boolean {
+  const era = state.polities[polity]?.era ?? 0;
+  return kitMods(state, polity).some(
+    (modifier) => modifier.type === 'reveal' && modifier.resource === resource && era >= modifier.era,
+  );
+}
+
 // ------------------------------------------------------------------- cost
 
 /**
@@ -74,7 +92,11 @@ export function worldEra(state: GameState): number {
 export function techCost(state: GameState, polity: number, tech: TechId): number {
   const def = TECHS[tech];
   const known = state.polities.some((other, index) => index !== polity && other.alive && other.techs.includes(tech));
-  return known ? Math.ceil((def.cost * (100 - RESEARCH.catchUpPercent)) / 100) : def.cost;
+  let percent = known ? -RESEARCH.catchUpPercent : 0;
+  for (const modifier of kitMods(state, polity)) {
+    if (modifier.type === 'techCost' && (modifier.knownByOther !== true || known)) percent += modifier.percent;
+  }
+  return Math.max(1, Math.ceil((def.cost * (100 + percent)) / 100));
 }
 
 /** Why `polity` cannot research `tech` now, or null. */
@@ -108,11 +130,18 @@ export function learnTech(ctx: Ctx, polity: number, tech: TechId): void {
   if (def.ports === 'land') self.landPorts = true;
   if (def.ports === 'sea') self.seaExits = true;
   ctx.seaLevel[polity] = seaLevelOf(self);
+  // A tech can bring modifiers with it (a road upgrade).
+  forgetMods(ctx, polity);
   while (self.era < ERAS.length - 1) {
     const known = self.techs.filter((id) => TECHS[id].era === self.era).length;
     if (known < RESEARCH.techsToAdvance) break;
     self.era++;
-    growSlots(self, at(ctx.map.polities, polity).kind === 'nation');
+    growSlots(self, at(ctx.map.polities, polity).kind === 'nation', nationOf(ctx, polity));
+    for (const modifier of modsOf(ctx, polity, 'cultureOn')) {
+      if (modifier.event !== 'era') continue;
+      self.culture += modifier.culture;
+      self.cultureProgress += modifier.culture;
+    }
     ctx.events.push({ type: 'eraEntered', polity, era: self.era });
   }
 }
@@ -158,7 +187,7 @@ export function specialtiesOf(ctx: Ctx, polity: number): string[] {
 export function ownsResource(ctx: Ctx, polity: number, resource: string): boolean {
   if (polity === NO_POLITY) return false;
   const reveal = STRATEGIC_RESOURCES[resource];
-  if (reveal !== undefined && !knows(ctx, polity, reveal)) return false;
+  if (reveal !== undefined && !knows(ctx, polity, reveal) && !revealedByKit(ctx.state, polity, resource)) return false;
   const index = ctx.map.resources.findIndex((entry) => entry.id === resource);
   if (index < 0) return false;
   for (const hex of at(ctx.topo.resourceHexes, index)) {
@@ -176,9 +205,11 @@ export function ownsResource(ctx: Ctx, polity: number, resource: string): boolea
 export function visibleResource(state: GameState, polity: number, hex: number): number {
   const index = state.map.resource[hex];
   if (index === undefined || index < 0) return NO_RESOURCE;
-  const reveal = STRATEGIC_RESOURCES[at(state.map.resources, index).id];
+  const id = at(state.map.resources, index).id;
+  const reveal = STRATEGIC_RESOURCES[id];
   if (reveal === undefined) return index;
-  return polity !== NO_POLITY && at(state.polities, polity).techs.includes(reveal) ? index : NO_RESOURCE;
+  if (polity === NO_POLITY) return NO_RESOURCE;
+  return at(state.polities, polity).techs.includes(reveal) || revealedByKit(state, polity, id) ? index : NO_RESOURCE;
 }
 
 // ------------------------------------------------------------------ units
@@ -186,15 +217,16 @@ export function visibleResource(state: GameState, polity: number, hex: number): 
 /** Why `polity` cannot build or upgrade to the unit type, or null. Coasts and cities are not checked. */
 export function checkUnit(ctx: Ctx, polity: number, def: UnitDef): RejectReason | null {
   if (!def.buildable) return 'badItem';
+  if (def.nation !== null && def.nation !== nationOf(ctx, polity)) return 'badItem';
   if (def.id === SETTLER && eraOf(ctx, polity) < def.era) return 'eraTooEarly';
   if (!knows(ctx, polity, def.tech)) return 'needsTech';
   if (def.resource !== null && !hasResource(ctx, polity, def.resource)) return 'needsResource';
   return null;
 }
 
-/** The most modern unit of the class that `polity` can build, or null. */
+/** The most modern unit of the class that `polity` can build, or null. Its unique unit stands where it replaces one. */
 export function bestUnit(ctx: Ctx, polity: number, unitClass: keyof typeof ROSTER): UnitDef | null {
-  const roster = ROSTER[unitClass];
+  const roster = rosterFor(nationOf(ctx, polity), unitClass);
   for (let era = roster.length - 1; era >= 0; era--) {
     const def = unitDef(at(roster, era));
     if (checkUnit(ctx, polity, def) === null) return def;
@@ -210,7 +242,7 @@ export function bestUnit(ctx: Ctx, polity: number, unitClass: keyof typeof ROSTE
 export function upgradeTargetFor(ctx: Ctx, unit: Unit): UnitDef | null {
   const def = unitDef(unit.type);
   if (def.unitClass === 'civilian' || def.unitClass === 'tribe') return null;
-  const roster = ROSTER[def.unitClass];
+  const roster = rosterFor(nationOf(ctx, unit.owner), def.unitClass);
   for (let era = def.era + 1; era < roster.length; era++) {
     const target = unitDef(at(roster, era));
     if (checkUnit(ctx, unit.owner, target) === null) return target;

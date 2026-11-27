@@ -7,6 +7,7 @@ import { hexDistance, hexNeighbors, hexRange, indexToOffset } from '../shared/he
 import type { Offset } from '../shared/hex.ts';
 import { NO_ZONE, OWNER_OFF_MAP, Terrain, isWaterTerrain } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
+import { KIT } from './kits.ts';
 import {
   CITY,
   FEATURE_YIELDS,
@@ -52,6 +53,16 @@ export interface Topology {
   readonly resourceHexes: readonly (readonly number[])[];
   /** Per zone: the resources (indices into `map.resources`) on its land and on the water its city works, ascending. */
   readonly zoneResources: readonly (readonly number[])[];
+  /** Per hex: the landmass it belongs to (land joined by land, mountains included), or -1 for water and off-map hexes. */
+  readonly landmass: Int32Array;
+  /** The largest landmass. Every other one is an island. */
+  readonly mainland: number;
+  /** Per zone: its mountain hexes, ascending. Nobody can stand on them. */
+  readonly zoneMountains: readonly (readonly number[])[];
+  /** Per zone: mountain hexes within `KIT.mountainRingRadius` of the site. */
+  readonly mountainsNear: readonly number[];
+  /** Per zone: neighbours of the site that are hills or mountains. */
+  readonly siteRough: readonly number[];
 }
 
 const cache = new WeakMap<MapData, Topology>();
@@ -205,6 +216,54 @@ function buildTopology(map: MapData): Topology {
   }
   const zoneResources = zoneResourceSets.map((set) => [...set].sort((a, b) => a - b));
 
+  // Landmasses: land hexes of the play area joined by land.
+  const landmass = new Int32Array(count).fill(-1);
+  const sizes: number[] = [];
+  for (let h = 0; h < count; h++) {
+    if (landmass[h] !== -1 || water[h] === 1 || map.owner[h] === OWNER_OFF_MAP) continue;
+    const id = sizes.length;
+    let size = 0;
+    const stack = [h];
+    landmass[h] = id;
+    while (stack.length > 0) {
+      const hex = stack.pop() as number;
+      size++;
+      for (let d = 0; d < 6; d++) {
+        const n = neighbors[hex * 6 + d] as number;
+        if (n < 0 || landmass[n] !== -1 || water[n] === 1 || map.owner[n] === OWNER_OFF_MAP) continue;
+        landmass[n] = id;
+        stack.push(n);
+      }
+    }
+    sizes.push(size);
+  }
+  let mainland = -1;
+  sizes.forEach((size, id) => {
+    if (mainland < 0 || size > (sizes[mainland] as number)) mainland = id;
+  });
+
+  const zoneMountains: number[][] = map.zones.map(() => []);
+  for (let h = 0; h < count; h++) {
+    const z = map.zone[h] as number;
+    if (z !== NO_ZONE && z < zoneCount && map.terrain[h] === Terrain.Mountain) (zoneMountains[z] as number[]).push(h);
+  }
+  const mountainsNear: number[] = [];
+  const siteRough: number[] = [];
+  for (let z = 0; z < zoneCount; z++) {
+    const site = sites[z] as Offset;
+    let near = 0;
+    let rough = 0;
+    for (const n of hexRange(site, KIT.mountainRingRadius)) {
+      if (!inGrid(n)) continue;
+      const h = n.row * width + n.col;
+      const mountain = map.terrain[h] === Terrain.Mountain;
+      if (mountain) near++;
+      if (hexDistance(n, site) === 1 && (mountain || map.hills[h] === 1)) rough++;
+    }
+    mountainsNear.push(near);
+    siteRough.push(rough);
+  }
+
   return {
     count,
     neighbors,
@@ -222,5 +281,10 @@ function buildTopology(map: MapData): Topology {
     coastal,
     resourceHexes,
     zoneResources,
+    landmass,
+    mainland,
+    zoneMountains,
+    mountainsNear,
+    siteRough,
   };
 }

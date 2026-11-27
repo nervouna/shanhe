@@ -15,15 +15,15 @@ import {
 } from './data.ts';
 import type { Yields } from './data.ts';
 import { YIELD_KEYS, processCity } from './cities.ts';
-import { at, dropKey, ownerOf, polityOf, removeUnit, warCount } from './context.ts';
+import { at, atWar, dropKey, ownerOf, polityOf, removeUnit, warCount } from './context.ts';
 import type { Ctx } from './context.ts';
 import { processInfluence } from './cityStates.ts';
 import { endDeal, processDiplomacy } from './diplomacy.ts';
-import { policySum } from './policies.ts';
+import { hexMatches, modsOf, percentOf, unitMatches } from './modifiers.ts';
 import { followWorld, processResearch, worldEra } from './tech.ts';
 import { processRoads, processRoutes } from './trade.ts';
 import { NO_POLITY } from './types.ts';
-import type { GameResult } from './types.ts';
+import type { GameResult, Unit } from './types.ts';
 
 /**
  * The polities that can win: the major nations and the player, if still
@@ -52,7 +52,59 @@ export function capitalsHeld(ctx: Ctx, polity: number): number {
 
 /** Percentage of its income the payer hands the receiver, with the receiver's Tribute card. */
 function tributePercent(ctx: Ctx, receiver: number, base: number): number {
-  return (base * (100 + policySum(ctx, receiver, 'tributePercent'))) / 100;
+  return (base * (100 + percentOf(ctx, receiver, 'tribute'))) / 100;
+}
+
+/**
+ * Gold per turn a unit costs its owner before the free units are taken off:
+ * its type's upkeep, with the modifiers that name its kind and the upkeep
+ * abilities of its type.
+ */
+export function unitUpkeep(ctx: Ctx, unit: Unit): number {
+  const def = unitDef(unit.type);
+  let percent = 0;
+  for (const modifier of modsOf(ctx, unit.owner, 'unitUpkeep')) {
+    if (modifier.unit !== undefined && unitMatches(modifier.unit, def)) percent += modifier.percent;
+  }
+  for (const ability of def.abilities) if (ability.type === 'unitUpkeep') percent += ability.percent;
+  return (def.upkeep * Math.max(0, 100 + percent)) / 100;
+}
+
+/** HP a resting unit regains this turn. */
+export function healAmount(ctx: Ctx, unit: Unit): number {
+  const own = ownerOf(ctx, unit.hex) === unit.owner;
+  let heal: number = own ? COMBAT.healOwnTerritory : COMBAT.healNeutral;
+  if (unit.owner === NO_POLITY) return heal;
+  const def = unitDef(unit.type);
+  const count = (territory: 'own' | 'foreign' | undefined): boolean =>
+    territory === undefined || (territory === 'own') === own;
+  for (const modifier of modsOf(ctx, unit.owner, 'heal')) {
+    if (count(modifier.territory) && unitMatches(modifier.unit, def)) heal += modifier.hp;
+  }
+  for (const ability of def.abilities) if (ability.type === 'heal' && count(ability.territory)) heal += ability.hp;
+  return heal;
+}
+
+/** HP the unit loses this turn to the land it stands on: that of a polity at war with its owner that wears enemies down. */
+export function attritionOn(ctx: Ctx, unit: Unit): number {
+  if (unit.owner === NO_POLITY) return 0;
+  const holder = ownerOf(ctx, unit.hex);
+  if (holder === NO_POLITY || holder === unit.owner || !atWar(ctx, holder, unit.owner)) return 0;
+  let hp = 0;
+  for (const modifier of modsOf(ctx, holder, 'attrition')) if (hexMatches(ctx, modifier.hex, unit.hex)) hp += modifier.hp;
+  return hp;
+}
+
+/** Gold a ship with the tribute-trade ability earns this turn: it lies in the waters of a foreign city at peace. */
+function tributeTrade(ctx: Ctx, unit: Unit): number {
+  if (unit.owner === NO_POLITY || ctx.topo.water[unit.hex] !== 1) return 0;
+  let gold = 0;
+  for (const ability of unitDef(unit.type).abilities) if (ability.type === 'tributeTrade') gold += ability.gold;
+  if (gold === 0) return 0;
+  const zone = ctx.topo.workZone[unit.hex] as number;
+  const host = zone < 0 ? NO_POLITY : at(ctx.state.zoneOwner, zone);
+  if (host === NO_POLITY || host === unit.owner || atWar(ctx, host, unit.owner)) return 0;
+  return ctx.state.cities[zone] === null ? 0 : gold;
 }
 
 function findResult(ctx: Ctx): GameResult | null {
@@ -127,23 +179,30 @@ export function endRound(ctx: Ctx): void {
   });
 
   // Treasuries.
-  const unitUpkeep: number[] = state.polities.map(() => 0);
+  const unitCosts: number[] = state.polities.map(() => 0);
+  const shipTrade: number[] = state.polities.map(() => 0);
   for (const unit of state.units) {
-    if (unit.owner !== NO_POLITY) unitUpkeep[unit.owner] = at(unitUpkeep, unit.owner) + unitDef(unit.type).upkeep;
+    if (unit.owner === NO_POLITY) continue;
+    unitCosts[unit.owner] = at(unitCosts, unit.owner) + unitUpkeep(ctx, unit);
+    shipTrade[unit.owner] = at(shipTrade, unit.owner) + tributeTrade(ctx, unit);
   }
   state.polities.forEach((polity, index) => {
     if (!polity.alive) return;
     const total = at(totals, index);
     const free = FREE_UNITS_PER_CITY * at(cityCount, index) * UNIT_UPKEEP;
-    const units = Math.max(0, at(unitUpkeep, index) - free);
+    const units = Math.max(0, at(unitCosts, index) - free);
+    // A modifier that names no kind of unit applies to what is left after the free units.
+    let unitPercent = 0;
+    for (const modifier of modsOf(ctx, index, 'unitUpkeep')) if (modifier.unit === undefined) unitPercent += modifier.percent;
     polity.yields = total;
     polity.upkeep =
-      at(upkeep, index) + Math.floor((units * (100 + policySum(ctx, index, 'unitUpkeepPercent'))) / 100);
+      Math.floor((at(upkeep, index) * (100 + percentOf(ctx, index, 'buildingUpkeep'))) / 100) +
+      Math.floor((units * (100 + unitPercent)) / 100);
     polity.routeIncome = at(routeIncome, index);
     polity.tributeReceived = at(received, index);
     polity.tributePaid = at(paid, index);
     polity.dealIncome = 0;
-    const income = total.gold + polity.routeIncome + polity.tributeReceived;
+    const income = total.gold + polity.routeIncome + polity.tributeReceived + at(shipTrade, index);
     polity.grossIncome += income;
     polity.gold += income - polity.tributePaid - polity.upkeep;
     polity.science += total.science;
@@ -172,9 +231,11 @@ export function endRound(ctx: Ctx): void {
     }
     buyer.gold -= deal.goldPerTurn;
     buyer.dealIncome -= deal.goldPerTurn;
-    seller.gold += deal.goldPerTurn;
-    seller.grossIncome += deal.goldPerTurn;
-    seller.dealIncome += deal.goldPerTurn;
+    let bonus = 0;
+    for (const modifier of modsOf(ctx, deal.seller, 'dealGold')) if (modifier.resource === deal.resource) bonus += modifier.gold;
+    seller.gold += deal.goldPerTurn + bonus;
+    seller.grossIncome += deal.goldPerTurn + bonus;
+    seller.dealIncome += deal.goldPerTurn + bonus;
   }
 
   // Research, then the polities that follow it.
@@ -189,12 +250,12 @@ export function endRound(ctx: Ctx): void {
     if ((state.pillaged[key] ?? 0) <= state.turn) dropKey(state.pillaged, key);
   }
 
-  // Units: rest heals, and everybody gets their movement back.
+  // Units: rest heals, hostile land wears down, and everybody gets their movement back.
   for (const unit of state.units) {
-    if (!unit.acted && unit.hp < COMBAT.maxHp) {
-      const heal = ownerOf(ctx, unit.hex) === unit.owner ? COMBAT.healOwnTerritory : COMBAT.healNeutral;
-      unit.hp = Math.min(COMBAT.maxHp, unit.hp + heal);
-    }
+    if (!unit.acted && unit.hp < COMBAT.maxHp) unit.hp = Math.min(COMBAT.maxHp, unit.hp + healAmount(ctx, unit));
+    // Attrition never kills: it leaves a unit at 1 HP.
+    const attrition = attritionOn(ctx, unit);
+    if (attrition > 0) unit.hp = Math.max(1, unit.hp - attrition);
     unit.acted = false;
     unit.moves = unitDef(unit.type).moves;
   }

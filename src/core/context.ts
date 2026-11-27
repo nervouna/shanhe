@@ -8,6 +8,7 @@ import { Terrain } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
 import { TECHS, unitDef } from './data.ts';
 import type { UnitDef } from './data.ts';
+import type { ModIndex } from './modifiers.ts';
 import { topologyOf } from './topology.ts';
 import type { Topology } from './topology.ts';
 import { NO_POLITY } from './types.ts';
@@ -29,6 +30,8 @@ export interface Ctx {
   readonly open: Uint8Array;
   /** Per polity, from its techs: 0 land only, 1 may be on coast and lake, 2 on ocean too. */
   readonly seaLevel: Uint8Array;
+  /** Per polity: its modifiers by type, kept by `modsOf` in `modifiers.ts`. */
+  readonly mods: Map<number, ModIndex>;
 }
 
 /** The agreements that let each side's units into the other's land. */
@@ -81,6 +84,7 @@ export function createCtx(state: MutableGameState): Ctx {
     war: new Uint8Array(n * n),
     open: new Uint8Array(n * n),
     seaLevel: Uint8Array.from(state.polities, seaLevelOf),
+    mods: new Map(),
   };
   for (const agreement of state.agreements) {
     if (BORDER_OPENING.includes(agreement.kind)) setOpenFlag(ctx, agreement.a, agreement.b, true);

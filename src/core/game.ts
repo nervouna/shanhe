@@ -19,15 +19,16 @@ import {
   CITY_STATE_TYPE_BY_ID,
   DEFAULT_MAJOR_NAMES_ZH,
   GAME_TURNS,
-  POLICY,
   HEXES_PER_TRIBE,
   MAJOR_COUNT,
   ROSTER,
+  unitFor,
   TRIBE,
   noYields,
   policyCost,
   unitDef,
 } from './data.ts';
+import { policySlotsFor } from './policies.ts';
 import { hasResource, specialtiesOf, techCost, visibleResource, worldEra } from './tech.ts';
 import { findRoutePath, routeSlots } from './trade.ts';
 import type { RoutePath } from './trade.ts';
@@ -52,7 +53,7 @@ export type * from './types.ts';
 export { NO_POLITY } from './types.ts';
 
 /** Version of the state format. `loadGame` rejects any other. */
-export const STATE_VERSION = 3;
+export const STATE_VERSION = 4;
 
 function polityIndex(map: MapData, id: string): number {
   const index = map.polities.findIndex((polity) => polity.id === id);
@@ -93,7 +94,7 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
     culture: 0,
     cultureProgress: 0,
     policies: [],
-    slots: polity.kind === 'nation' ? Array.from({ length: at(POLICY.slotsByEra, 0) }, () => null) : [],
+    slots: polity.kind === 'nation' ? Array.from({ length: policySlotsFor(polity.id, 0) }, () => null) : [],
     freeSwaps: 0,
     swapReadyOn: 0,
     overlord: NO_POLITY,
@@ -121,6 +122,7 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
     settlersBuilt: 0,
     capital: -1,
     aiTarget: -1,
+    cityLostOn: 0,
   }));
   const state: MutableGameState = {
     map,
@@ -157,6 +159,8 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
       alliancesFormed: 0,
       vassalsMade: 0,
       routesEstablished: 0,
+      seaInvasions: 0,
+      navalBattles: 0,
     },
     result: null,
   };
@@ -167,7 +171,7 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
     if (polity.kind === 'wastelandRegion' || polity.capitalZone === NO_ZONE) return;
     const city = foundCity(ctx, polity.capitalZone, index);
     if (polity.kind === 'cityState') city.buildings.push('walls');
-    const garrison = addUnit(ctx, at(ROSTER.infantry, 0), index, at(map.zones, polity.capitalZone).siteHex);
+    const garrison = addUnit(ctx, unitFor(polity.id, at(ROSTER.infantry, 0)), index, at(map.zones, polity.capitalZone).siteHex);
     garrison.status = 'fortified';
     assignCitizens(ctx, city);
   });
