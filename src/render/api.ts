@@ -7,7 +7,6 @@
  */
 
 import {
-  ACESFilmicToneMapping,
   Mesh,
   MeshStandardNodeMaterial,
   PCFShadowMap,
@@ -47,6 +46,8 @@ import { createOverlays } from './overlays.ts';
 import { pickHexOnRay } from './picking.ts';
 import { createPieces } from './pieces.ts';
 import { placePoliticalNames } from './politicalNames.ts';
+import { createPostFx, resolveEffects } from './postfx.ts';
+import type { PostEffect } from './postfx.ts';
 import { QUALITY_SETTINGS, createScaleController, renderPixelRatio } from './renderScale.ts';
 import type { Quality } from './renderScale.ts';
 import type { FrameStats, Renderer, RendererOptions } from './scene.ts';
@@ -85,7 +86,8 @@ export async function createRenderer(
   mapData: MapData,
   options: RendererOptions = {},
 ): Promise<Renderer> {
-  const renderer = new WebGPURenderer({ canvas, antialias: true });
+  // edges are smoothed by the finish (`postfx.ts`), not by multisampling
+  const renderer = new WebGPURenderer({ canvas, antialias: false });
   await renderer.init();
   const backend: RenderBackend =
     (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true
@@ -93,8 +95,9 @@ export async function createRenderer(
       : 'webgl';
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = PCFShadowMap;
-  renderer.toneMapping = ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1;
+  // a frame is several passes: the counters are reset once per frame by hand
+  renderer.info.autoReset = false;
 
   const layout = mapData.projection.hexLayout;
   const surface = createSurface(mapData, options.heightmap);
@@ -104,7 +107,7 @@ export async function createRenderer(
 
   const scene = new Scene();
   const camera = new PerspectiveCamera(CAMERA_FOV, 1, 0.1, 100);
-  const lighting = createLighting(scene, span);
+  const lighting = createLighting(scene, renderer, span, surface.field.maxY - surface.field.minY);
 
   const textures = createMapTextures(mapData, createHexRaster(mapData));
   const uniforms = createMapUniforms(rect, layout, unitsPerMetre(mapData), textures);
@@ -124,7 +127,10 @@ export async function createRenderer(
   const labels = createLabels();
   const effects = createEffects();
   scene.add(terrain.object, water.object, overlays.object, table, pieces.object, cities.object, effects.object);
-  scene.add(labels.object);
+  // with the finish, labels are drawn on their own and laid over the picture
+  const labelScene = new Scene();
+  renderer.setClearColor(0x000000, 0);
+  const postfx = createPostFx(renderer, scene, labelScene, camera);
 
   const hexCount = mapData.width * mapData.height;
   const validHex = (hex: number): boolean => Number.isInteger(hex) && hex >= 0 && hex < hexCount;
@@ -152,6 +158,13 @@ export async function createRenderer(
   showNames();
 
   let quality: Quality = options.quality ?? 'auto';
+  let effectOverrides: Readonly<Partial<Record<PostEffect, boolean>>> = {};
+  const applyEffects = (): void => {
+    postfx.setState(resolveEffects(quality, backend, effectOverrides));
+    (postfx.active ? labelScene : scene).add(labels.object);
+    lighting.setToneMapped(postfx.state.toneMapping);
+  };
+  applyEffects();
   let settings = QUALITY_SETTINGS[quality];
   const scaleController = createScaleController({ targetMs: TARGET_FRAME_MS });
   let renderScale = settings.scale ?? 1;
@@ -204,6 +217,10 @@ export async function createRenderer(
   const viewHeight = 2 * Math.tan((CAMERA_FOV * Math.PI) / 360);
   /** Anything that casts a shadow changed: the shadow map is drawn again. */
   let shadowDirty = true;
+  /** Only pieces in motion changed what casts shadows. */
+  let shadowMoving = false;
+  /** Drawn time in seconds: what the drifting light and the clouds follow. */
+  let seconds = 0;
   let political = 0;
   let shownLabels = 0;
   let terrainBuilds = 0;
@@ -232,9 +249,17 @@ export async function createRenderer(
     cities.object.visible = (0.12 * layout.size) / perPixel >= MIN_HOUSE_PIXELS;
     const update = terrain.update(camera.position, viewHeight, firstFrame ? Infinity : undefined);
     terrainBuilds = update.builds;
-    lighting.update(target, state.distance, pose.tilt, shadowDirty || update.changed);
+    lighting.update(
+      target,
+      state.distance,
+      pose.tilt,
+      shadowDirty || update.changed ? true : shadowMoving ? 'moving' : false,
+      seconds,
+    );
     shadowDirty = false;
+    shadowMoving = false;
     shownLabels = labels.update(camera, Math.max(1, canvas.clientWidth), height, zoom, political);
+    postfx.update(state.distance, zoom);
   };
 
   /** Whether the centre of any of the hexes is in the view, with a margin of one hex. */
@@ -281,6 +306,7 @@ export async function createRenderer(
     politicalMap: false,
     labels: 0,
     animating: false,
+    shadowDraws: 0,
   };
   const listeners = new Set<(stats: FrameStats) => void>();
   let lastTime: number | null = null;
@@ -315,11 +341,14 @@ export async function createRenderer(
 
     const moving = animator.frame(start);
     // pieces in motion cast moving shadows, and one more frame settles them
-    if (animator.playing || wasMoving) shadowDirty = true;
+    if (animator.playing || wasMoving) shadowMoving = true;
+    seconds += Math.min(elapsed, 250) / 1000;
     wasMoving = animator.playing;
     applyCamera(controller.update(elapsed / 1000), stats.frames === 0);
     if (moving) effects.update((elapsed / 1000) * animationSpeed, camera);
-    renderer.render(scene, camera);
+    renderer.info.reset();
+    if (postfx.active) postfx.render();
+    else renderer.render(scene, camera);
     const cpu = performance.now() - start;
     const info = renderer.info.render;
     const first = stats.frames < 2;
@@ -335,6 +364,7 @@ export async function createRenderer(
       politicalMap: political >= POLITICAL_NAMES_FROM,
       labels: shownLabels,
       animating: animator.playing,
+      shadowDraws: lighting.shadowDraws,
     };
     for (const listener of listeners) listener(stats);
   };
@@ -424,10 +454,18 @@ export async function createRenderer(
       scaleController.reset();
       renderScale = settings.scale ?? 1;
       resize();
+      applyEffects();
       shadowDirty = true;
     },
     get quality() {
       return quality;
+    },
+    setEffects(overrides) {
+      effectOverrides = overrides === null ? {} : { ...effectOverrides, ...overrides };
+      applyEffects();
+    },
+    getEffects() {
+      return postfx.state;
     },
     setLanguage(next) {
       if (next === language) return;
@@ -501,6 +539,7 @@ export async function createRenderer(
       tableGeometry.dispose();
       tableMaterial.dispose();
       terrainMaterial.dispose();
+      postfx.dispose();
       textures.dispose();
       lighting.dispose();
       renderer.dispose();

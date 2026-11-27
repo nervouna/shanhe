@@ -7,8 +7,11 @@
 import type { Language } from '../shared/i18n.ts';
 import type { RenderBackend } from '../shared/types.ts';
 import type { CameraState } from './cameraRig.ts';
+import type { PostEffect, PostEffectState } from './postfx.ts';
 import type { Quality } from './renderScale.ts';
 
+export { POST_EFFECTS } from './postfx.ts';
+export type { PostEffect, PostEffectState } from './postfx.ts';
 export { QUALITY_TIERS } from './renderScale.ts';
 export type { Quality } from './renderScale.ts';
 
@@ -200,6 +203,12 @@ export interface FrameStats {
   readonly labels: number;
   /** Whether an animation started by {@link Renderer.play} is running. */
   readonly animating: boolean;
+  /**
+   * Shadow cascades drawn since the renderer started. The number only grows,
+   * and stands still while nothing that casts a shadow changes and the view
+   * stays on the ground the cascades cover.
+   */
+  readonly shadowDraws: number;
 }
 
 export interface RendererOptions {
@@ -264,6 +273,15 @@ export interface Renderer {
    */
   setQuality(quality: Quality): void;
   readonly quality: Quality;
+  /**
+   * Switches effects of the finish on or off by hand, on top of what the
+   * quality tier asks for. The switches add to the ones set before; `null`
+   * clears them all, so that every effect follows the tier again. An effect the backend does not carry stays
+   * off whatever is asked.
+   */
+  setEffects(overrides: Readonly<Partial<Record<PostEffect, boolean>>> | null): void;
+  /** The effects of the finish that run now: tier, switches and backend taken together. */
+  getEffects(): PostEffectState;
   /** Sets the language of the polity names on the political map. */
   setLanguage(language: Language): void;
   /**
