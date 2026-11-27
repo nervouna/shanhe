@@ -8,7 +8,7 @@
  */
 
 import type { MapData } from '../shared/mapData.ts';
-import type { BuildingId, Focus, ImprovementId, Yields } from './data.ts';
+import type { BuildingId, Focus, ImprovementId, TechId, Yields } from './data.ts';
 
 /** Owner of the tribes, and the "nobody" value of `zoneOwner`. */
 export const NO_POLITY = -1;
@@ -34,7 +34,9 @@ export type BuildItem =
   | { readonly kind: 'building'; readonly building: BuildingId }
   | { readonly kind: 'improvement'; readonly improvement: ImprovementId; readonly hex: number }
   /** Founds the nation's city on the preset site of one of its own zones. */
-  | { readonly kind: 'city'; readonly zone: number };
+  | { readonly kind: 'city'; readonly zone: number }
+  /** The next stage of the endgame project (`PROJECT` in `data.ts`). Only in the capital. */
+  | { readonly kind: 'project'; readonly project: string };
 
 export interface City {
   /** Index into `map.zones`; also the city's identifier. */
@@ -58,6 +60,8 @@ export interface City {
   morale: number;
   /** True once the walls have made this turn's counter-strike. */
   struck: boolean;
+  /** True once the airfield has made this turn's air strike. */
+  airStruck: boolean;
   /** Turn in which the city was last attacked, or 0. */
   attackedOn: number;
   /** Hexes its citizens work, as of the last assignment. */
@@ -92,9 +96,25 @@ export interface PolityState {
   gold: number;
   /** Cumulative gross gold income: what the Economic victory ranks. */
   grossIncome: number;
-  /** Accumulated science and culture; they unlock nothing yet. */
+  /** Cumulative science and culture. Culture unlocks nothing yet. */
   science: number;
   culture: number;
+  /** The techs it knows, in the order it learned them. */
+  techs: TechId[];
+  /** The tech it is researching, or null. A polity on the simplified AI never researches. */
+  research: TechId | null;
+  /** Science stored towards the current research. */
+  researchProgress: number;
+  /** Index into `ERAS` of the highest era it has entered. */
+  era: number;
+  /** Stages of the endgame project it has completed. */
+  projectStage: number;
+  /** Trade route slots its techs give. No rule uses them yet. */
+  tradeRoutes: number;
+  /** True once its techs open the off-map land ports. No rule uses it yet. */
+  landPorts: boolean;
+  /** True once its techs open the off-map sea exits. No rule uses it yet. */
+  seaExits: boolean;
   /** Total city yields of the last turn processing. */
   yields: Yields;
   /** Gold spent on unit and building upkeep in the last turn processing. */
@@ -124,6 +144,7 @@ export interface Relation {
 
 export type GameResult =
   | { readonly kind: 'conquest'; readonly winner: number; readonly turn: number }
+  | { readonly kind: 'science'; readonly winner: number; readonly turn: number }
   | { readonly kind: 'economic'; readonly winner: number; readonly turn: number };
 
 export interface GameStats {
@@ -194,6 +215,10 @@ export type Action =
   | { readonly type: 'queueBuild'; readonly polity: number; readonly city: number; readonly item: BuildItem }
   /** Removes the item at `index` from a city's build queue. */
   | { readonly type: 'unqueueBuild'; readonly polity: number; readonly city: number; readonly index: number }
+  /** Chooses the tech the polity researches. Science already stored stays. */
+  | { readonly type: 'setResearch'; readonly polity: number; readonly tech: TechId }
+  /** The air strike of a city with an airfield on the enemy city or unit on `target` (a hex). */
+  | { readonly type: 'airStrike'; readonly polity: number; readonly city: number; readonly target: number }
   | { readonly type: 'declareWar'; readonly polity: number; readonly target: number }
   /** Makes peace if the other side agrees; towards a human player it records an offer. */
   | { readonly type: 'makePeace'; readonly polity: number; readonly target: number };
@@ -233,6 +258,22 @@ export type GameEvent =
   | { readonly type: 'warDeclared'; readonly by: number; readonly on: number }
   | { readonly type: 'peaceOffered'; readonly from: number; readonly to: number }
   | { readonly type: 'peaceMade'; readonly a: number; readonly b: number }
+  | {
+      readonly type: 'airStrike';
+      readonly city: number;
+      readonly owner: number;
+      readonly target: number;
+      /** Id of the unit hit, or -1 when a city is hit. */
+      readonly defenderUnit: number;
+      /** Zone of the city hit, or -1. */
+      readonly defenderCity: number;
+      readonly damage: number;
+    }
+  | { readonly type: 'researchFinished'; readonly polity: number; readonly tech: TechId }
+  /** A polity entered an era. Also sent for the polities whose techs follow the world average. */
+  | { readonly type: 'eraEntered'; readonly polity: number; readonly era: number }
+  | { readonly type: 'projectStageFinished'; readonly polity: number; readonly city: number; readonly stage: number }
+  /** The era of the game moved on: that of the player, or of the most advanced major nation in observer mode. */
   | { readonly type: 'eraStarted'; readonly era: number }
   | { readonly type: 'turnStarted'; readonly turn: number }
   | { readonly type: 'gameEnded'; readonly result: GameResult };
@@ -263,6 +304,14 @@ export type RejectReason =
   | 'notASettleSite'
   | 'badItem'
   | 'eraTooEarly'
+  | 'needsTech'
+  | 'needsResource'
+  | 'notCapital'
+  | 'alreadyKnown'
+  | 'missingPrerequisite'
+  | 'doesNotResearch'
+  | 'noAirfield'
+  | 'alreadyStruck'
   | 'alreadyBuilt'
   | 'alreadyQueued'
   | 'needsCoast'

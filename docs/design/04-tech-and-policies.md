@@ -6,9 +6,13 @@
 
 Rules:
 
-- Every tech has 1–2 prerequisites. Within an era the order is free.
-- Entering the next era requires at least 4 techs of the current era.
-- **Catch-up**: a tech already known by any other nation costs 20% less.
+- A nation researches one tech at a time with its science. Science beyond a tech's cost carries over, and at most one tech is finished per turn. A player who has chosen no tech gets the AI's choice, so research never stands still.
+- Every tech after the Ancient era has 1–2 prerequisites, all from earlier eras (see [Prerequisites](#prerequisites)). Ancient techs have none. Within an era the order is free.
+- A tech can be researched once its era has been entered. Entering the next era requires at least 4 techs of the current era; a nation's era is the highest it has entered, and each nation has its own.
+- **Catch-up**: a tech already known by any other living nation or city-state costs 20% less.
+- Cost per tech by era: 7, 32, 100, 250, 720, 1000 science. With these the leading major nation enters the Modern era around turn 115–125 and knows 38–39 of the 40 techs when the game ends; the other major nations end with 22 or more.
+- **Simplified-AI nations and city-states do not research.** They know a tech once half of the researching nations (the living major nations and the player) know it, and their era follows from what they know.
+- A unit, building or improvement is available only with its tech. The settler needs no tech: it needs the Classical era.
 
 ### Ancient (上古)
 
@@ -80,6 +84,55 @@ Rules:
 | 火箭 Rocketry | Rocket artillery |
 | 信息网络 Information Networks | Endgame project |
 
+### Prerequisites
+
+Ancient techs have no prerequisite.
+
+| Era | Tech | Requires |
+|---|---|---|
+| Classical | Writing | Ritual |
+| Classical | Currency | Mining |
+| Classical | Ironworking | Mining |
+| Classical | Riding | Husbandry |
+| Classical | Irrigation | Farming |
+| Classical | Crossbow | Archery, Fortification |
+| Classical | Shipbuilding | Boats |
+| Medieval | Paper | Writing |
+| Medieval | Stirrup | Riding |
+| Medieval | Steel | Ironworking |
+| Medieval | Compass | Shipbuilding |
+| Medieval | Machinery | Irrigation, Crossbow |
+| Medieval | Guilds | Currency |
+| Medieval | Gunpowder | Ironworking, Writing |
+| Early Modern | Printing | Paper |
+| Early Modern | Firearms | Gunpowder |
+| Early Modern | Gun Casting | Gunpowder, Machinery |
+| Early Modern | Ocean Navigation | Compass |
+| Early Modern | Banking | Guilds |
+| Early Modern | Astronomy | Compass, Paper |
+| Early Modern | New Crops | Compass |
+| Industrial | Steam Engine | Gun Casting, Astronomy |
+| Industrial | Railway | Banking |
+| Industrial | Rifling | Firearms |
+| Industrial | Steelmaking | Gun Casting |
+| Industrial | Electricity | Astronomy, Printing |
+| Industrial | Public Health | Printing, New Crops |
+| Modern | Combustion Engine | Steam Engine |
+| Modern | Aviation | Steelmaking, Rifling |
+| Modern | Electronics | Electricity |
+| Modern | Petrochemicals | Steelmaking, Public Health |
+| Modern | Rocketry | Rifling |
+| Modern | Information Networks | Electricity, Railway |
+
+### What the non-unit unlocks do
+
+- **Irrigation canal** (Irrigation): an improvement for flat river land (plains, grassland, desert): +3 food.
+- **Canal** (Irrigation): an improvement for flat river land: +1 production, +3 gold. Ships do not sail it yet.
+- **New Crops**: farms may also be built on hills.
+- **Railway**: only recorded for now; roads do not exist yet.
+- **Trade routes and off-map ports** (Currency, Guilds, Banking, Ocean Navigation): recorded per nation for the trade rules to come.
+- **Endgame project** 天宫工程: three stages built one after the other in the capital, 470 production each. The first needs Rocketry, the second Electronics, the third Information Networks. Only the major nations and the player can build it; completing the third stage wins the game.
+
 ## Generic unit roster
 
 30 units: one per class per era. The warrior needs no tech and is available from turn 1. The character after each name is the one engraved on its piece.
@@ -97,9 +150,34 @@ The settler is not a combat unit: it can be built from the Classical era and fou
 
 Strategic resources gate units as follows: horses for cavalry up to the Industrial era, iron for swordsmen and heavy infantry, coal for ironclads, oil for tanks, mechanised infantry and destroyers, rare earths for missile launchers.
 
+A source counts when it lies inside the nation's territory, improved or not, and the nation knows the tech that reveals it: Husbandry for horses, Ironworking for iron, Steam Engine for coal, Combustion Engine for oil, Electronics for rare earths. Until then the resource is hidden from that nation.
+
+**Upgrades skip what cannot be built.** A unit upgrades to the nearest later unit of its class that its owner has the tech and the resource for, so a nation without iron takes its warriors straight to musketeers.
+
 ## Generic buildings
 
-Granary, walls, temple, academy, market, harbour, print shop, workshop, university, bank, observatory, factory, power plant, hospital, airfield, research institute.
+Each building needs the tech named in the tech tree. Cost is in production, upkeep in gold per turn.
+
+| Building | Tech | Cost | Upkeep | Effect |
+|---|---|---|---|---|
+| Granary | Farming | 40 | 1 | +2 food |
+| Walls | Fortification | 50 | 0 | +50 city HP, +20% city strength, one ranged counter-strike per turn |
+| Temple | Ritual | 40 | 1 | +2 culture |
+| Academy | Writing | 60 | 1 | +3 science |
+| Market | Currency | 60 | 0 | +2 gold, +25% gold |
+| Harbour | Shipbuilding | 60 | 1 | Coastal cities only. +2 gold, +1 food on every worked water hex |
+| Print shop | Paper | 80 | 1 | +3 culture, +1 science |
+| Workshop | Machinery | 80 | 1 | +2 production, +25% production |
+| University | Printing | 120 | 2 | +3 science, +25% science |
+| Bank | Banking | 120 | 0 | +3 gold, +25% gold |
+| Observatory | Astronomy | 120 | 1 | +4 science |
+| Factory | Steam Engine | 180 | 3 | +4 production, +25% production |
+| Power plant | Electricity | 180 | 3 | +25% production, +10% science |
+| Hospital | Public Health | 180 | 2 | +4 food |
+| Airfield | Aviation | 240 | 3 | One air strike per turn |
+| Research institute | Electronics | 270 | 3 | +6 science, +25% science |
+
+**Air strike.** Once per turn a city with an airfield strikes an enemy unit or city within 6 hexes, with the strength of a modern ranged unit (76). Nothing strikes back. A city is worn down to 0 HP but still has to be entered by a melee unit.
 
 ## Policies
 

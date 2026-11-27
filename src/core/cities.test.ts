@@ -6,7 +6,7 @@ import { createCtx } from './context.ts';
 import { BUILDINGS, CITY, FREE_UNITS_PER_CITY, IMPROVEMENTS, UNITS } from './data.ts';
 import { NO_POLITY, applyAction, createGame, endTurn, hexOwner } from './game.ts';
 import type { BuildItem, GameEvent, GameState, MutableGameState } from './game.ts';
-import { apply, around, edit, isPlainGround, oneUnitPerHex, put } from './testUtil.ts';
+import { apply, around, edit, isPlainGround, learn, oneUnitPerHex, put } from './testUtil.ts';
 import { topologyOf } from './topology.ts';
 
 const map = createFixtureMap();
@@ -15,8 +15,14 @@ const JIA = 0;
 const YI = 1;
 const WUCHENG = 4;
 const site = (zone: number): number => map.zones[zone]!.siteHex;
-/** Jia is the human player and does nothing unless a test does it; nobody declares war. */
-const base = createGame(map, { seed: 3, player: 'jia', majors: [] });
+/**
+ * Jia is the human player and does nothing unless a test does it; nobody
+ * declares war. Everybody knows the techs these tests build with, which puts
+ * them in the classical era.
+ */
+const base = learn(createGame(map, { seed: 3, player: 'jia', majors: [] }), 'all', [
+  'farming', 'husbandry', 'mining', 'boats', 'shipbuilding',
+]);
 const queue = (state: GameState, item: BuildItem, city = 0): GameState =>
   apply(state, { type: 'queueBuild', polity: state.cities[city]!.owner, city, item });
 
@@ -144,7 +150,7 @@ describe('build queue', () => {
     ).state;
     expect(withGranary.cities[0]!.yields.food).toBe(plain.cities[0]!.yields.food + 2);
     expect(withGranary.polities[JIA]!.upkeep).toBe(plain.polities[JIA]!.upkeep + BUILDINGS.granary.upkeep);
-    expect(Object.keys(BUILDINGS).sort()).toEqual(['academy', 'granary', 'harbour', 'market', 'temple', 'walls', 'workshop']);
+    expect(Object.keys(BUILDINGS)).toHaveLength(16);
   });
 
   it('places an improvement on a chosen hex of the city\'s zone', () => {
@@ -152,7 +158,7 @@ describe('build queue', () => {
       (hex) => isPlainGround(map, hex) && (map.terrain[hex] === Terrain.Plains || map.terrain[hex] === Terrain.Grassland) && map.feature[hex] === 0,
     )!;
     const hill = topo.workHexes[0]!.find((hex) => map.hills[hex] === 1)!;
-    expect(Object.keys(IMPROVEMENTS).sort()).toEqual(['farm', 'fishery', 'mine', 'pasture']);
+    expect(Object.keys(IMPROVEMENTS).sort()).toEqual(['canal', 'farm', 'fishery', 'irrigationCanal', 'mine', 'pasture']);
     expect(applyAction(base, { type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'improvement', improvement: 'farm', hex: hill } })).toMatchObject({ ok: false, reason: 'badHex' });
     expect(applyAction(base, { type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'improvement', improvement: 'fishery', hex: farmland } })).toMatchObject({ ok: false, reason: 'badHex' });
     const foreign = topo.workHexes[3]![0]!;
@@ -176,9 +182,7 @@ describe('build queue', () => {
   });
 
   it('needs a coast for a harbour and for ships', () => {
-    const later = edit(base, (draft) => {
-      draft.turn = 26;
-    });
+    const later = base;
     expect(topo.coastal[0]).toBe(false);
     expect(topo.coastal[8]).toBe(true);
     expect(applyAction(later, { type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'building', building: 'harbour' } })).toMatchObject({ ok: false, reason: 'needsCoast' });
@@ -203,9 +207,7 @@ describe('founding cities', () => {
   });
 
   it('never lets a city-state expand', () => {
-    const later = edit(base, (draft) => {
-      draft.turn = 26;
-    });
+    const later = base;
     expect(applyAction(later, { type: 'queueBuild', polity: WUCHENG, city: 8, item: { kind: 'unit', unit: 'settler' } })).toMatchObject({ ok: false, reason: 'badItem' });
     expect(applyAction(later, { type: 'queueBuild', polity: WUCHENG, city: 8, item: { kind: 'city', zone: 8 } })).toMatchObject({ ok: false, reason: 'badItem' });
   });
@@ -221,9 +223,7 @@ describe('founding cities', () => {
     expect(cost(0)).toBe(UNITS.settler!.cost);
     expect(cost(1)).toBeGreaterThan(cost(0));
     expect(cost(2)).toBeGreaterThan(cost(1));
-    const built = run(queue(edit(base, (draft) => {
-      draft.turn = 26;
-    }), { kind: 'unit', unit: 'settler' }), 40).state;
+    const built = run(queue(base, { kind: 'unit', unit: 'settler' }), 40).state;
     expect(built.units.some((unit) => unit.type === 'settler' && unit.owner === JIA)).toBe(true);
     expect(built.polities[JIA]!.settlersBuilt).toBe(1);
   });

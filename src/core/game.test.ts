@@ -17,7 +17,7 @@ import {
   saveGame,
 } from './game.ts';
 import type { Action, GameState } from './game.ts';
-import { apply, around, edit, findPair, isPlainGround, put } from './testUtil.ts';
+import { apply, around, edit, findPair, isPlainGround, learn, put } from './testUtil.ts';
 
 const map = createFixtureMap();
 const JIA = 0;
@@ -116,13 +116,15 @@ describe('game state', () => {
 });
 
 describe('eras', () => {
-  it('last 25 turns each', () => {
+  it('are paced at 25 turns each, but follow research and not the turn', () => {
     expect(ERAS).toHaveLength(6);
     expect(eraOfTurn(1)).toBe(0);
     expect(eraOfTurn(25)).toBe(0);
     expect(eraOfTurn(26)).toBe(1);
     expect(eraOfTurn(150)).toBe(5);
-    expect(currentEra(play(createGame(map, { majors: [] }), 25))).toBe(1);
+    // Nobody researches here, so the turns pass and the era stays.
+    expect(currentEra(play(createGame(map, { majors: [] }), 25))).toBe(0);
+    expect(currentEra(learn(createGame(map, { player: 'jia' }), JIA, ['farming', 'mining', 'ritual', 'boats']))).toBe(1);
   });
 
   it('give 30 generic units whose strength rises about a third per era from 20', () => {
@@ -140,14 +142,13 @@ describe('eras', () => {
     const queue = (state: GameState, unit: string): ReturnType<typeof applyAction> =>
       applyAction(state, { type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'unit', unit } });
     expect(queue(early, 'warrior').ok).toBe(true);
-    expect(queue(early, 'swordsman')).toMatchObject({ ok: false, reason: 'eraTooEarly' });
+    expect(queue(early, 'archer')).toMatchObject({ ok: false, reason: 'needsTech' });
     expect(queue(early, 'settler')).toMatchObject({ ok: false, reason: 'eraTooEarly' });
-    const classical = edit(early, (draft) => {
-      draft.turn = 26;
-    });
-    expect(queue(classical, 'swordsman').ok).toBe(true);
+    const classical = learn(early, JIA, ['farming', 'mining', 'ritual', 'archery', 'fortification', 'crossbow']);
+    expect(queue(classical, 'archer').ok).toBe(true);
+    expect(queue(classical, 'crossbowman').ok).toBe(true);
     expect(queue(classical, 'settler').ok).toBe(true);
-    expect(queue(classical, 'heavyInfantry')).toMatchObject({ ok: false, reason: 'eraTooEarly' });
+    expect(queue(classical, 'rocketArcher')).toMatchObject({ ok: false, reason: 'needsTech' });
   });
 });
 
@@ -203,7 +204,7 @@ describe('save and load', () => {
   it('rejects text that is not a save of this map', () => {
     const text = saveGame(createGame(map));
     expect(() => loadGame('{}', map)).toThrow();
-    expect(() => loadGame(text.replace('"version":1', '"version":99'), map)).toThrow();
+    expect(() => loadGame(text.replace(/"version":\d+/, '"version":99'), map)).toThrow();
     expect(() => loadGame(text, createSyntheticMap({ width: 60, height: 40, polities: 6 }))).toThrow();
   });
 });
@@ -234,8 +235,8 @@ describe('illegal actions', () => {
     expect(reject({ type: 'setFocus', polity: JIA, city: 0, focus: 'speed' as 'gold' })).toBe('badItem');
     expect(reject({ type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'unit', unit: 'dragon' } })).toBe('badItem');
     expect(reject({ type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'unit', unit: 'tribe' } })).toBe('badItem');
-    expect(reject({ type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'building', building: 'market' } })).toBe('eraTooEarly');
-    expect(reject({ type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'building', building: 'harbour' } })).toBe('eraTooEarly');
+    expect(reject({ type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'building', building: 'market' } })).toBe('needsTech');
+    expect(reject({ type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'building', building: 'harbour' } })).toBe('needsTech');
     expect(reject({ type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'city', zone: 4 } })).toBe('badItem');
     expect(reject({ type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'improvement', improvement: 'farm', hex: site(3) } })).toBe('badHex');
     expect(reject({ type: 'unqueueBuild', polity: JIA, city: 0, index: 0 })).toBe('badIndex');
@@ -251,6 +252,7 @@ describe('illegal actions', () => {
   });
 
   it('include building the same thing twice', () => {
+    const state = learn(createGame(map, { seed: 1, player: 'jia' }), JIA, ['farming']);
     const queued = apply(state, { type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'building', building: 'granary' } });
     expect(reject({ type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'building', building: 'granary' } }, queued)).toBe('alreadyQueued');
     const built = edit(state, (draft) => {
@@ -308,7 +310,7 @@ describe('legal actions', () => {
   it('cover moving, building, focus and war at the start', () => {
     const state = createGame(map, { player: 'jia' });
     const kinds = new Set(getLegalActions(state, JIA).map((action) => action.type));
-    expect([...kinds].sort()).toEqual(['declareWar', 'move', 'queueBuild', 'setFocus', 'sleep']);
+    expect([...kinds].sort()).toEqual(['declareWar', 'move', 'queueBuild', 'setFocus', 'setResearch', 'sleep']);
   });
 });
 

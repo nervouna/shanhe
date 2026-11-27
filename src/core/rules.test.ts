@@ -6,7 +6,7 @@ import { createCtx } from './context.ts';
 import { AI, CITY, COMBAT, UNITS, WAR } from './data.ts';
 import { NO_POLITY, applyAction, createGame, endTurn, getLegalActions, hexOwner } from './game.ts';
 import type { GameEvent, GameState, MutableGameState, Unit } from './game.ts';
-import { apply, applyWithEvents, around, edit, findPair, isPlainGround, oneUnitPerHex, put } from './testUtil.ts';
+import { apply, applyWithEvents, around, edit, findPair, isPlainGround, learn, oneUnitPerHex, put } from './testUtil.ts';
 import { topologyOf } from './topology.ts';
 
 const map = createFixtureMap();
@@ -197,7 +197,7 @@ describe('movement', () => {
     expect(unitOf(moved, rider)).toMatchObject({ hex: to, moves: 0 });
   });
 
-  it('lets land units embark on coast from the Classical era and on ocean from the Medieval era', () => {
+  it('lets land units embark on coast with Boats and on ocean with Compass', () => {
     const [shore, coast] = findPair(map, (a, b) => isPlainGround(map, a) && hexOwner(base, a) === YI && map.terrain[b] === Terrain.Coast);
     const ocean = around(map, coast).find((hex) => map.terrain[hex] === Terrain.Ocean);
     let walker = 0;
@@ -205,9 +205,7 @@ describe('movement', () => {
       walker = put(draft, 'warrior', YI, shore).id;
     });
     expect(applyAction(ancient, { type: 'move', polity: YI, unit: walker, to: coast })).toMatchObject({ ok: false, reason: 'impassable' });
-    const classical = edit(ancient, (draft) => {
-      draft.turn = 26;
-    });
+    const classical = learn(ancient, YI, ['boats']);
     const afloat = apply(classical, { type: 'move', polity: YI, unit: walker, to: coast });
     expect(unitOf(afloat, walker)).toMatchObject({ hex: coast, moves: 0 });
     if (ocean !== undefined) {
@@ -215,9 +213,7 @@ describe('movement', () => {
         draft.units.find((unit) => unit.id === walker)!.moves = 2;
       });
       expect(applyAction(rested, { type: 'move', polity: YI, unit: walker, to: ocean })).toMatchObject({ ok: false, reason: 'impassable' });
-      const medieval = edit(rested, (draft) => {
-        draft.turn = 51;
-      });
+      const medieval = learn(rested, YI, ['compass']);
       expect(applyAction(medieval, { type: 'move', polity: YI, unit: walker, to: ocean }).ok).toBe(true);
     }
     // Afloat, a land unit cannot attack or fortify.
@@ -243,17 +239,17 @@ describe('movement', () => {
   it('upgrades a unit with gold inside its own borders', () => {
     let id = 0;
     const home = besideSite(base, 0, JIA);
-    const state = edit(base, (draft) => {
-      draft.turn = 26;
+    // The fixture has no iron, so the warrior's next step is the musketeer.
+    const state = edit(learn(base, JIA, ['ironworking', 'firearms']), (draft) => {
       id = put(draft, 'warrior', JIA, home, { xp: 9, level: 1, hp: 70 }).id;
     });
     expect(applyAction(state, { type: 'upgrade', polity: JIA, unit: id })).toMatchObject({ ok: false, reason: 'notEnoughGold' });
-    const cost = (UNITS.swordsman!.cost - UNITS.warrior!.cost) * 2;
+    const cost = (UNITS.musketeer!.cost - UNITS.warrior!.cost) * 2;
     const rich = edit(state, (draft) => {
       draft.polities[JIA]!.gold = cost + 5;
     });
     const upgraded = apply(rich, { type: 'upgrade', polity: JIA, unit: id });
-    expect(unitOf(upgraded, id)).toMatchObject({ type: 'swordsman', level: 1, xp: 9, hp: 70 });
+    expect(unitOf(upgraded, id)).toMatchObject({ type: 'musketeer', level: 1, xp: 9, hp: 70 });
     expect(upgraded.polities[JIA]!.gold).toBe(5);
     const abroad = edit(rich, (draft) => {
       draft.units.find((unit) => unit.id === id)!.hex = topo.zoneHexes[9]!.find((hex) => isPlainGround(map, hex) && !draft.units.some((unit) => unit.hex === hex))!;

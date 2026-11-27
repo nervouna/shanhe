@@ -29,18 +29,138 @@ export type EraId = (typeof ERAS)[number];
 
 /** Length of a game in turns. */
 export const GAME_TURNS = 150;
-/** Until tech exists the era is a function of the turn. */
+/** The pace the design aims at: about this many turns per era. A polity's real era follows its research. */
 export const TURNS_PER_ERA = 25;
 
-/** Index into {@link ERAS} of the era that `turn` (1-based) falls in. */
+/**
+ * Index into {@link ERAS} of the era the design's pacing expects on `turn`
+ * (1-based). No rule reads this: a polity's era is `PolityState.era`.
+ */
 export function eraOfTurn(turn: number): number {
   return Math.max(0, Math.min(ERAS.length - 1, Math.floor((turn - 1) / TURNS_PER_ERA)));
 }
 
-/** First era in which land units may embark on coast and lake (stands in for Boats). */
+/**
+ * The eras that stood in for Boats and Compass before research existed. No
+ * rule reads them any more: embarking follows `TechDef.sea`.
+ */
 export const EMBARK_COAST_ERA = 1;
-/** First era in which ships and embarked units may enter ocean (stands in for Compass). */
 export const OCEAN_ERA = 2;
+
+// ------------------------------------------------------------------ techs
+
+/** What a tech does besides unlocking the units, buildings and improvements that name it. */
+export interface TechDef {
+  /** Index into {@link ERAS}. */
+  readonly era: number;
+  /** Science needed, before the catch-up discount. */
+  readonly cost: number;
+  /** Techs that must be known first: none in the ancient era, one or two of earlier eras after it. */
+  readonly requires: readonly TechId[];
+  /** What the AI wants it for. */
+  readonly kind: 'economy' | 'military' | 'science' | 'naval';
+  /** Id (`MapResource.id`) of the strategic resource it reveals. */
+  readonly reveals?: string;
+  /** `coast`: land units embark on coast and lake. `ocean`: ships and embarked units enter ocean. */
+  readonly sea?: 'coast' | 'ocean';
+  /** Trade route slots it adds. Recorded per polity; trade itself comes later. */
+  readonly tradeRoutes?: number;
+  /** Off-map ports it opens. Recorded per polity; trade itself comes later. */
+  readonly ports?: 'land' | 'sea';
+  /** Roads upgrade to railways. Only the flag: roads come later. */
+  readonly railways?: boolean;
+  /** Lets the improvements that name it in `hillsTech` stand on hills. */
+  readonly hillFarms?: boolean;
+  /** Needed by a stage of the endgame project. */
+  readonly project?: boolean;
+}
+
+/** Science cost of a tech of each era. */
+export const TECH_ERA_COST: readonly number[] = [7, 32, 100, 250, 720, 1000];
+
+export const RESEARCH = {
+  /** A tech known by any other living polity costs this much less. */
+  catchUpPercent: 20,
+  /** Techs of its current era a polity needs to enter the next. */
+  techsToAdvance: 4,
+  /** A polity on the simplified AI knows a tech once this share of the researching nations does. */
+  followShare: 0.5,
+} as const;
+
+type TechSpec = Omit<TechDef, 'cost' | 'requires'> & { readonly requires: readonly string[] };
+
+const TECH_TABLE = {
+  // Ancient
+  farming: { era: 0, requires: [], kind: 'economy' },
+  husbandry: { era: 0, requires: [], kind: 'economy', reveals: 'horses' },
+  mining: { era: 0, requires: [], kind: 'economy' },
+  archery: { era: 0, requires: [], kind: 'military' },
+  fortification: { era: 0, requires: [], kind: 'military' },
+  ritual: { era: 0, requires: [], kind: 'economy' },
+  boats: { era: 0, requires: [], kind: 'naval', sea: 'coast' },
+  // Classical
+  writing: { era: 1, requires: ['ritual'], kind: 'science' },
+  currency: { era: 1, requires: ['mining'], kind: 'economy', tradeRoutes: 1, ports: 'land' },
+  ironworking: { era: 1, requires: ['mining'], kind: 'military', reveals: 'iron' },
+  riding: { era: 1, requires: ['husbandry'], kind: 'military' },
+  irrigation: { era: 1, requires: ['farming'], kind: 'economy' },
+  crossbow: { era: 1, requires: ['archery', 'fortification'], kind: 'military' },
+  shipbuilding: { era: 1, requires: ['boats'], kind: 'naval' },
+  // Medieval
+  paper: { era: 2, requires: ['writing'], kind: 'science' },
+  stirrup: { era: 2, requires: ['riding'], kind: 'military' },
+  steel: { era: 2, requires: ['ironworking'], kind: 'military' },
+  compass: { era: 2, requires: ['shipbuilding'], kind: 'naval', sea: 'ocean' },
+  machinery: { era: 2, requires: ['irrigation', 'crossbow'], kind: 'economy' },
+  guilds: { era: 2, requires: ['currency'], kind: 'economy', tradeRoutes: 1 },
+  gunpowder: { era: 2, requires: ['ironworking', 'writing'], kind: 'military' },
+  // Early Modern
+  printing: { era: 3, requires: ['paper'], kind: 'science' },
+  firearms: { era: 3, requires: ['gunpowder'], kind: 'military' },
+  gunCasting: { era: 3, requires: ['gunpowder', 'machinery'], kind: 'military' },
+  oceanNavigation: { era: 3, requires: ['compass'], kind: 'naval', ports: 'sea' },
+  banking: { era: 3, requires: ['guilds'], kind: 'economy', tradeRoutes: 1 },
+  astronomy: { era: 3, requires: ['compass', 'paper'], kind: 'science' },
+  newCrops: { era: 3, requires: ['compass'], kind: 'economy', hillFarms: true },
+  // Industrial
+  steamEngine: { era: 4, requires: ['gunCasting', 'astronomy'], kind: 'economy', reveals: 'coal' },
+  railway: { era: 4, requires: ['banking'], kind: 'economy', railways: true },
+  rifling: { era: 4, requires: ['firearms'], kind: 'military' },
+  steelmaking: { era: 4, requires: ['gunCasting'], kind: 'military' },
+  electricity: { era: 4, requires: ['astronomy', 'printing'], kind: 'economy' },
+  publicHealth: { era: 4, requires: ['printing', 'newCrops'], kind: 'economy' },
+  // Modern
+  combustion: { era: 5, requires: ['steamEngine'], kind: 'military', reveals: 'oil' },
+  aviation: { era: 5, requires: ['steelmaking', 'rifling'], kind: 'military' },
+  electronics: { era: 5, requires: ['electricity'], kind: 'science', reveals: 'rare-earths', project: true },
+  petrochemicals: { era: 5, requires: ['steelmaking', 'publicHealth'], kind: 'military' },
+  rocketry: { era: 5, requires: ['rifling'], kind: 'military', project: true },
+  informationNetworks: { era: 5, requires: ['electricity', 'railway'], kind: 'science', project: true },
+} as const satisfies Record<string, TechSpec>;
+
+export type TechId = keyof typeof TECH_TABLE;
+/** The 40 techs of doc 04, in the order of its tables. */
+export const TECH_IDS = Object.keys(TECH_TABLE) as TechId[];
+
+/** Every tech by id. Units, buildings and improvements name the tech that unlocks them. */
+export const TECHS: Readonly<Record<TechId, TechDef>> = Object.fromEntries(
+  TECH_IDS.map((id) => {
+    const spec: TechSpec = TECH_TABLE[id];
+    return [id, { ...spec, requires: spec.requires as readonly TechId[], cost: TECH_ERA_COST[spec.era] as number }];
+  }),
+) as Record<TechId, TechDef>;
+
+export function isTechId(value: unknown): value is TechId {
+  return typeof value === 'string' && Object.hasOwn(TECH_TABLE, value);
+}
+
+/** The strategic resources (`MapResource.id`) and the tech that reveals each. */
+export const STRATEGIC_RESOURCES: Readonly<Record<string, TechId>> = Object.fromEntries(
+  TECH_IDS.flatMap((id) => {
+    const reveals = TECHS[id].reveals;
+    return reveals === undefined ? [] : [[reveals, id]];
+  }),
+);
 
 // --------------------------------------------------------------- terrain
 
@@ -95,6 +215,12 @@ export interface ImprovementDef {
   readonly hills: 'yes' | 'no' | 'any';
   /** Features the hex may carry. */
   readonly features: readonly number[];
+  /** The tech that unlocks it. */
+  readonly tech: TechId;
+  /** True if the hex needs a river edge. */
+  readonly river?: boolean;
+  /** With this tech it may stand on hills whatever `hills` says. */
+  readonly hillsTech?: TechId;
 }
 
 const OPEN = [Feature.None];
@@ -107,6 +233,8 @@ export const IMPROVEMENTS = {
     terrains: [Terrain.Plains, Terrain.Grassland],
     hills: 'no',
     features: OPEN,
+    tech: 'farming',
+    hillsTech: 'newCrops',
   },
   mine: {
     cost: 30,
@@ -114,6 +242,7 @@ export const IMPROVEMENTS = {
     terrains: LAND,
     hills: 'yes',
     features: [Feature.None, Feature.Forest, Feature.Jungle],
+    tech: 'mining',
   },
   pasture: {
     cost: 30,
@@ -121,6 +250,7 @@ export const IMPROVEMENTS = {
     terrains: [Terrain.Plains, Terrain.Grassland, Terrain.Tundra, Terrain.Desert],
     hills: 'no',
     features: OPEN,
+    tech: 'husbandry',
   },
   fishery: {
     cost: 30,
@@ -128,6 +258,27 @@ export const IMPROVEMENTS = {
     terrains: [Terrain.Coast, Terrain.Lake],
     hills: 'any',
     features: OPEN,
+    tech: 'boats',
+  },
+  /** A farm fed by a river: flat river land only. */
+  irrigationCanal: {
+    cost: 50,
+    yields: { food: 3, production: 0, gold: 0 },
+    terrains: [Terrain.Plains, Terrain.Grassland, Terrain.Desert],
+    hills: 'no',
+    features: OPEN,
+    tech: 'irrigation',
+    river: true,
+  },
+  /** A waterway for barges: flat river land only. Ships do not use it yet. */
+  canal: {
+    cost: 60,
+    yields: { food: 0, production: 1, gold: 3 },
+    terrains: LAND,
+    hills: 'no',
+    features: [Feature.None, Feature.Marsh],
+    tech: 'irrigation',
+    river: true,
   },
 } as const satisfies Record<string, ImprovementDef>;
 export type ImprovementId = keyof typeof IMPROVEMENTS;
@@ -140,8 +291,10 @@ export interface BuildingDef {
   readonly cost: number;
   /** Gold per turn. */
   readonly upkeep: number;
-  /** First era (index into {@link ERAS}) in which it can be built. */
+  /** Era (index into {@link ERAS}) of its tech. */
   readonly era: number;
+  /** The tech that unlocks it. */
+  readonly tech: TechId;
   /** Flat yields added to the city. */
   readonly yields: Partial<Yields>;
   /** Percentage added to a city yield after the flat yields. */
@@ -156,6 +309,8 @@ export interface BuildingDef {
   readonly counterStrike: boolean;
   /** Extra yield of every worked water hex. */
   readonly waterYields: Partial<Yields>;
+  /** Gives the city one air strike per turn. */
+  readonly airStrike: boolean;
 }
 
 const BUILDING_BASE = {
@@ -166,16 +321,47 @@ const BUILDING_BASE = {
   cityStrengthPercent: 0,
   counterStrike: false,
   waterYields: {},
+  airStrike: false,
 } as const;
 
 export const BUILDINGS = {
-  granary: { ...BUILDING_BASE, cost: 40, upkeep: 1, era: 0, yields: { food: 2 } },
-  walls: { ...BUILDING_BASE, cost: 50, upkeep: 0, era: 0, cityHp: 50, cityStrengthPercent: 20, counterStrike: true },
-  temple: { ...BUILDING_BASE, cost: 40, upkeep: 1, era: 0, yields: { culture: 2 } },
-  market: { ...BUILDING_BASE, cost: 60, upkeep: 0, era: 1, yields: { gold: 2 }, percent: { gold: 25 } },
-  academy: { ...BUILDING_BASE, cost: 60, upkeep: 1, era: 1, yields: { science: 3 } },
-  harbour: { ...BUILDING_BASE, cost: 60, upkeep: 1, era: 1, coastal: true, yields: { gold: 2 }, waterYields: { food: 1 } },
-  workshop: { ...BUILDING_BASE, cost: 80, upkeep: 1, era: 2, yields: { production: 2 }, percent: { production: 25 } },
+  granary: { ...BUILDING_BASE, tech: 'farming', cost: 40, upkeep: 1, era: 0, yields: { food: 2 } },
+  walls: {
+    ...BUILDING_BASE, tech: 'fortification', cost: 50, upkeep: 0, era: 0,
+    cityHp: 50, cityStrengthPercent: 20, counterStrike: true,
+  },
+  temple: { ...BUILDING_BASE, tech: 'ritual', cost: 40, upkeep: 1, era: 0, yields: { culture: 2 } },
+  academy: { ...BUILDING_BASE, tech: 'writing', cost: 60, upkeep: 1, era: 1, yields: { science: 3 } },
+  market: { ...BUILDING_BASE, tech: 'currency', cost: 60, upkeep: 0, era: 1, yields: { gold: 2 }, percent: { gold: 25 } },
+  harbour: {
+    ...BUILDING_BASE, tech: 'shipbuilding', cost: 60, upkeep: 1, era: 1,
+    coastal: true, yields: { gold: 2 }, waterYields: { food: 1 },
+  },
+  printShop: { ...BUILDING_BASE, tech: 'paper', cost: 80, upkeep: 1, era: 2, yields: { culture: 3, science: 1 } },
+  workshop: {
+    ...BUILDING_BASE, tech: 'machinery', cost: 80, upkeep: 1, era: 2,
+    yields: { production: 2 }, percent: { production: 25 },
+  },
+  university: {
+    ...BUILDING_BASE, tech: 'printing', cost: 120, upkeep: 2, era: 3,
+    yields: { science: 3 }, percent: { science: 25 },
+  },
+  bank: { ...BUILDING_BASE, tech: 'banking', cost: 120, upkeep: 0, era: 3, yields: { gold: 3 }, percent: { gold: 25 } },
+  observatory: { ...BUILDING_BASE, tech: 'astronomy', cost: 120, upkeep: 1, era: 3, yields: { science: 4 } },
+  factory: {
+    ...BUILDING_BASE, tech: 'steamEngine', cost: 180, upkeep: 3, era: 4,
+    yields: { production: 4 }, percent: { production: 25 },
+  },
+  powerPlant: {
+    ...BUILDING_BASE, tech: 'electricity', cost: 180, upkeep: 3, era: 4,
+    percent: { production: 25, science: 10 },
+  },
+  hospital: { ...BUILDING_BASE, tech: 'publicHealth', cost: 180, upkeep: 2, era: 4, yields: { food: 4 } },
+  airfield: { ...BUILDING_BASE, tech: 'aviation', cost: 240, upkeep: 3, era: 5, airStrike: true },
+  researchInstitute: {
+    ...BUILDING_BASE, tech: 'electronics', cost: 270, upkeep: 3, era: 5,
+    yields: { science: 6 }, percent: { science: 25 },
+  },
 } as const satisfies Record<string, BuildingDef>;
 export type BuildingId = keyof typeof BUILDINGS;
 export const BUILDING_IDS = Object.keys(BUILDINGS) as BuildingId[];
@@ -188,8 +374,12 @@ export const COMBAT_CLASSES = ['infantry', 'ranged', 'cavalry', 'siege', 'naval'
 export interface UnitDef {
   readonly id: string;
   readonly unitClass: UnitClass;
-  /** First era (index into {@link ERAS}) in which it can be built. */
+  /** Its era (index into {@link ERAS}). The settler can be built once its owner has entered it. */
   readonly era: number;
+  /** The tech that unlocks it, or null for none. */
+  readonly tech: TechId | null;
+  /** Id (`MapResource.id`) of the strategic resource its owner needs a source of, or null. */
+  readonly resource: string | null;
   /** Strength in melee and whenever it defends. 0: cannot fight. */
   readonly strength: number;
   /** Strength of its ranged attack. 0: melee only. */
@@ -243,6 +433,55 @@ export const ROSTER: Readonly<Record<(typeof COMBAT_CLASSES)[number], readonly s
   naval: ['galley', 'warJunk', 'junk', 'shipOfTheLine', 'ironclad', 'destroyer'],
 };
 
+/** The tech that unlocks each unit of the roster. The warrior needs none. */
+export const UNIT_TECH: Readonly<Record<string, TechId>> = {
+  archer: 'archery',
+  chariot: 'husbandry',
+  batteringRam: 'fortification',
+  galley: 'boats',
+  swordsman: 'ironworking',
+  crossbowman: 'crossbow',
+  horseman: 'riding',
+  catapult: 'crossbow',
+  warJunk: 'shipbuilding',
+  heavyInfantry: 'steel',
+  rocketArcher: 'gunpowder',
+  heavyCavalry: 'stirrup',
+  trebuchet: 'machinery',
+  junk: 'compass',
+  musketeer: 'firearms',
+  fieldGun: 'gunCasting',
+  dragoon: 'firearms',
+  heavyCannon: 'gunCasting',
+  shipOfTheLine: 'oceanNavigation',
+  rifleman: 'rifling',
+  machineGun: 'steelmaking',
+  mountedRifleman: 'rifling',
+  howitzer: 'steelmaking',
+  ironclad: 'steelmaking',
+  mechInfantry: 'petrochemicals',
+  rocketArtillery: 'rocketry',
+  tank: 'combustion',
+  missileLauncher: 'electronics',
+  destroyer: 'petrochemicals',
+};
+
+/** The strategic resource a unit's owner needs a source of. */
+export const UNIT_RESOURCE: Readonly<Record<string, string>> = {
+  chariot: 'horses',
+  horseman: 'horses',
+  heavyCavalry: 'horses',
+  dragoon: 'horses',
+  mountedRifleman: 'horses',
+  swordsman: 'iron',
+  heavyInfantry: 'iron',
+  ironclad: 'coal',
+  tank: 'oil',
+  mechInfantry: 'oil',
+  destroyer: 'oil',
+  missileLauncher: 'rare-earths',
+};
+
 export const UNIT_UPKEEP = 1;
 /** Units a polity keeps without upkeep, per city. */
 export const FREE_UNITS_PER_CITY = 2;
@@ -262,6 +501,8 @@ function buildUnits(): Record<string, UnitDef> {
         id,
         unitClass,
         era,
+        tech: UNIT_TECH[id] ?? null,
+        resource: UNIT_RESOURCE[id] ?? null,
         strength: Math.round(strength * profile.strength),
         rangedStrength: Math.round(strength * profile.rangedStrength),
         range: profile.range,
@@ -278,6 +519,8 @@ function buildUnits(): Record<string, UnitDef> {
     id: SETTLER,
     unitClass: 'civilian',
     era: 1,
+    tech: null,
+    resource: null,
     strength: 0,
     rangedStrength: 0,
     range: 0,
@@ -292,6 +535,8 @@ function buildUnits(): Record<string, UnitDef> {
     id: TRIBE,
     unitClass: 'tribe',
     era: 0,
+    tech: null,
+    resource: null,
     strength: 24,
     rangedStrength: 0,
     range: 0,
@@ -315,7 +560,10 @@ export function unitDef(type: string): UnitDef {
   return def;
 }
 
-/** The unit a type upgrades to: the next era's unit of the same class, or null. */
+/**
+ * The next era's unit of the same class, or null. The upgrade a unit really
+ * gets is the nearest later unit its owner can build: see `upgradeTargetFor`.
+ */
 export function upgradeTarget(type: string): UnitDef | null {
   const def = unitDef(type);
   if (def.unitClass === 'civilian' || def.unitClass === 'tribe') return null;
@@ -354,6 +602,14 @@ export const COMBAT = {
   /** HP regained by a unit that neither moved nor attacked during the turn. */
   healNeutral: 10,
   healOwnTerritory: 20,
+} as const;
+
+/** The strike a city with an airfield makes once per turn. */
+export const AIR_STRIKE = {
+  /** Reach in hexes from the city. */
+  range: 6,
+  /** Its attack strength: that of a modern ranged unit. */
+  strength: 76,
 } as const;
 
 // ----------------------------------------------------------------- cities
@@ -436,6 +692,16 @@ export const DEFAULT_MAJOR_NAMES_ZH: readonly string[] = [
   '秦', '燕', '楚', '蜀', '吴', '岭南', '吐蕃', '漠北', '高丽', '大和', '暹罗', '阇婆',
 ];
 
+/** The endgame project of the Science victory: its stages are built in order in the capital. */
+export const PROJECT = {
+  id: 'tiangong',
+  stages: [
+    { tech: 'rocketry', cost: 470 },
+    { tech: 'electronics', cost: 470 },
+    { tech: 'informationNetworks', cost: 470 },
+  ],
+} as const satisfies { id: string; stages: readonly { tech: TechId; cost: number }[] };
+
 // ----------------------------------------------------------------- tribes
 
 /** One tribe per this many hexes of a wasteland zone, at least one per zone. */
@@ -443,7 +709,10 @@ export const HEXES_PER_TRIBE = 12;
 
 // --------------------------------------------------------------------- AI
 
-const AI_BUILDING_ORDER: readonly BuildingId[] = ['granary', 'walls', 'workshop', 'market', 'academy', 'temple', 'harbour'];
+const AI_BUILDING_ORDER: readonly BuildingId[] = [
+  'granary', 'walls', 'workshop', 'factory', 'academy', 'market', 'university', 'observatory', 'researchInstitute',
+  'bank', 'powerPlant', 'hospital', 'harbour', 'temple', 'printShop', 'airfield',
+];
 
 export const AI = {
   /** The order in which a city gets its buildings. */
@@ -483,4 +752,12 @@ export const AI = {
   productionFocusSurplus: 6,
   /** ...and back to balanced when the surplus falls below this. */
   balancedFocusSurplus: 2,
+  /**
+   * Research: how much it wants a tech of each kind, at peace and at war.
+   * A naval tech counts as an economy tech for a polity with a coastal city.
+   */
+  researchAtPeace: { science: 4, economy: 3, military: 2, naval: 1 },
+  researchAtWar: { military: 4, science: 3, economy: 2, naval: 1 },
+  /** Taken off a tech's score per era it lies beyond the oldest tech still open, so an era is finished first. */
+  researchEraStep: 10,
 } as const;

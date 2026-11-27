@@ -48,6 +48,8 @@ export interface Topology {
   readonly zoneNeighbors: readonly (readonly number[])[];
   /** Per zone: true if the site is next to coast or ocean. */
   readonly coastal: readonly boolean[];
+  /** Per resource (index into `map.resources`): the hexes that carry it, ascending. */
+  readonly resourceHexes: readonly (readonly number[])[];
 }
 
 const cache = new WeakMap<MapData, Topology>();
@@ -189,6 +191,11 @@ function buildTopology(map: MapData): Topology {
   }
   const zoneNeighbors = adjacent.map((set) => [...set].sort((a, b) => a - b));
 
+  const resourceHexes: number[][] = map.resources.map(() => []);
+  for (let h = 0; h < count; h++) {
+    if (map.owner[h] !== OWNER_OFF_MAP) resourceHexes[map.resource[h] as number]?.push(h);
+  }
+
   return {
     count,
     neighbors,
@@ -204,5 +211,6 @@ function buildTopology(map: MapData): Topology {
     workHexes,
     zoneNeighbors,
     coastal,
+    resourceHexes,
   };
 }
