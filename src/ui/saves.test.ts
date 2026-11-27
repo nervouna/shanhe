@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createGame, endTurn, hashState, saveGame } from '../core/game.ts';
 import type { GameState } from '../core/game.ts';
-import { apply, edit } from '../core/testUtil.ts';
+import { LAND, LAND2, labMap } from '../core/kitLab.ts';
+import { apply, edit, put } from '../core/testUtil.ts';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
 import { createSyntheticMap } from '../shared/syntheticMap.ts';
 import { MAX_SAVE_BYTES, exportSave, importSave } from './saves.ts';
@@ -294,5 +295,62 @@ describe('exportSave and importSave', () => {
     expect(Object.keys(result.state.units[0]!).sort()).toEqual(Object.keys(state.units[0]!).sort());
     expect(Object.keys(result.state.polities[0]!).sort()).toEqual(Object.keys(state.polities[0]!).sort());
     expect(hashState(result.state)).toBe(hashState(state));
+  });
+});
+
+describe('saves of games with nation kits', () => {
+  // Polity 0 is 燕: one policy slot more than its era gives, and a unique unit and improvement of its own.
+  const kitMap = labMap('yan');
+  const home = kitMap.polities[0]!.capitalZone;
+
+  function kitted(): GameState {
+    return edit(endTurn(createGame(kitMap, { seed: 9, player: 'yan' })).state, (draft) => {
+      put(draft, 'youzhouCavalry', 0, LAND);
+      draft.improvements[LAND2] = 'greatWallPass';
+      draft.cities[home]!.buildings.push('jixiaAcademy');
+      draft.polities[0]!.cityLostOn = 1;
+      draft.stats.seaInvasions = 2;
+      draft.stats.navalBattles = 5;
+    });
+  }
+
+  it('round-trips the extra slot, the unique unit, building and improvement, and the new counters', () => {
+    const state = kitted();
+    expect(state.polities[0]!.slots).toHaveLength(3);
+    expect(state.polities[1]!.slots).toHaveLength(2);
+    const result = importSave(exportSave(state), kitMap);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.state).toEqual(state);
+    expect(hashState(endTurn(result.state).state)).toBe(hashState(endTurn(state).state));
+  });
+
+  it('rejects a save whose new fields do not fit the rules', () => {
+    const state = kitted();
+    type Rows = Record<string, unknown>[];
+    const polity = (data: Record<string, unknown>, index: number): Record<string, unknown> => (data.polities as Rows)[index]!;
+    const stats = (data: Record<string, unknown>): Record<string, unknown> => data.stats as Record<string, unknown>;
+    const cases: Record<string, (data: Record<string, unknown>) => void> = {
+      'the turn a city was lost missing': (data) => delete polity(data, 0).cityLostOn,
+      'the turn a city was lost negative': (data) => (polity(data, 0).cityLostOn = -1),
+      'the turn a city was lost a fraction': (data) => (polity(data, 0).cityLostOn = 1.5),
+      'the turn a city was lost as text': (data) => (polity(data, 0).cityLostOn = '1'),
+      'sea invasions missing': (data) => delete stats(data).seaInvasions,
+      'sea invasions negative': (data) => (stats(data).seaInvasions = -1),
+      'naval battles missing': (data) => delete stats(data).navalBattles,
+      'naval battles a fraction': (data) => (stats(data).navalBattles = 0.5),
+      'a nation with the extra slot only its neighbour has': (data) => (polity(data, 1).slots as unknown[]).push(null),
+      'the nation of the extra slot without it': (data) => (polity(data, 0).slots as unknown[]).pop(),
+      'a unique unit that does not exist': (data) => ((data.units as Rows)[(data.units as Rows).length - 1]!.type = 'youzhouCavalry2'),
+      'a unique building that does not exist': (data) => ((data.cities as Rows)[home]!.buildings = ['jixiaAcademia']),
+      'a unique improvement that does not exist': (data) => (data.improvements = { [String(LAND2)]: 'greatWall' }),
+    };
+    for (const [name, change] of Object.entries(cases)) {
+      expect(importSave(tampered(state, change), kitMap), name).toEqual({ ok: false, error: 'corrupt' });
+    }
+  });
+
+  it('rejects a save of the format before the kits', () => {
+    const state = kitted();
+    expect(importSave(tampered(state, (data) => (data.version = 3)), kitMap)).toEqual({ ok: false, error: 'badVersion' });
   });
 });
