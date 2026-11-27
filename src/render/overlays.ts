@@ -1,10 +1,10 @@
 /**
  * Things drawn on top of the ground along hex edges and over whole hexes:
- * rivers, territory borders and hex highlights. All of them are thin meshes
+ * territory borders, hex highlights and the aids for ordering a piece. All of them are thin meshes
  * draped over the relief.
  */
 
-import { attribute, color, float, mix, positionLocal, positionWorld, sin, time, uniform, vec3 } from 'three/tsl';
+import { attribute, float, mix, positionLocal, positionWorld, sin, time, uniform, vec3 } from 'three/tsl';
 import {
   BufferAttribute,
   BufferGeometry,
@@ -13,7 +13,6 @@ import {
   Group,
   Mesh,
   MeshBasicNodeMaterial,
-  MeshStandardNodeMaterial,
 } from 'three/webgpu';
 import { hexCorners, hexNeighbor, hexToWorld, indexToOffset } from '../shared/hex.ts';
 import type { WorldPoint } from '../shared/hex.ts';
@@ -21,7 +20,6 @@ import { sampleHeight, surfaceHeightAt } from './heightField.ts';
 import type { Surface } from './heightField.ts';
 import type { MarkerLabel } from './labels.ts';
 import type { HexHighlight, SelectionAids } from './scene.ts';
-import { fbm } from './shaderLib.ts';
 import type { MapUniforms } from './shaderLib.ts';
 
 export interface Overlays {
@@ -48,7 +46,6 @@ export interface Overlays {
 /** Pieces an edge is cut into so that a ribbon follows the relief. */
 const EDGE_SEGMENTS = 4;
 /** Sizes as fractions of the hex size. */
-const RIVER_WIDTH = 0.17;
 const BORDER_WIDTH = 0.085;
 const BORDER_INSET = 0.035;
 const LIFT = 0.012;
@@ -95,50 +92,6 @@ class MeshBuilder {
     geometry.computeBoundingSphere();
     return geometry;
   }
-}
-
-function buildRivers(surface: Surface): BufferGeometry {
-  const { map, field } = surface;
-  const layout = map.projection.hexLayout;
-  const half = (RIVER_WIDTH * layout.size) / 2;
-  const lift = LIFT * layout.size;
-  const mesh = new MeshBuilder();
-  for (let i = 0; i < map.width * map.height; i++) {
-    const edges = map.riverEdges[i] as number;
-    if (edges === 0) continue;
-    const hex = indexToOffset(i, map.width);
-    const corners = hexCorners(hex, layout);
-    // every edge is stored on both of its hexes; draw it from one of them
-    for (let d = 0; d < 3; d++) {
-      if ((edges & (1 << d)) === 0) continue;
-      const from = corners[(d + 5) % 6] as WorldPoint;
-      const to = corners[d] as WorldPoint;
-      const length = Math.hypot(to.x - from.x, to.z - from.z);
-      const ax = (to.x - from.x) / length;
-      const az = (to.z - from.z) / length;
-      // a little longer than the edge, so that rivers join at the corners
-      const start = -half * 0.6;
-      const end = length + half * 0.6;
-      let previous: [number, number] | null = null;
-      for (let s = 0; s <= EDGE_SEGMENTS; s++) {
-        const along = start + ((end - start) * s) / EDGE_SEGMENTS;
-        const cx = from.x + ax * along;
-        const cz = from.z + az * along;
-        const pair: [number, number] = [0, 0];
-        for (const side of [0, 1] as const) {
-          const sign = side === 0 ? -1 : 1;
-          const x = cx - az * half * sign;
-          const z = cz + ax * half * sign;
-          pair[side] = mesh.vertex(x, sampleHeight(field, x, z) + lift, z, 1, 1, 1, 1, sign, along / layout.size);
-        }
-        if (previous !== null) {
-          mesh.indices.push(previous[0], previous[1], pair[0], pair[0], previous[1], pair[1]);
-        }
-        previous = pair;
-      }
-    }
-  }
-  return mesh.build();
 }
 
 function buildBorders(surface: Surface, owner: Int16Array, colors: readonly Color[]): BufferGeometry {
@@ -406,25 +359,7 @@ export function createOverlays(surface: Surface, uniforms: MapUniforms): Overlay
   const object = new Group();
   object.name = 'overlays';
 
-  // rivers: opaque flowing water
-  const riverMaterial = new MeshStandardNodeMaterial();
   const uv = attribute('uv', 'vec2');
-  const flow = fbm(vec3(uv.x.mul(1.5), uv.y.mul(5).sub(time.mul(0.8)), 0), 2).mul(0.5).add(0.5);
-  const bank = uv.x.abs();
-  riverMaterial.colorNode = mix(
-    mix(color(0x2f7fa6), color(0x7cc3dc), flow.mul(0.7)),
-    color(0x245f80),
-    bank.mul(bank).mul(0.6),
-  );
-  riverMaterial.roughness = 0.2;
-  riverMaterial.metalness = 0;
-  riverMaterial.polygonOffset = true;
-  riverMaterial.polygonOffsetFactor = -2;
-  riverMaterial.polygonOffsetUnits = -2;
-  const rivers = new Mesh(buildRivers(surface), riverMaterial);
-  rivers.receiveShadow = true;
-  rivers.name = 'rivers';
-  object.add(rivers);
 
   // borders: unlit lines in the polity colour, gently pulsing
   const tint = attribute('tint', 'vec4');
@@ -490,8 +425,7 @@ export function createOverlays(surface: Surface, uniforms: MapUniforms): Overlay
   let sweepCount = -1;
   let sweepColor = -1;
 
-  for (const material of [riverMaterial, borderMaterial, highlightMaterial]) material.side = DoubleSide;
-  rivers.visible = rivers.geometry.getAttribute('position').count > 0;
+  for (const material of [borderMaterial, highlightMaterial]) material.side = DoubleSide;
 
   const emptyGeometry = (): BufferGeometry => new MeshBuilder().build();
   const swapGeometry = (mesh: Mesh, geometry: BufferGeometry): void => {
@@ -527,9 +461,8 @@ export function createOverlays(surface: Surface, uniforms: MapUniforms): Overlay
       swapGeometry(sweepMesh, mesh.build());
     },
     dispose() {
-      for (const mesh of [rivers, borders, highlightMesh, aidMesh, sweepMesh]) mesh.geometry.dispose();
+      for (const mesh of [borders, highlightMesh, aidMesh, sweepMesh]) mesh.geometry.dispose();
       sweepMaterial.dispose();
-      riverMaterial.dispose();
       borderMaterial.dispose();
       highlightMaterial.dispose();
     },

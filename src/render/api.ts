@@ -39,6 +39,7 @@ import { latitudeTerms } from './climate.ts';
 import { createCameraController } from './controls.ts';
 import { createEffects } from './effects.ts';
 import { createSurface, mapWorldRect, surfaceHeightAt, unitsPerMetre } from './heightField.ts';
+import { createGroundLines } from './groundLines.ts';
 import { createHexRaster } from './hexRaster.ts';
 import { POLITICAL_NAMES_FROM, createLabels } from './labels.ts';
 import { createLighting } from './lighting.ts';
@@ -130,19 +131,20 @@ export async function createRenderer(
   // the table the map stands on, a little below its lowest point
   const tableY = surface.field.minY - 0.35 * layout.size;
   const terrain = createTerrain(surface.field, terrainMaterial, tableY);
-  const water = createWater(surface, uniforms);
+  const water = createWater(surface, uniforms, lighting.environment);
   const overlays = createOverlays(surface, uniforms);
   const tableGeometry = new PlaneGeometry(span * 40, span * 40).rotateX(-Math.PI / 2);
   const tableMaterial = new MeshStandardNodeMaterial({ color: TABLE_COLOR, roughness: 0.9 });
   const table = new Mesh(tableGeometry, tableMaterial);
   table.position.set((rect.minX + rect.maxX) / 2, tableY, (rect.minZ + rect.maxZ) / 2);
   table.receiveShadow = true;
+  const groundLines = createGroundLines(surface, uniforms);
   const vegetation = createVegetation(surface, uniforms);
   const pieces = createPieces(surface);
   const cities = createCities(surface);
   const labels = createLabels();
   const effects = createEffects();
-  scene.add(terrain.object, water.object, overlays.object, table, vegetation.object, pieces.object, cities.object, effects.object);
+  scene.add(terrain.object, water.object, groundLines.object, overlays.object, table, vegetation.object, pieces.object, cities.object, effects.object);
   // with the finish, labels are drawn on their own and laid over the picture
   const labelScene = new Scene();
   renderer.setClearColor(0x000000, 0);
@@ -342,6 +344,8 @@ export async function createRenderer(
   let ownersKey = '';
   let fogged = false;
   let improvementsKey = '';
+  let roadsKey = '';
+  let routesKey = '';
 
   const frame = (): void => {
     if (disposed) return;
@@ -447,6 +451,18 @@ export async function createRenderer(
       if (improvementKey !== improvementsKey) {
         improvementsKey = improvementKey;
         textures.setImprovements(improvements);
+      }
+      const roads = next.roads ?? NO_IMPROVEMENTS;
+      const roadKey = keyOfMap(roads);
+      if (roadKey !== roadsKey) {
+        roadsKey = roadKey;
+        groundLines.setRoads(roads);
+      }
+      const routes = next.routes ?? [];
+      const routeKey = routes.length === 0 ? '' : JSON.stringify(routes.map((r) => [r.polity, r.sea, r.path]));
+      if (routeKey !== routesKey) {
+        routesKey = routeKey;
+        groundLines.setRoutes(routes);
       }
     },
     pickHex(clientX, clientY) {
@@ -565,6 +581,7 @@ export async function createRenderer(
       controller.dispose();
       terrain.dispose();
       vegetation.dispose();
+      groundLines.dispose();
       water.dispose();
       pieces.dispose();
       cities.dispose();
