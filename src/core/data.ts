@@ -63,11 +63,11 @@ export interface TechDef {
   readonly reveals?: string;
   /** `coast`: land units embark on coast and lake. `ocean`: ships and embarked units enter ocean. */
   readonly sea?: 'coast' | 'ocean';
-  /** Trade route slots it adds. Recorded per polity; trade itself comes later. */
+  /** Trade route slots it adds. */
   readonly tradeRoutes?: number;
-  /** Off-map ports it opens. Recorded per polity; trade itself comes later. */
+  /** Off-map ports it opens to the polity's trade routes. */
   readonly ports?: 'land' | 'sea';
-  /** Roads upgrade to railways. Only the flag: roads come later. */
+  /** Roads on the polity's land become railways. */
   readonly railways?: boolean;
   /** Lets the improvements that name it in `hillsTech` stand on hills. */
   readonly hillFarms?: boolean;
@@ -311,6 +311,8 @@ export interface BuildingDef {
   readonly waterYields: Partial<Yields>;
   /** Gives the city one air strike per turn. */
   readonly airStrike: boolean;
+  /** Trade route slots the polity's first building of this kind adds. */
+  readonly tradeRoutes: number;
 }
 
 const BUILDING_BASE = {
@@ -322,6 +324,7 @@ const BUILDING_BASE = {
   counterStrike: false,
   waterYields: {},
   airStrike: false,
+  tradeRoutes: 0,
 } as const;
 
 export const BUILDINGS = {
@@ -335,7 +338,7 @@ export const BUILDINGS = {
   market: { ...BUILDING_BASE, tech: 'currency', cost: 60, upkeep: 0, era: 1, yields: { gold: 2 }, percent: { gold: 25 } },
   harbour: {
     ...BUILDING_BASE, tech: 'shipbuilding', cost: 60, upkeep: 1, era: 1,
-    coastal: true, yields: { gold: 2 }, waterYields: { food: 1 },
+    coastal: true, yields: { gold: 2 }, waterYields: { food: 1 }, tradeRoutes: 1,
   },
   printShop: { ...BUILDING_BASE, tech: 'paper', cost: 80, upkeep: 1, era: 2, yields: { culture: 3, science: 1 } },
   workshop: {
@@ -702,6 +705,288 @@ export const PROJECT = {
   ],
 } as const satisfies { id: string; stages: readonly { tech: TechId; cost: number }[] };
 
+// --------------------------------------------------------------- policies
+
+export type PolicyKind = 'economy' | 'military' | 'civil' | 'diplomacy';
+
+/** A policy card. Every effect field is read by the rule it belongs to; a card sets only the ones it has. */
+export interface PolicyDef {
+  /** Index into {@link ERAS}: the card can be unlocked once the polity has entered this era. */
+  readonly era: number;
+  readonly kind: PolicyKind;
+  /** Added to the yields of each improvement of the kind. */
+  readonly improvementYields?: Readonly<Partial<Record<ImprovementId, Partial<Yields>>>>;
+  /** Flat yields a city gets for each of these buildings it has. */
+  readonly buildingYields?: Readonly<Partial<Record<BuildingId, Partial<Yields>>>>;
+  /** Percentage a city with the building adds to a yield. */
+  readonly buildingPercent?: Readonly<Partial<Record<BuildingId, Partial<Yields>>>>;
+  /** Flat yields of the capital. */
+  readonly capitalYields?: Partial<Yields>;
+  /** Percentage added to a yield of every city. */
+  readonly cityPercent?: Partial<Yields>;
+  /** Percentage added to a yield of every city but the capital. */
+  readonly nonCapitalPercent?: Partial<Yields>;
+  /** One extra science per this many citizens in each city. */
+  readonly popPerScience?: number;
+  /** Percentage added to a city's production while it builds a unit. */
+  readonly unitProductionPercent?: number;
+  /** The same, for land units from the era {@link MODERN_LAND_ERA} on. */
+  readonly modernLandUnitProductionPercent?: number;
+  /** Percentage added to a city's production while it builds a building. */
+  readonly buildingProductionPercent?: number;
+  /** Percentage added to unit upkeep (negative: cheaper). */
+  readonly unitUpkeepPercent?: number;
+  /** Culture for each enemy unit its units destroy. */
+  readonly cultureOnKill?: number;
+  /** Percentage of strength against an enemy that one of its allies is also at war with. */
+  readonly allyStrengthPercent?: number;
+  /** Percentage of strength for the units of {@link FIREARM_UNITS}. */
+  readonly firearmStrengthPercent?: number;
+  /** Percentage of strength for a unit on its owner's land. */
+  readonly homeStrengthPercent?: number;
+  /** Percentage added to the influence it gains with city-states. */
+  readonly influencePercent?: number;
+  /** Percentage added to the tribute its vassals and the city-states it is suzerain of pay. */
+  readonly tributePercent?: number;
+  /** Gold added to each of its sea trade routes. */
+  readonly seaRouteGold?: number;
+  /** Percentage of city gold for both sides of a trade pact it has. */
+  readonly tradePactGoldPercent?: number;
+  /** Multiplier of the income of its trade routes to an ally's city. */
+  readonly allyRouteMultiplier?: number;
+}
+
+const POLICY_TABLE = {
+  // Ancient
+  wellField: { era: 0, kind: 'economy', improvementYields: { farm: { food: 1 } } },
+  citizenLevy: { era: 0, kind: 'military', unitProductionPercent: 15 },
+  clanLaw: { era: 0, kind: 'civil', capitalYields: { culture: 2 } },
+  covenant: { era: 0, kind: 'diplomacy', influencePercent: 25 },
+  // Classical
+  commanderies: { era: 1, kind: 'economy', nonCapitalPercent: { production: 10 } },
+  meritRanks: { era: 1, kind: 'military', cultureOnKill: 5 },
+  hundredSchools: { era: 1, kind: 'civil', buildingYields: { academy: { science: 2 } } },
+  alliances: { era: 1, kind: 'diplomacy', allyStrengthPercent: 5 },
+  // Medieval
+  twoTax: { era: 2, kind: 'economy', cityPercent: { gold: 10 } },
+  paidArmy: { era: 2, kind: 'military', unitUpkeepPercent: -20 },
+  imperialExam: { era: 2, kind: 'civil', buildingYields: { academy: { culture: 1 }, printShop: { culture: 1 } } },
+  tribute: { era: 2, kind: 'diplomacy', tributePercent: 50 },
+  // Early Modern
+  singleWhip: { era: 3, kind: 'economy', buildingYields: { market: { gold: 2 }, bank: { gold: 2 } } },
+  firearmsCorps: { era: 3, kind: 'military', firearmStrengthPercent: 5 },
+  academyLectures: { era: 3, kind: 'civil', buildingYields: { university: { science: 3 } } },
+  openSeas: { era: 3, kind: 'diplomacy', seaRouteGold: 2 },
+  // Industrial
+  industryFirst: { era: 4, kind: 'economy', buildingPercent: { factory: { production: 15 } } },
+  newArmy: { era: 4, kind: 'military', modernLandUnitProductionPercent: 20 },
+  newSchools: { era: 4, kind: 'civil', popPerScience: 5 },
+  treatyPorts: { era: 4, kind: 'diplomacy', tradePactGoldPercent: 10 },
+  // Modern
+  industrialPlanning: { era: 5, kind: 'economy', buildingProductionPercent: 15 },
+  totalDefence: { era: 5, kind: 'military', homeStrengthPercent: 10 },
+  compulsoryEducation: { era: 5, kind: 'civil', cityPercent: { science: 10 } },
+  regionalCooperation: { era: 5, kind: 'diplomacy', allyRouteMultiplier: 2 },
+} as const satisfies Record<string, PolicyDef>;
+
+export type PolicyId = keyof typeof POLICY_TABLE;
+/** The 24 cards of doc 04, in the order of its table. */
+export const POLICY_IDS = Object.keys(POLICY_TABLE) as PolicyId[];
+export const POLICIES: Readonly<Record<PolicyId, PolicyDef>> = POLICY_TABLE;
+
+export function isPolicyId(value: unknown): value is PolicyId {
+  return typeof value === 'string' && Object.hasOwn(POLICY_TABLE, value);
+}
+
+export const POLICY = {
+  /** Slots by era. */
+  slotsByEra: [2, 3, 4, 5, 6, 6],
+  /** Culture the card after `n` unlocked ones costs: `costBase + costStep * n + costCurve * n * n`, rounded. */
+  costBase: 6,
+  costStep: 4,
+  costCurve: 1.5,
+  /** Turns before another paid swap after one. */
+  swapCooldown: 5,
+} as const;
+
+/** Culture needed for the next card of a polity that has unlocked `unlocked` cards. */
+export function policyCost(unlocked: number): number {
+  return Math.round(POLICY.costBase + POLICY.costStep * unlocked + POLICY.costCurve * unlocked * unlocked);
+}
+
+/** The units the Firearms corps card strengthens: the gunpowder land units of the Early Modern and Industrial eras. */
+export const FIREARM_UNITS: readonly string[] = [
+  'musketeer', 'fieldGun', 'dragoon', 'heavyCannon', 'rifleman', 'machineGun', 'mountedRifleman', 'howitzer',
+];
+/** The New Army card speeds up land units from this era (Industrial) on. */
+export const MODERN_LAND_ERA = 4;
+
+// -------------------------------------------------------------- diplomacy
+
+export const AGREEMENT_KINDS = ['tradePact', 'openBorders', 'alliance', 'vassalage', 'truce'] as const;
+export type AgreementKind = (typeof AGREEMENT_KINDS)[number];
+
+export const DIPLOMACY = {
+  /** Turns a trade pact or an open-borders agreement lasts. */
+  termTurns: 30,
+  /** Turns before a trade pact, open borders or an alliance can be cancelled. */
+  minTurns: 10,
+  /** Alliances a polity can have at once. */
+  maxAlliances: 2,
+  /** Turns a pending offer to the player stays open. */
+  offerTurns: 10,
+  /** Share of its income (city gold and trade routes) a vassal pays its overlord, in percent. */
+  vassalTributePercent: 20,
+} as const;
+
+/** Favour between two nations runs from `-max` to `max` and starts at 0. */
+export const FAVOUR = {
+  max: 100,
+  /** Points per turn it moves towards the sum of the standing terms below that apply. */
+  drift: 1,
+  // Standing terms.
+  border: -5,
+  war: -60,
+  tradePact: 15,
+  openBorders: 10,
+  alliance: 30,
+  vassalage: 15,
+  /** Per resource deal between the two, at most twice. */
+  deal: 5,
+  /** Per trade route between the two, at most twice. */
+  route: 5,
+  /** Per third polity both are at war with, at most twice. */
+  sharedEnemy: 10,
+  // One-off changes.
+  warDeclared: -30,
+  /** Towards a polity whose ally it attacked. */
+  allyAttacked: -15,
+  peaceMade: 10,
+  /** An agreement or deal that ran its full term. */
+  dealKept: 5,
+  /** An agreement or deal cancelled, unpaid or ended by war. */
+  dealBroken: -15,
+  /** Gold of a gift per point of favour. */
+  goldPerPoint: 10,
+} as const;
+
+export const DEAL = {
+  /** Turns a resource deal lasts. */
+  turns: 20,
+  maxGoldPerTurn: 50,
+  /** What the AI asks and pays per turn. */
+  strategicPrice: 4,
+  specialtyPrice: 2,
+  /** The AI sells only at this favour or more. */
+  minFavour: -20,
+} as const;
+
+/** What a specialty is good for: gold in every city for each different specialty the polity has, own or bought. */
+export const SPECIALTY = {
+  goldPerCity: 1,
+  /** Specialties beyond this many add nothing. */
+  max: 5,
+} as const;
+
+// ------------------------------------------------------------------ trade
+
+export const TRADE = {
+  /** Route slots every nation and city-state has from the start. */
+  baseRoutes: 1,
+  /** Longest land path, in hexes. */
+  landRange: 24,
+  /** Longest sea path, in hexes. */
+  seaRange: 40,
+  /** A land path counts a hex without a road as this many hexes with one, so it follows the roads. */
+  offRoadFactor: 2,
+  /** Income: `baseGold + path length / hexesPerGold + (both populations) / popPerGold + specialties`. */
+  baseGold: 2,
+  hexesPerGold: 5,
+  popPerGold: 5,
+  /** Per specialty found in the zone of one of the two cities and not the other. */
+  specialtyGold: 2,
+  /** What an off-map port adds in place of a second city. */
+  portGold: 4,
+  /** A route between two cities of the same polity earns this share. */
+  domesticPercent: 50,
+  /** Added to a route to a city of a trade-pact partner. */
+  pactPercent: 50,
+  /** Turns a pillaged route earns nothing. */
+  pillageTurns: 5,
+  /** The pillager gets this many turns of the route's income. */
+  pillageIncomeTurns: 3,
+} as const;
+
+/** Off-map ports (by `MapOffMapPort.nameEn`) that only one polity (by id) may use. */
+export const EXCLUSIVE_PORTS: Readonly<Record<string, string>> = {
+  'Great Eastern Ocean': 'luzon',
+};
+
+export const ROADS = {
+  /** A city is linked to its nearest own cities within this many hexes... */
+  range: 10,
+  /** ...at most this many of them... */
+  links: 2,
+  /** ...when a land path of at most this many hexes joins them. */
+  maxPath: 16,
+  /** Movement points to step from a road hex onto a road hex, rivers and terrain notwithstanding. */
+  roadCost: 0.5,
+  /** The same between two railway hexes. */
+  railCost: 0.25,
+} as const;
+
+export const PILLAGE = {
+  /** Turns a pillaged improvement yields nothing. */
+  turns: 10,
+  /** The pillager gets this share of the improvement's production cost in gold. */
+  goldPercentOfCost: 50,
+} as const;
+
+export const BUY = {
+  /** Gold per point of production cost when a city buys a unit or a building. */
+  goldPerProduction: 3,
+} as const;
+
+// ------------------------------------------------------------ city-states
+
+export const CITY_STATE_TYPES = ['finance', 'culture', 'industry', 'commerce', 'naval'] as const;
+export type CityStateType = (typeof CITY_STATE_TYPES)[number];
+
+/** Type of each city-state of doc 01, by polity id. Any other city-state gets a type by its position. */
+export const CITY_STATE_TYPE_BY_ID: Readonly<Record<string, CityStateType>> = {
+  xiangjiang: 'finance',
+  haojing: 'culture',
+  shen: 'finance',
+  jinmen: 'industry',
+  temasek: 'commerce',
+  wenlai: 'commerce',
+  dimen: 'commerce',
+  tamna: 'naval',
+  tsushima: 'naval',
+  shazhou: 'culture',
+};
+
+export const CITY_STATE = {
+  /** Influence needed to be suzerain. */
+  suzerainInfluence: 60,
+  maxInfluence: 200,
+  /** Influence per turn for each trade route to the city-state. */
+  influencePerRoute: 4,
+  /** Gold of a gift per point of influence. */
+  goldPerInfluence: 2,
+  /** Influence every polity loses per turn. */
+  decay: 1,
+  /** Share of its gold income a city-state pays its suzerain, in percent. */
+  tributePercent: 10,
+  // Suzerain bonuses, per city-state of the type.
+  financeGoldPercent: 10,
+  cultureInCapital: 3,
+  industryCapitalProductionPercent: 15,
+  commerceRoutes: 1,
+  /** Experience of a newly built ship. */
+  navalXp: 8,
+} as const;
+
 // ----------------------------------------------------------------- tribes
 
 /** One tribe per this many hexes of a wasteland zone, at least one per zone. */
@@ -760,4 +1045,38 @@ export const AI = {
   researchAtWar: { military: 4, science: 3, economy: 2, naval: 1 },
   /** Taken off a tech's score per era it lies beyond the oldest tech still open, so an era is finished first. */
   researchEraStep: 10,
+  /**
+   * Policies: how much it wants a card of each kind, at peace and at war. A
+   * diplomacy card counts only for a polity that has what the card works on.
+   */
+  policyAtPeace: { economy: 4, civil: 3, diplomacy: 2, military: 1 },
+  policyAtWar: { military: 4, economy: 3, civil: 2, diplomacy: 1 },
+  /** A card's era adds this much per era to its score: newer cards are stronger. */
+  policyEraWeight: 0.5,
+  /** A polity looks at its agreements, deals and gifts every this many turns (staggered by its index). */
+  diplomacyInterval: 4,
+  /** Favour at which a major accepts a trade pact, open borders and an alliance. */
+  tradePactFavour: -10,
+  openBordersFavour: 5,
+  allianceFavour: 20,
+  /** A nation on the simplified AI accepts an alliance at this favour. */
+  simpleAllianceFavour: 0,
+  /** A nation on the simplified AI becomes a vassal peacefully when the other is this many times stronger... */
+  vassalStrengthRatio: 4,
+  /** ...and favour is at least this. */
+  vassalFavour: 20,
+  /** A major takes a capital's owner as a vassal instead of the city when it is this many times stronger. */
+  demandVassalRatio: 2,
+  /** Vassals a major wants at most. */
+  maxVassals: 4,
+  /** Gold kept back before gifts, and before buying when nothing threatens. */
+  goldReserve: 80,
+  /** Gold of one gift to a city-state. */
+  giftGold: 30,
+  /** A city-state this close (hexes between capitals) is worth courting. */
+  courtRange: 14,
+  /** An enemy unit this close to a city is a threat. */
+  threatRange: 3,
+  /** Candidate destinations it tries per free route slot. */
+  routeTries: 3,
 } as const;

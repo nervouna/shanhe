@@ -2,9 +2,10 @@
 
 import { hexNeighbors, indexToOffset } from '../shared/hex.ts';
 import type { MapData } from '../shared/mapData.ts';
+import { assignCitizens, foundCity } from './cities.ts';
 import { cloneState, createCtx } from './context.ts';
 import { TECH_IDS, unitDef } from './data.ts';
-import type { TechId } from './data.ts';
+import type { AgreementKind, PolicyId, TechId, Yields } from './data.ts';
 import { applyAction } from './game.ts';
 import { learnTech } from './tech.ts';
 import { topologyOf } from './topology.ts';
@@ -99,4 +100,41 @@ export function withResource(map: MapData, id: string, hexes: readonly number[])
 /** True if no two units share a hex. */
 export function oneUnitPerHex(state: GameState): boolean {
   return new Set(state.units.map((unit) => unit.hex)).size === state.units.length;
+}
+
+/** The yields of the city in `zone`, worked out afresh from the state as it is. */
+export function yieldsOf(state: GameState, zone: number): Yields {
+  const ctx = createCtx(cloneState(state));
+  const city = ctx.state.cities[zone];
+  if (city === undefined || city === null) throw new Error(`no city in zone ${zone}`);
+  assignCitizens(ctx, city);
+  return city.yields;
+}
+
+/** A copy of `state` with a city founded on the site of `zone` for `owner`. */
+export function withCity(state: GameState, zone: number, owner: number): GameState {
+  const ctx = createCtx(cloneState(state));
+  foundCity(ctx, zone, owner);
+  return ctx.state;
+}
+
+/** A copy of `state` in which `polity` has unlocked the card and holds it in its first free slot (or slot 0). */
+export function withPolicy(state: GameState, polity: number, policy: PolicyId): GameState {
+  return edit(state, (draft) => {
+    const self = draft.polities[polity];
+    if (self === undefined) throw new Error(`no polity ${polity}`);
+    if (!self.policies.includes(policy)) self.policies.push(policy);
+    if (self.slots.includes(policy)) return;
+    const free = self.slots.indexOf(null);
+    self.slots[free < 0 ? 0 : free] = policy;
+  });
+}
+
+/** A copy of `state` with an agreement in force between the two; for a vassalage `a` is the overlord. */
+export function withAgreement(state: GameState, kind: AgreementKind, a: number, b: number): GameState {
+  return edit(state, (draft) => {
+    draft.agreements.push({ kind, a, b, since: draft.turn, until: 0 });
+    const vassal = draft.polities[b];
+    if (kind === 'vassalage' && vassal !== undefined) vassal.overlord = a;
+  });
 }

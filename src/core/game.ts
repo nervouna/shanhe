@@ -15,8 +15,11 @@ import { addUnit, at, cloneState, createCtx, random } from './context.ts';
 import type { Ctx } from './context.ts';
 import type { TechId } from './data.ts';
 import {
+  CITY_STATE_TYPES,
+  CITY_STATE_TYPE_BY_ID,
   DEFAULT_MAJOR_NAMES_ZH,
   GAME_TURNS,
+  POLICY,
   HEXES_PER_TRIBE,
   MAJOR_COUNT,
   ROSTER,
@@ -42,7 +45,7 @@ export type * from './types.ts';
 export { NO_POLITY } from './types.ts';
 
 /** Version of the state format. `loadGame` rejects any other. */
-export const STATE_VERSION = 2;
+export const STATE_VERSION = 3;
 
 function polityIndex(map: MapData, id: string): number {
   const index = map.polities.findIndex((polity) => polity.id === id);
@@ -74,12 +77,29 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
   const majors =
     setup.majors === undefined ? defaultMajors(map) : [...new Set(setup.majors.map(nation))].sort((a, b) => a - b);
 
+  let cityStates = 0;
   const polities: PolityState[] = map.polities.map((polity) => ({
     alive: polity.kind !== 'wastelandRegion',
     gold: 0,
     grossIncome: 0,
     science: 0,
     culture: 0,
+    cultureProgress: 0,
+    policies: [],
+    slots: polity.kind === 'nation' ? Array.from({ length: at(POLICY.slotsByEra, 0) }, () => null) : [],
+    freeSwaps: 0,
+    swapReadyOn: 0,
+    overlord: NO_POLITY,
+    cityStateType:
+      polity.kind === 'cityState'
+        ? (CITY_STATE_TYPE_BY_ID[polity.id] ?? at(CITY_STATE_TYPES, cityStates++ % CITY_STATE_TYPES.length))
+        : null,
+    influence: {},
+    suzerain: NO_POLITY,
+    routeIncome: 0,
+    tributeReceived: 0,
+    tributePaid: 0,
+    dealIncome: 0,
     techs: [],
     research: null,
     researchProgress: 0,
@@ -113,7 +133,24 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
     nextUnitId: 1,
     improvements: {},
     relations: {},
-    stats: { citiesCaptured: 0, citiesFounded: 0, warsDeclared: 0, politiesAnnexed: 0 },
+    favour: {},
+    agreements: [],
+    deals: [],
+    offers: [],
+    routes: [],
+    nextId: 1,
+    roads: {},
+    roadLinks: {},
+    pillaged: {},
+    stats: {
+      citiesCaptured: 0,
+      citiesFounded: 0,
+      warsDeclared: 0,
+      politiesAnnexed: 0,
+      alliancesFormed: 0,
+      vassalsMade: 0,
+      routesEstablished: 0,
+    },
     result: null,
   };
   const ctx = createCtx(state);

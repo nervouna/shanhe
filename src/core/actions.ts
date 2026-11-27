@@ -2,13 +2,19 @@
 
 import { hexRange, indexToOffset } from '../shared/hex.ts';
 import {
+  AGREEMENT_KINDS,
   AI,
   AIR_STRIKE,
   BUILDING_IDS,
+  BUY,
+  CITY_STATE,
+  DIPLOMACY,
+  FAVOUR,
   FOCUSES,
   IMPROVEMENT_IDS,
   PROJECT,
   SETTLER,
+  TRADE,
   UNIT_IDS,
   UPGRADE_GOLD_PER_COST,
   WAR,
@@ -18,31 +24,69 @@ import type { UnitDef } from './data.ts';
 import {
   assignCitizens,
   checkItem,
+  deliverItem,
   foundCity,
   hasBuilding,
   improvementFits,
   improvementDef,
   improvesHills,
+  itemCost,
+  spawnHex,
 } from './cities.ts';
-import { hexesApart, resolveAirStrike, resolveAttack, unitPower } from './combat.ts';
+import { addInfluence } from './cityStates.ts';
+import {
+  checkDemandVassalage,
+  demandVassalage,
+  hexesApart,
+  militaryStrength,
+  resolveAirStrike,
+  resolveAttack,
+} from './combat.ts';
 import {
   at,
   atWar,
   bordersOpen,
   cityAtHex,
-  enforceBorders,
   isEmbarked,
   ownerOf,
   placeUnit,
   polityOf,
-  relationKey,
   relationOf,
   removeUnit,
-  setWarFlag,
   terrainAllows,
 } from './context.ts';
 import type { Ctx } from './context.ts';
-import { checkResearch, openTechs, upgradeTargetFor } from './tech.ts';
+import {
+  acceptsAgreement,
+  acceptsDeal,
+  answerOffer,
+  beginWar,
+  checkAgreement,
+  checkDeal,
+  dealPrice,
+  endAgreement,
+  endDeal,
+  endWar,
+  isAgreementKind,
+  makeOffer,
+  makeVassal,
+  offerPending,
+  signAgreement,
+  signDeal,
+} from './diplomacy.ts';
+import { checkSlot, checkUnlock, openPolicies, slotPolicy, unlockPolicy } from './policies.ts';
+import { addFavour, findAgreement, hasAgreement, isCityState } from './relations.ts';
+import { checkResearch, openTechs, ownsResource, upgradeTargetFor } from './tech.ts';
+import {
+  checkPillage,
+  checkRoute,
+  endRoute,
+  establishRoute,
+  pillage,
+  roadStepCost,
+  routeSlots,
+  routesOf,
+} from './trade.ts';
 import { NO_POLITY } from './types.ts';
 import type { Action, BuildItem, City, RejectReason, Unit } from './types.ts';
 
@@ -88,6 +132,9 @@ export function stepCost(ctx: Ctx, unit: Unit, to: number): number {
   if (fromWater && toWater) return 1;
   // Embarking, landing and fording a river take the rest of the turn.
   if (fromWater !== toWater) return unit.moves;
+  // A road carries a unit over rivers and rough ground alike.
+  const road = roadStepCost(ctx, unit.hex, to);
+  if (road !== null) return road;
   for (let d = 0; d < 6; d++) {
     if (topo.neighbors[unit.hex * 6 + d] === to && ((map.riverEdges[unit.hex] as number) & (1 << d)) !== 0) {
       return unit.moves;
@@ -141,11 +188,21 @@ function checkAirStrike(ctx: Ctx, city: City, target: unknown): RejectReason | n
   return atWar(ctx, city.owner, victim) ? null : 'atPeace';
 }
 
-/** Military strength of a polity: the sum of its units' power. */
-export function militaryStrength(ctx: Ctx, polity: number): number {
-  let total = 0;
-  for (const unit of ctx.state.units) if (unit.owner === polity) total += unitPower(unit);
-  return total;
+export { militaryStrength } from './combat.ts';
+
+/** Gold it costs a city to buy the item outright. */
+export function buyCost(ctx: Ctx, city: City, item: BuildItem): number {
+  return itemCost(ctx, city, item) * BUY.goldPerProduction;
+}
+
+/** Why the city cannot buy the item, or null. */
+function checkBuy(ctx: Ctx, city: City, item: BuildItem): RejectReason | null {
+  if (item.kind !== 'unit' && item.kind !== 'building') return 'cannotBuy';
+  if (city.unrest > 0) return 'inUnrest';
+  const reason = checkItem(ctx, city, item, true);
+  if (reason !== null) return reason;
+  if (item.kind === 'unit' && spawnHex(ctx, city, unitDef(item.unit)) < 0) return 'noRoom';
+  return polityOf(ctx, city.owner).gold >= buyCost(ctx, city, item) ? null : 'notEnoughGold';
 }
 
 /** True if an AI-run `polity` agrees to end its war with `proposer`. */
@@ -255,6 +312,11 @@ export function validate(ctx: Ctx, action: Action): RejectReason | null {
     case 'declareWar': {
       if (!isPolity(ctx, action.target) || action.target === polity) return 'badTarget';
       if (atWar(ctx, polity, action.target)) return 'alreadyAtWar';
+      // A vassal's wars are its overlord's, and war on a vassal is declared on its overlord.
+      if (polityOf(ctx, polity).overlord !== NO_POLITY || polityOf(ctx, action.target).overlord !== NO_POLITY) {
+        return 'vassal';
+      }
+      if (hasAgreement(ctx, 'alliance', polity, action.target)) return 'allied';
       const relation = relationOf(ctx, polity, action.target);
       if (relation !== undefined && state.turn - relation.since < WAR.truceTurns) return 'truce';
       return null;
@@ -263,9 +325,85 @@ export function validate(ctx: Ctx, action: Action): RejectReason | null {
       if (!isPolity(ctx, action.target) || action.target === polity) return 'badTarget';
       const relation = relationOf(ctx, polity, action.target);
       if (relation === undefined || !relation.atWar) return 'notAtWar';
+      if (polityOf(ctx, polity).overlord !== NO_POLITY || polityOf(ctx, action.target).overlord !== NO_POLITY) {
+        return 'vassal';
+      }
       if (state.turn - relation.since < WAR.minTurns) return 'warTooYoung';
       if (action.target === state.player) return null;
       return acceptsPeace(ctx, action.target, polity) ? null : 'refused';
+    }
+    case 'unlockPolicy':
+      return checkUnlock(ctx, polity, action.policy);
+    case 'slotPolicy':
+      return checkSlot(ctx, polity, action.policy, action.slot);
+    case 'propose': {
+      if (!isAgreementKind(action.agreement)) return 'badItem';
+      if (!isPolity(ctx, action.target) || action.target === polity) return 'badTarget';
+      if (action.agreement === 'truce') return validate(ctx, { type: 'makePeace', polity, target: action.target });
+      const reason = checkAgreement(ctx, polity, action.target, action.agreement);
+      if (reason !== null) return reason;
+      if (action.target === state.player) {
+        return offerPending(ctx, polity, action.target, action.agreement) ? 'alreadyOffered' : null;
+      }
+      return acceptsAgreement(ctx, action.target, polity, action.agreement) ? null : 'refused';
+    }
+    case 'respond': {
+      if (typeof action.accept !== 'boolean') return 'badAction';
+      return state.offers.some((offer) => offer.id === action.offer && offer.to === polity) ? null : 'noSuchOffer';
+    }
+    case 'cancelAgreement': {
+      if (!isAgreementKind(action.agreement) || action.agreement === 'truce') return 'badItem';
+      if (!isPolity(ctx, action.target) || action.target === polity) return 'badTarget';
+      const agreement = findAgreement(ctx, action.agreement, polity, action.target);
+      if (agreement === undefined) return 'noSuchAgreement';
+      // Only the overlord ends a vassalage: it lets its vassal go.
+      if (agreement.kind === 'vassalage') return agreement.a === polity ? null : 'vassal';
+      return state.turn - agreement.since < DIPLOMACY.minTurns ? 'agreementTooYoung' : null;
+    }
+    case 'demandVassalage': {
+      const unit = ownUnit(ctx, polity, action.unit);
+      if (typeof unit === 'string') return unit;
+      if (!isHex(ctx, action.target)) return 'badHex';
+      return checkDemandVassalage(ctx, unit, action.target);
+    }
+    case 'proposeDeal': {
+      if (!isPolity(ctx, action.target) || action.target === polity) return 'badTarget';
+      const reason = checkDeal(ctx, polity, action.target, action.seller, action.resource, action.goldPerTurn);
+      if (reason !== null) return reason;
+      if (action.target === state.player) {
+        return offerPending(ctx, polity, action.target, action.resource) ? 'alreadyOffered' : null;
+      }
+      return acceptsDeal(ctx, action.target, polity, action.seller, action.resource, action.goldPerTurn)
+        ? null
+        : 'refused';
+    }
+    case 'cancelDeal':
+      return state.deals.some((deal) => deal.id === action.deal && (deal.seller === polity || deal.buyer === polity))
+        ? null
+        : 'noSuchDeal';
+    case 'establishRoute': {
+      const city = ownCity(ctx, polity, action.city);
+      if (typeof city === 'string') return city;
+      return checkRoute(ctx, polity, city.zone, action.to);
+    }
+    case 'cancelRoute':
+      return state.routes.some((route) => route.id === action.route && route.owner === polity) ? null : 'noSuchRoute';
+    case 'pillage': {
+      const unit = ownUnit(ctx, polity, action.unit);
+      if (typeof unit === 'string') return unit;
+      return checkPillage(ctx, unit);
+    }
+    case 'buy': {
+      const city = ownCity(ctx, polity, action.city);
+      if (typeof city === 'string') return city;
+      if (typeof action.item !== 'object' || action.item === null) return 'badItem';
+      return checkBuy(ctx, city, action.item);
+    }
+    case 'gift': {
+      if (!isPolity(ctx, action.target) || action.target === polity) return 'badTarget';
+      if (!Number.isInteger(action.amount) || action.amount < 1) return 'badAmount';
+      if (atWar(ctx, polity, action.target)) return 'atWar';
+      return polityOf(ctx, polity).gold >= action.amount ? null : 'notEnoughGold';
     }
     default:
       return 'badAction';
@@ -342,15 +480,9 @@ export function execute(ctx: Ctx, action: Action): void {
     case 'airStrike':
       resolveAirStrike(ctx, state.cities[action.city] as City, action.target);
       return;
-    case 'declareWar': {
-      const a = Math.min(action.polity, action.target);
-      const b = Math.max(action.polity, action.target);
-      state.relations[relationKey(a, b)] = { a, b, atWar: true, since: state.turn, offerA: 0, offerB: 0 };
-      setWarFlag(ctx, a, b, true);
-      state.stats.warsDeclared++;
-      ctx.events.push({ type: 'warDeclared', by: action.polity, on: action.target });
+    case 'declareWar':
+      beginWar(ctx, action.polity, action.target);
       return;
-    }
     case 'makePeace': {
       const relation = relationOf(ctx, action.polity, action.target);
       if (relation === undefined) return;
@@ -362,15 +494,106 @@ export function execute(ctx: Ctx, action: Action): void {
         ctx.events.push({ type: 'peaceOffered', from: action.polity, to: action.target });
         return;
       }
-      relation.atWar = false;
-      relation.since = state.turn;
-      relation.offerA = 0;
-      relation.offerB = 0;
-      setWarFlag(ctx, relation.a, relation.b, false);
-      polityOf(ctx, relation.a).aiTarget = -1;
-      polityOf(ctx, relation.b).aiTarget = -1;
-      ctx.events.push({ type: 'peaceMade', a: relation.a, b: relation.b });
-      enforceBorders(ctx);
+      endWar(ctx, action.polity, action.target);
+      return;
+    }
+    case 'unlockPolicy':
+      unlockPolicy(ctx, action.polity, action.policy);
+      return;
+    case 'slotPolicy':
+      slotPolicy(ctx, action.polity, action.policy, action.slot);
+      return;
+    case 'propose': {
+      if (action.agreement === 'truce') {
+        execute(ctx, { type: 'makePeace', polity: action.polity, target: action.target });
+      } else if (action.target === state.player) {
+        makeOffer(ctx, {
+          id: state.nextId++,
+          type: 'agreement',
+          from: action.polity,
+          to: action.target,
+          turn: state.turn,
+          agreement: action.agreement,
+        });
+      } else if (action.agreement === 'vassalage') {
+        makeVassal(ctx, action.target, action.polity, false);
+      } else {
+        signAgreement(ctx, action.agreement, action.polity, action.target);
+      }
+      return;
+    }
+    case 'respond': {
+      const offer = state.offers.find((entry) => entry.id === action.offer);
+      if (offer !== undefined) answerOffer(ctx, offer, action.accept);
+      return;
+    }
+    case 'cancelAgreement': {
+      const agreement = findAgreement(ctx, action.agreement, action.polity, action.target);
+      if (agreement !== undefined) endAgreement(ctx, agreement, 'cancelled');
+      return;
+    }
+    case 'demandVassalage':
+      demandVassalage(ctx, ctx.unitById.get(action.unit) as Unit, action.target);
+      return;
+    case 'proposeDeal': {
+      if (action.target === state.player) {
+        makeOffer(ctx, {
+          id: state.nextId++,
+          type: 'deal',
+          from: action.polity,
+          to: action.target,
+          turn: state.turn,
+          seller: action.seller,
+          resource: action.resource,
+          goldPerTurn: action.goldPerTurn,
+        });
+      } else {
+        const buyer = action.seller === action.polity ? action.target : action.polity;
+        signDeal(ctx, action.seller, buyer, action.resource, action.goldPerTurn);
+      }
+      return;
+    }
+    case 'cancelDeal': {
+      const deal = state.deals.find((entry) => entry.id === action.deal);
+      if (deal !== undefined) endDeal(ctx, deal, 'cancelled');
+      return;
+    }
+    case 'establishRoute':
+      establishRoute(ctx, action.polity, action.city, action.to);
+      return;
+    case 'cancelRoute': {
+      const route = state.routes.find((entry) => entry.id === action.route);
+      if (route !== undefined) endRoute(ctx, route, 'cancelled');
+      return;
+    }
+    case 'pillage':
+      pillage(ctx, ctx.unitById.get(action.unit) as Unit);
+      return;
+    case 'buy': {
+      const city = state.cities[action.city] as City;
+      const gold = buyCost(ctx, city, action.item);
+      if (!deliverItem(ctx, city, action.item)) return;
+      polityOf(ctx, action.polity).gold -= gold;
+      // What was bought is no longer built: the queue drops it, and work on it is lost.
+      if (action.item.kind === 'building') {
+        const bought = action.item.building;
+        const index = city.queue.findIndex((item) => item.kind === 'building' && item.building === bought);
+        if (index === 0) city.progress = 0;
+        if (index >= 0) city.queue.splice(index, 1);
+      }
+      assignCitizens(ctx, city);
+      ctx.events.push({ type: 'itemBought', city: city.zone, item: action.item, gold });
+      return;
+    }
+    case 'gift': {
+      polityOf(ctx, action.polity).gold -= action.amount;
+      polityOf(ctx, action.target).gold += action.amount;
+      ctx.events.push({ type: 'goldGifted', from: action.polity, to: action.target, amount: action.amount });
+      if (isCityState(ctx, action.target)) {
+        addInfluence(ctx, action.target, action.polity, Math.floor(action.amount / CITY_STATE.goldPerInfluence));
+      } else {
+        addFavour(ctx, action.polity, action.target, Math.floor(action.amount / FAVOUR.goldPerPoint));
+      }
       return;
     }
   }
@@ -406,6 +629,15 @@ export function legalActions(ctx: Ctx, polity: number): Action[] {
     offer({ type: 'sleep', polity, unit: unit.id });
     offer({ type: 'upgrade', polity, unit: unit.id });
     offer({ type: 'settle', polity, unit: unit.id });
+    offer({ type: 'pillage', polity, unit: unit.id });
+    if (def.strength > 0 && def.range === 0 && unit.moves > 0) {
+      for (let d = 0; d < 6; d++) {
+        const hex = topo.neighbors[unit.hex * 6 + d] as number;
+        if (hex >= 0 && cityAtHex(ctx, hex) !== null) {
+          offer({ type: 'demandVassalage', polity, unit: unit.id, target: hex });
+        }
+      }
+    }
   }
 
   for (const city of state.cities) {
@@ -429,6 +661,9 @@ export function legalActions(ctx: Ctx, polity: number): Action[] {
       if (owner === polity && state.cities[zone] === null) items.push({ kind: 'city', zone });
     });
     for (const item of items) offer({ type: 'queueBuild', polity, city: city.zone, item });
+    for (const item of items) {
+      if (item.kind === 'unit' || item.kind === 'building') offer({ type: 'buy', polity, city: city.zone, item });
+    }
     city.queue.forEach((_, index) => out.push({ type: 'unqueueBuild', polity, city: city.zone, index }));
     if (hasBuilding(city, (building) => building.airStrike) && !city.airStruck) {
       for (const offset of hexRange(indexToOffset(at(map.zones, city.zone).siteHex, map.width), AIR_STRIKE.range)) {
@@ -442,9 +677,59 @@ export function legalActions(ctx: Ctx, polity: number): Action[] {
     if (polityOf(ctx, polity).research !== tech) out.push({ type: 'setResearch', polity, tech });
   }
 
+  for (const policy of openPolicies(ctx, polity)) out.push({ type: 'unlockPolicy', polity, policy });
+  const self = polityOf(ctx, polity);
+  self.slots.forEach((_, slot) => {
+    offer({ type: 'slotPolicy', polity, policy: null, slot });
+    for (const policy of self.policies) offer({ type: 'slotPolicy', polity, policy, slot });
+  });
+
   for (let target = 0; target < ctx.n; target++) {
     offer({ type: 'declareWar', polity, target });
     offer({ type: 'makePeace', polity, target });
+    offer({ type: 'gift', polity, target, amount: 10 });
+    for (const agreement of AGREEMENT_KINDS) {
+      // A truce is proposed with `makePeace`.
+      if (agreement === 'truce') continue;
+      offer({ type: 'propose', polity, target, agreement });
+      offer({ type: 'cancelAgreement', polity, target, agreement });
+    }
+    if (target === polity || !polityOf(ctx, target).alive) continue;
+    for (const resource of map.resources) {
+      for (const seller of [polity, target]) {
+        if (!ownsResource(ctx, seller, resource.id)) continue;
+        offer({
+          type: 'proposeDeal', polity, target, seller, resource: resource.id, goldPerTurn: dealPrice(resource.id),
+        });
+      }
+    }
+  }
+  for (const pending of state.offers) {
+    if (pending.to !== polity) continue;
+    out.push({ type: 'respond', polity, offer: pending.id, accept: true });
+    out.push({ type: 'respond', polity, offer: pending.id, accept: false });
+  }
+  for (const deal of state.deals) {
+    if (deal.seller === polity || deal.buyer === polity) out.push({ type: 'cancelDeal', polity, deal: deal.id });
+  }
+
+  // Trade routes: every destination in reach of one of its cities, while a slot is free.
+  const routes = routesOf(ctx, polity);
+  for (const route of routes) out.push({ type: 'cancelRoute', polity, route: route.id });
+  if (routes.length < routeSlots(ctx, polity)) {
+    const reach = Math.max(TRADE.landRange, TRADE.seaRange);
+    for (const city of state.cities) {
+      if (city === null || city.owner !== polity) continue;
+      const site = at(map.zones, city.zone).siteHex;
+      for (const other of state.cities) {
+        if (other === null || other === city) continue;
+        if (hexesApart(ctx, site, at(map.zones, other.zone).siteHex) > reach) continue;
+        offer({ type: 'establishRoute', polity, city: city.zone, to: { kind: 'city', zone: other.zone } });
+      }
+      map.offMapPorts.forEach((_, port) => {
+        offer({ type: 'establishRoute', polity, city: city.zone, to: { kind: 'port', port } });
+      });
+    }
   }
   return out;
 }

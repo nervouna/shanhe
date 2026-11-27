@@ -307,10 +307,12 @@ describe('legal actions', () => {
     expect(getLegalActions(state, WASTELAND)).toHaveLength(0);
   });
 
-  it('cover moving, building, focus and war at the start', () => {
+  it('cover moving, building, focus, war, agreements and trade routes at the start', () => {
     const state = createGame(map, { player: 'jia' });
     const kinds = new Set(getLegalActions(state, JIA).map((action) => action.type));
-    expect([...kinds].sort()).toEqual(['declareWar', 'move', 'queueBuild', 'setFocus', 'setResearch', 'sleep']);
+    expect([...kinds].sort()).toEqual([
+      'declareWar', 'establishRoute', 'move', 'propose', 'queueBuild', 'setFocus', 'setResearch', 'sleep',
+    ]);
   });
 });
 

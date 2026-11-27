@@ -8,7 +8,16 @@
  */
 
 import type { MapData } from '../shared/mapData.ts';
-import type { BuildingId, Focus, ImprovementId, TechId, Yields } from './data.ts';
+import type {
+  AgreementKind,
+  BuildingId,
+  CityStateType,
+  Focus,
+  ImprovementId,
+  PolicyId,
+  TechId,
+  Yields,
+} from './data.ts';
 
 /** Owner of the tribes, and the "nobody" value of `zoneOwner`. */
 export const NO_POLITY = -1;
@@ -96,9 +105,34 @@ export interface PolityState {
   gold: number;
   /** Cumulative gross gold income: what the Economic victory ranks. */
   grossIncome: number;
-  /** Cumulative science and culture. Culture unlocks nothing yet. */
+  /** Cumulative science and culture. */
   science: number;
   culture: number;
+  /** Culture stored towards the next policy card; `policyCost(policies.length)` buys one. */
+  cultureProgress: number;
+  /** The policy cards it has unlocked, in order. City-states have none. */
+  policies: PolicyId[];
+  /** Its policy slots: one entry per slot of its era, null while empty. */
+  slots: (PolicyId | null)[];
+  /** Swaps it may still make without a cooldown: one per card unlocked. */
+  freeSwaps: number;
+  /** The first turn in which it may make a paid swap again. */
+  swapReadyOn: number;
+  /** The polity it is a vassal of, or -1. */
+  overlord: number;
+  /** For a city-state: its type. Null for everybody else. */
+  cityStateType: CityStateType | null;
+  /** For a city-state: influence of each polity that has any, by polity index. */
+  influence: Record<string, number>;
+  /** For a city-state: its suzerain, or -1. */
+  suzerain: number;
+  /** Gold of the last turn processing: from its trade routes, ... */
+  routeIncome: number;
+  /** ...received as tribute from vassals and city-states, and paid as tribute, ... */
+  tributeReceived: number;
+  tributePaid: number;
+  /** ...and from resource deals: what it was paid less what it paid. */
+  dealIncome: number;
   /** The techs it knows, in the order it learned them. */
   techs: TechId[];
   /** The tech it is researching, or null. A polity on the simplified AI never researches. */
@@ -109,11 +143,11 @@ export interface PolityState {
   era: number;
   /** Stages of the endgame project it has completed. */
   projectStage: number;
-  /** Trade route slots its techs give. No rule uses them yet. */
+  /** Trade route slots its techs give. Its total is `routeSlots` in `game.ts`. */
   tradeRoutes: number;
-  /** True once its techs open the off-map land ports. No rule uses it yet. */
+  /** True once its techs open the off-map land ports to its trade routes. */
   landPorts: boolean;
-  /** True once its techs open the off-map sea exits. No rule uses it yet. */
+  /** True once its techs open the off-map sea exits to its trade routes. */
   seaExits: boolean;
   /** Total city yields of the last turn processing. */
   yields: Yields;
@@ -142,6 +176,79 @@ export interface Relation {
   offerB: number;
 }
 
+/**
+ * An agreement in force between two polities. For a vassalage `a` is the
+ * overlord and `b` the vassal; for the others `a` is the lower index.
+ */
+export interface Agreement {
+  kind: AgreementKind;
+  a: number;
+  b: number;
+  /** Turn it was signed. */
+  since: number;
+  /** The last turn it is in force, or 0 for one without a term (alliance, vassalage). */
+  until: number;
+}
+
+/** A resource the seller lets the buyer use for gold per turn. */
+export interface Deal {
+  id: number;
+  seller: number;
+  buyer: number;
+  /** `MapResource.id` of a specialty or a strategic resource. */
+  resource: string;
+  goldPerTurn: number;
+  since: number;
+  /** The last turn it is in force. */
+  until: number;
+}
+
+/** A proposal waiting for the human player's answer (`respond`). */
+export type Offer =
+  | {
+      id: number;
+      type: 'agreement';
+      from: number;
+      to: number;
+      /** Turn it was made. */
+      turn: number;
+      agreement: AgreementKind;
+    }
+  | {
+      id: number;
+      type: 'deal';
+      from: number;
+      to: number;
+      turn: number;
+      seller: number;
+      resource: string;
+      goldPerTurn: number;
+    };
+
+/** Where a trade route goes: a city (by zone) or an off-map port (index into `map.offMapPorts`). */
+export type RouteTarget =
+  | { readonly kind: 'city'; readonly zone: number }
+  | { readonly kind: 'port'; readonly port: number };
+
+export interface TradeRoute {
+  id: number;
+  owner: number;
+  /** Zone of the owner's city it starts from. */
+  from: number;
+  /** Zone of the city it goes to, or -1 when it goes to a port. */
+  toCity: number;
+  /** Index into `map.offMapPorts` of the port it goes to, or -1. */
+  toPort: number;
+  /** True for a sea route. */
+  sea: boolean;
+  /** The hexes it runs over, from the first city to the second or to the hex next to the port. */
+  path: number[];
+  /** Gold it gave its owner in the last turn processing (at once after `establishRoute`: what it will give). */
+  income: number;
+  /** It earns nothing up to and including this turn: it was pillaged. 0 otherwise. */
+  pillagedUntil: number;
+}
+
 export type GameResult =
   | { readonly kind: 'conquest'; readonly winner: number; readonly turn: number }
   | { readonly kind: 'science'; readonly winner: number; readonly turn: number }
@@ -152,6 +259,9 @@ export interface GameStats {
   citiesFounded: number;
   warsDeclared: number;
   politiesAnnexed: number;
+  alliancesFormed: number;
+  vassalsMade: number;
+  routesEstablished: number;
 }
 
 /** Everything that defines a game in progress. The public API never modifies a state it was given. */
@@ -184,6 +294,23 @@ export interface GameState {
   readonly improvements: Readonly<Record<string, ImprovementId>>;
   /** Pairs of polities that are or have been at war, by `"a:b"` with `a < b`. Every other pair is at peace. */
   readonly relations: Readonly<Record<string, Readonly<Relation>>>;
+  /** Favour between two nations, by `"a:b"` with `a < b`, from -100 to 100. A pair without an entry is at 0. */
+  readonly favour: Readonly<Record<string, number>>;
+  /** The agreements in force, in the order they were signed. */
+  readonly agreements: readonly Readonly<Agreement>[];
+  /** The resource deals in force. */
+  readonly deals: readonly Readonly<Deal>[];
+  /** Proposals waiting for the human player's answer. */
+  readonly offers: readonly Readonly<Offer>[];
+  readonly routes: readonly Readonly<TradeRoute>[];
+  /** Next id for an offer, a deal or a trade route. */
+  readonly nextId: number;
+  /** Roads by hex index: 1 for a road, 2 for a railway. */
+  readonly roads: Readonly<Record<string, number>>;
+  /** City pairs (`"zoneA:zoneB"`, `zoneA < zoneB`) whose road link has been looked at: 1 built, 0 no way. */
+  readonly roadLinks: Readonly<Record<string, number>>;
+  /** Pillaged improvements by hex index: the last turn in which the improvement yields nothing. */
+  readonly pillaged: Readonly<Record<string, number>>;
   readonly stats: Readonly<GameStats>;
   /** Null while the game runs. Once set, nothing changes any more. */
   readonly result: GameResult | null;
@@ -221,7 +348,63 @@ export type Action =
   | { readonly type: 'airStrike'; readonly polity: number; readonly city: number; readonly target: number }
   | { readonly type: 'declareWar'; readonly polity: number; readonly target: number }
   /** Makes peace if the other side agrees; towards a human player it records an offer. */
-  | { readonly type: 'makePeace'; readonly polity: number; readonly target: number };
+  | { readonly type: 'makePeace'; readonly polity: number; readonly target: number }
+  /** Unlocks a policy card with stored culture. */
+  | { readonly type: 'unlockPolicy'; readonly polity: number; readonly policy: PolicyId }
+  /** Puts an unlocked card into slot `slot`, or empties the slot with `policy: null`. */
+  | { readonly type: 'slotPolicy'; readonly polity: number; readonly policy: PolicyId | null; readonly slot: number }
+  /**
+   * Proposes an agreement to `target`. An AI answers at once (`refused` when
+   * it declines); a human player gets a pending offer. `vassalage` asks the
+   * target to become the proposer's vassal; `truce` is `makePeace`.
+   */
+  | { readonly type: 'propose'; readonly polity: number; readonly target: number; readonly agreement: AgreementKind }
+  /** The player's answer to the pending offer with id `offer`. */
+  | { readonly type: 'respond'; readonly polity: number; readonly offer: number; readonly accept: boolean }
+  /** Ends a trade pact, open borders or an alliance with `target`, or releases the vassal `target`. */
+  | {
+      readonly type: 'cancelAgreement';
+      readonly polity: number;
+      readonly target: number;
+      readonly agreement: AgreementKind;
+    }
+  /**
+   * With a melee land unit next to an enemy nation's capital at 0 HP: instead
+   * of taking the city, makes its owner a vassal. `target` is the city's hex.
+   */
+  | { readonly type: 'demandVassalage'; readonly polity: number; readonly unit: number; readonly target: number }
+  /** Proposes that `seller` (the proposer or the target) lets the other use `resource` for gold per turn. */
+  | {
+      readonly type: 'proposeDeal';
+      readonly polity: number;
+      readonly target: number;
+      readonly seller: number;
+      readonly resource: string;
+      readonly goldPerTurn: number;
+    }
+  /** Ends a resource deal the polity is a party to. */
+  | { readonly type: 'cancelDeal'; readonly polity: number; readonly deal: number }
+  /** Opens a trade route from the polity's city `city` (a zone). */
+  | { readonly type: 'establishRoute'; readonly polity: number; readonly city: number; readonly to: RouteTarget }
+  | { readonly type: 'cancelRoute'; readonly polity: number; readonly route: number }
+  /** Pillages the enemy improvement under the unit or, if there is none, the enemy trade routes that pass there. */
+  | { readonly type: 'pillage'; readonly polity: number; readonly unit: number }
+  /** Buys a unit or a building in a city for gold. */
+  | { readonly type: 'buy'; readonly polity: number; readonly city: number; readonly item: BuildItem }
+  /** Gives gold: to a city-state for influence, to a nation for favour. */
+  | { readonly type: 'gift'; readonly polity: number; readonly target: number; readonly amount: number };
+
+/** Why an agreement, a deal, a route or a vassalage ended. */
+export type EndReason =
+  | 'expired'
+  | 'cancelled'
+  | 'war'
+  | 'annexed'
+  | 'replaced'
+  | 'unpaid'
+  | 'lost'
+  | 'capitalLost'
+  | 'cityLost';
 
 /** What happened, for the UI and the renderer to show. */
 export type GameEvent =
@@ -275,6 +458,72 @@ export type GameEvent =
   | { readonly type: 'projectStageFinished'; readonly polity: number; readonly city: number; readonly stage: number }
   /** The era of the game moved on: that of the player, or of the most advanced major nation in observer mode. */
   | { readonly type: 'eraStarted'; readonly era: number }
+  | { readonly type: 'policyUnlocked'; readonly polity: number; readonly policy: PolicyId }
+  | {
+      readonly type: 'policySlotted';
+      readonly polity: number;
+      readonly slot: number;
+      readonly policy: PolicyId | null;
+      /** The card that was in the slot, or null. */
+      readonly replaced: PolicyId | null;
+    }
+  /** A proposal reached the human player and waits for `respond`. */
+  | { readonly type: 'offerMade'; readonly offer: Offer }
+  /** A pending offer was answered, withdrawn or ran out (`accepted: false`). */
+  | {
+      readonly type: 'offerAnswered';
+      readonly offer: number;
+      readonly from: number;
+      readonly to: number;
+      readonly accepted: boolean;
+    }
+  | { readonly type: 'agreementSigned'; readonly agreement: AgreementKind; readonly a: number; readonly b: number }
+  | {
+      readonly type: 'agreementEnded';
+      readonly agreement: AgreementKind;
+      readonly a: number;
+      readonly b: number;
+      readonly reason: EndReason;
+    }
+  /** `polity` entered the war against `against` at the side of its ally or overlord `with`. */
+  | { readonly type: 'warJoined'; readonly polity: number; readonly against: number; readonly with: number }
+  /** `forced`: demanded at the gates of the capital; otherwise agreed. */
+  | { readonly type: 'vassalized'; readonly vassal: number; readonly overlord: number; readonly forced: boolean }
+  | { readonly type: 'vassalReleased'; readonly vassal: number; readonly overlord: number; readonly reason: EndReason }
+  | { readonly type: 'dealSigned'; readonly deal: Deal }
+  | {
+      readonly type: 'dealEnded';
+      readonly deal: number;
+      readonly seller: number;
+      readonly buyer: number;
+      readonly resource: string;
+      readonly reason: EndReason;
+    }
+  | { readonly type: 'routeEstablished'; readonly route: TradeRoute }
+  | { readonly type: 'routeEnded'; readonly route: number; readonly owner: number; readonly reason: EndReason }
+  | {
+      readonly type: 'routePillaged';
+      readonly route: number;
+      readonly owner: number;
+      readonly by: number;
+      readonly unit: number;
+      readonly hex: number;
+      readonly gold: number;
+    }
+  | {
+      readonly type: 'improvementPillaged';
+      readonly hex: number;
+      readonly owner: number;
+      readonly by: number;
+      readonly unit: number;
+      readonly gold: number;
+    }
+  /** Roads appeared (`level` 1) or became railways (`level` 2) on these hexes. */
+  | { readonly type: 'roadsBuilt'; readonly hexes: number[]; readonly level: number }
+  | { readonly type: 'itemBought'; readonly city: number; readonly item: BuildItem; readonly gold: number }
+  | { readonly type: 'goldGifted'; readonly from: number; readonly to: number; readonly amount: number }
+  /** A city-state got a new suzerain, or lost it (`to: -1`). */
+  | { readonly type: 'suzerainChanged'; readonly cityState: number; readonly from: number; readonly to: number }
   | { readonly type: 'turnStarted'; readonly turn: number }
   | { readonly type: 'gameEnded'; readonly result: GameResult };
 
@@ -322,7 +571,37 @@ export type RejectReason =
   | 'truce'
   | 'notAtWar'
   | 'warTooYoung'
-  | 'refused';
+  | 'refused'
+  | 'noPolicies'
+  | 'alreadyUnlocked'
+  | 'notEnoughCulture'
+  | 'notUnlocked'
+  | 'badSlot'
+  | 'alreadySlotted'
+  | 'swapCooldown'
+  | 'atWar'
+  | 'alreadyAgreed'
+  | 'alreadyOffered'
+  | 'noSuchAgreement'
+  | 'agreementTooYoung'
+  | 'tooManyAlliances'
+  | 'allied'
+  | 'vassal'
+  | 'notACapital'
+  | 'cityNotFallen'
+  | 'noSuchOffer'
+  | 'noSuchDeal'
+  | 'alreadyHasResource'
+  | 'badAmount'
+  | 'noRouteSlot'
+  | 'noRoute'
+  | 'duplicateRoute'
+  | 'noSuchRoute'
+  | 'portClosed'
+  | 'nothingToPillage'
+  | 'cannotBuy'
+  | 'inUnrest'
+  | 'noRoom';
 
 export type ActionResult =
   | { readonly ok: true; readonly state: GameState; readonly events: GameEvent[] }

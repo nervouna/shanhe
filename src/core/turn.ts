@@ -2,7 +2,9 @@
 
 import {
   BUILDINGS,
+  CITY_STATE,
   COMBAT,
+  DIPLOMACY,
   FREE_UNITS_PER_CITY,
   PROJECT,
   UNIT_UPKEEP,
@@ -13,9 +15,13 @@ import {
 } from './data.ts';
 import type { Yields } from './data.ts';
 import { YIELD_KEYS, processCity } from './cities.ts';
-import { at, ownerOf, polityOf, removeUnit, warCount } from './context.ts';
+import { at, dropKey, ownerOf, polityOf, removeUnit, warCount } from './context.ts';
 import type { Ctx } from './context.ts';
+import { processInfluence } from './cityStates.ts';
+import { endDeal, processDiplomacy } from './diplomacy.ts';
+import { policySum } from './policies.ts';
 import { followWorld, processResearch, worldEra } from './tech.ts';
+import { processRoads, processRoutes } from './trade.ts';
 import { NO_POLITY } from './types.ts';
 import type { GameResult } from './types.ts';
 
@@ -33,14 +39,20 @@ export function contenders(ctx: Ctx): number[] {
   return state.polities.flatMap((polity, index) => (polity.alive ? [index] : []));
 }
 
-/** Number of major nations' original capitals `polity` holds. */
+/** Number of major nations' original capitals `polity` holds, itself or through a vassal. */
 export function capitalsHeld(ctx: Ctx, polity: number): number {
   let held = 0;
   for (const major of ctx.state.majors) {
     const city = ctx.state.cities[at(ctx.map.polities, major).capitalZone];
-    if (city !== undefined && city !== null && city.owner === polity) held++;
+    if (city === undefined || city === null) continue;
+    if (city.owner === polity || polityOf(ctx, city.owner).overlord === polity) held++;
   }
   return held;
+}
+
+/** Percentage of its income the payer hands the receiver, with the receiver's Tribute card. */
+function tributePercent(ctx: Ctx, receiver: number, base: number): number {
+  return (base * (100 + policySum(ctx, receiver, 'tributePercent'))) / 100;
 }
 
 function findResult(ctx: Ctx): GameResult | null {
@@ -92,6 +104,28 @@ export function endRound(ctx: Ctx): void {
     cityCount[city.owner] = at(cityCount, city.owner) + 1;
   }
 
+  // Trade routes, then the tribute of vassals to their overlord and of city-states to their suzerain.
+  const routeIncome = processRoutes(ctx);
+  const received: number[] = state.polities.map(() => 0);
+  const paid: number[] = state.polities.map(() => 0);
+  state.polities.forEach((polity, index) => {
+    if (!polity.alive) return;
+    const income = at(totals, index).gold + at(routeIncome, index);
+    let receiver = NO_POLITY;
+    let percent = 0;
+    if (polity.overlord !== NO_POLITY) {
+      receiver = polity.overlord;
+      percent = tributePercent(ctx, receiver, DIPLOMACY.vassalTributePercent);
+    } else if (polity.suzerain !== NO_POLITY) {
+      receiver = polity.suzerain;
+      percent = tributePercent(ctx, receiver, CITY_STATE.tributePercent);
+    }
+    if (receiver === NO_POLITY || !polityOf(ctx, receiver).alive) return;
+    const tribute = Math.floor((income * percent) / 100);
+    paid[index] = tribute;
+    received[receiver] = at(received, receiver) + tribute;
+  });
+
   // Treasuries.
   const unitUpkeep: number[] = state.polities.map(() => 0);
   for (const unit of state.units) {
@@ -101,12 +135,20 @@ export function endRound(ctx: Ctx): void {
     if (!polity.alive) return;
     const total = at(totals, index);
     const free = FREE_UNITS_PER_CITY * at(cityCount, index) * UNIT_UPKEEP;
+    const units = Math.max(0, at(unitUpkeep, index) - free);
     polity.yields = total;
-    polity.upkeep = at(upkeep, index) + Math.max(0, at(unitUpkeep, index) - free);
-    polity.grossIncome += total.gold;
-    polity.gold += total.gold - polity.upkeep;
+    polity.upkeep =
+      at(upkeep, index) + Math.floor((units * (100 + policySum(ctx, index, 'unitUpkeepPercent'))) / 100);
+    polity.routeIncome = at(routeIncome, index);
+    polity.tributeReceived = at(received, index);
+    polity.tributePaid = at(paid, index);
+    polity.dealIncome = 0;
+    const income = total.gold + polity.routeIncome + polity.tributeReceived;
+    polity.grossIncome += income;
+    polity.gold += income - polity.tributePaid - polity.upkeep;
     polity.science += total.science;
     polity.culture += total.culture;
+    if (at(ctx.map.polities, index).kind === 'nation') polity.cultureProgress += total.culture;
     if (polity.gold < 0) {
       // Out of gold: the newest unit goes home.
       polity.gold = 0;
@@ -120,9 +162,32 @@ export function endRound(ctx: Ctx): void {
     }
   });
 
+  // Resource deals: the buyer pays out of what it now has; a deal it cannot pay ends.
+  for (const deal of [...state.deals]) {
+    const buyer = polityOf(ctx, deal.buyer);
+    const seller = polityOf(ctx, deal.seller);
+    if (buyer.gold < deal.goldPerTurn) {
+      endDeal(ctx, deal, 'unpaid');
+      continue;
+    }
+    buyer.gold -= deal.goldPerTurn;
+    buyer.dealIncome -= deal.goldPerTurn;
+    seller.gold += deal.goldPerTurn;
+    seller.grossIncome += deal.goldPerTurn;
+    seller.dealIncome += deal.goldPerTurn;
+  }
+
   // Research, then the polities that follow it.
   processResearch(ctx);
   followWorld(ctx);
+
+  // Diplomacy, city-states, roads, and improvements that have been repaired.
+  processDiplomacy(ctx);
+  processInfluence(ctx);
+  processRoads(ctx);
+  for (const key of Object.keys(state.pillaged)) {
+    if ((state.pillaged[key] ?? 0) <= state.turn) dropKey(state.pillaged, key);
+  }
 
   // Units: rest heals, and everybody gets their movement back.
   for (const unit of state.units) {
