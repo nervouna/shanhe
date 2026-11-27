@@ -40,8 +40,16 @@ const LONG_FACTOR = 1.25;
 const DROP_SHARE = 0.3;
 /** Share of long frames in a window below which the window counts as calm. */
 const CALM_SHARE = 0.07;
+/**
+ * Where frames are not locked to a display's refresh they all run a little
+ * long instead of some running twice as long: a window that is this
+ * much over the target in the mean of its middle half drops the scale too.
+ */
+const SLOW_MEAN = 1.04;
+/** Frames after which a step up that makes most frames long is given up, without waiting for the window. */
+export const PROBE_FRAMES = 8;
 /** Calm windows before the first probe upward. */
-export const FIRST_HOLD = 4;
+export const FIRST_HOLD = 6;
 const MAX_HOLD = 64;
 /** Frames ignored after a change of scale, while buffers are reallocated. */
 const SETTLE_FRAMES = 6;
@@ -52,6 +60,9 @@ export function createScaleController(options: ScaleControllerOptions): ScaleCon
   const steps = options.steps ?? DEFAULT_SCALE_STEPS;
   if (steps.length === 0) throw new RangeError('createScaleController: no steps');
   const longMs = options.targetMs * LONG_FACTOR;
+
+  const slowMs = options.targetMs * SLOW_MEAN;
+  const window: number[] = [];
 
   let index = 0;
   let frames = 0;
@@ -67,6 +78,7 @@ export function createScaleController(options: ScaleControllerOptions): ScaleCon
     index = next;
     frames = 0;
     long = 0;
+    window.length = 0;
     calmWindows = 0;
     settle = SETTLE_FRAMES;
   };
@@ -82,13 +94,23 @@ export function createScaleController(options: ScaleControllerOptions): ScaleCon
         return steps[index] as number;
       }
       frames++;
+      window.push(frameMs);
       if (frameMs > longMs) long++;
-      if (frames < SCALE_WINDOW) return steps[index] as number;
+      // a step up that does not hold shows at once: do not stutter through a whole window
+      const failedProbe = probing && frames >= PROBE_FRAMES && long / frames > 0.5;
+      if (frames < SCALE_WINDOW && !failedProbe) return steps[index] as number;
 
       const share = long / frames;
+      window.sort((a, b) => a - b);
+      // the mean of the middle half: neither a hitch nor jitter around the target moves it
+      const quarter = Math.floor(window.length / 4);
+      let middle = 0;
+      for (let i = quarter; i < window.length - quarter; i++) middle += window[i] as number;
+      const slow = middle / (window.length - 2 * quarter) > slowMs;
       frames = 0;
       long = 0;
-      if (share > DROP_SHARE) {
+      window.length = 0;
+      if (share > DROP_SHARE || slow) {
         if (probing) hold = Math.min(hold * 2, MAX_HOLD);
         probing = false;
         if (index < steps.length - 1) change(index + 1);

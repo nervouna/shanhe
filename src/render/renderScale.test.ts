@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_SCALE_STEPS,
   FIRST_HOLD,
+  PROBE_FRAMES,
   QUALITY_SETTINGS,
   SCALE_WINDOW,
   createScaleController,
@@ -43,8 +44,10 @@ describe('createScaleController', () => {
 
   it('restores the scale after a calm stretch', () => {
     const controller = createScaleController({ targetMs: TARGET });
-    feed(controller, 33.3, 80);
+    // two drops, each after the frames ignored while the buffers settle and one window
+    feed(controller, 33.3, SCALE_WINDOW + (SCALE_WINDOW + 6));
     const lowered = controller.scale;
+    expect(lowered).toBe(0.7);
     expect(lowered).toBeLessThan(1);
     // not before the hold has passed
     expect(feed(controller, 16.7, SCALE_WINDOW * (FIRST_HOLD - 1))).toBe(lowered);
@@ -72,6 +75,29 @@ describe('createScaleController', () => {
     const third = calmFramesUntilProbe();
     expect(second).toBeGreaterThan(first * 1.6);
     expect(third).toBeGreaterThan(second * 1.6);
+  });
+
+  it('lowers the scale when every frame runs a little long, as without a display refresh to wait for', () => {
+    const controller = createScaleController({ targetMs: TARGET });
+    expect(feed(controller, 17.7, 200)).toBeLessThan(1);
+    // jitter around the target is not a reason
+    const steady = createScaleController({ targetMs: TARGET });
+    for (let i = 0; i < 600; i++) steady.sample(i % 2 === 0 ? 15.9 : 17.5);
+    expect(steady.scale).toBe(1);
+  });
+
+  it('gives up a step up that does not hold within a few frames', () => {
+    const controller = createScaleController({ targetMs: TARGET, steps: [1, 0.5] });
+    feed(controller, 33.3, 60);
+    while (controller.scale === 0.5) controller.sample(16.7);
+    // back at 1 and frames run long again: after the buffers have settled, a few frames are enough
+    let frames = 0;
+    while (controller.scale === 1) {
+      controller.sample(33.3);
+      frames++;
+    }
+    expect(frames).toBeLessThanOrEqual(PROBE_FRAMES + 8);
+    expect(frames).toBeLessThan(SCALE_WINDOW);
   });
 
   it('ignores pauses and nonsense', () => {
