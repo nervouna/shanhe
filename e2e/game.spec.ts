@@ -74,9 +74,10 @@ test('an observer game on the fixture map runs to its end', async ({ page }) => 
   // research and policies are the player's: an observer has neither overlay
   await page.keyboard.press('t');
   expect(await page.evaluate(() => window.__shanhe?.ui.overlay)).toBeNull();
-  await page.click('#victory-button');
+  // the observer's clock redraws the HUD every turn: the click is sent without waiting for the button to stand still
+  await page.locator('#victory-button').dispatchEvent('click');
   expect(await page.evaluate(() => window.__shanhe?.ui.overlay)).toBe('victory');
-  await expect(page.locator('#victory tbody tr')).toHaveCount(3);
+  expect(await page.locator('#victory tbody tr').count()).toBe(3);
   await page.keyboard.press('Escape');
 
   const report = await page.evaluate(() => window.__shanhe?.runTurns(400));
@@ -114,7 +115,9 @@ test('an observer game on the fixture map runs to its end', async ({ page }) => 
 test('a player game: research, policies, a trade route, an offer and twelve turns', async ({ page }) => {
   const errors = collectErrors(page);
   if (viewport !== null) await page.setViewportSize(viewport);
-  await open(page, '/?map=fixture');
+  // a long run of small steps: nothing is drawn, unless pictures are wanted (see "Machine load" in CLAUDE.md)
+  const url = captureDir === undefined ? '/?map=fixture&render=off' : '/?map=fixture';
+  await open(page, url);
   await page.click('[data-nation="jia"]');
   await page.click('#play');
   await expect(page.locator('#topbar')).toBeVisible();
@@ -148,7 +151,6 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
   const scale = Math.round(Math.max(0.8, Math.min(2, Math.min(size.width / 1280, size.height / 720))) * 20) / 20;
   expect((await ui()).scale).toEqual({ setting: 'auto', factor: scale });
   expect(await page.locator('#ui').evaluate((node) => getComputedStyle(node).zoom)).toBe(String(scale));
-  const opened = await page.evaluate(() => window.__shanhe?.render.camera.distance ?? 0);
 
   // Enter is the main button. It ends the turn only when nothing is pending:
   // every kind of pending item is answered the way a player would.
@@ -333,13 +335,6 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
   await page.click('#lenses [data-lens="resources"]');
   expect((await ui()).lens).toBe('resources');
 
-  // the camera: opened on the capital and its zone, well inside the distance that shows the whole map
-  const whole = await page.evaluate(() => {
-    window.__shanhe?.render.renderer.setCamera({ distance: 1e9 }, true);
-    return window.__shanhe?.render.camera.distance ?? 0;
-  });
-  expect(opened).toBeLessThan(whole * 0.8);
-
   // the menu: interface size and language
   await page.click('#menu-button');
   await page.click('#menu-scale [data-scale="large"]');
@@ -354,13 +349,42 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
   await page.click('#menu-close');
 
   // the autosave brings the game back after a reload, and the settings with it
-  await open(page, '/?map=fixture');
+  await open(page, url);
   await expect(page.locator('#continue')).toBeVisible();
   await page.click('#continue');
   await expect(page.locator('#turn-counter')).toHaveAttribute('data-turn', '13');
   expect(await page.evaluate(() => window.__shanhe?.state.player)).toBe(0);
   expect((await ui()).scale.setting).toBe('small');
   expect(await page.evaluate(() => window.__shanhe?.state.routes.length)).toBeGreaterThan(0);
+  expect(errors).toEqual([]);
+});
+
+test('a player game opens on the capital, framed with its zone', async ({ page }) => {
+  const errors = collectErrors(page);
+  await open(page, '/?map=fixture');
+  await page.evaluate(() => window.__shanhe?.startGame({ nation: 'jia', seed: 1, map: 'fixture' }));
+  const view = await page.evaluate(() => {
+    const handle = window.__shanhe;
+    if (handle === undefined) throw new Error('window.__shanhe is not set');
+    const { state } = handle;
+    const capital = state.map.zones[state.polities[state.player]?.capital ?? -1]?.siteHex ?? -1;
+    const { size, originX, originZ } = state.map.projection.hexLayout;
+    const col = capital % state.map.width;
+    const row = Math.floor(capital / state.map.width);
+    const opened = handle.render.camera;
+    handle.render.renderer.setCamera({ distance: 1e9 }, true);
+    return {
+      opened,
+      farthest: handle.render.camera.distance,
+      // the centre of the capital's hex on the ground
+      x: originX + Math.sqrt(3) * size * (col + (row % 2 === 1 ? 0.5 : 0)),
+      z: originZ + 1.5 * size * row,
+    };
+  });
+  expect(view.opened.x).toBeCloseTo(view.x, 3);
+  expect(view.opened.z).toBeCloseTo(view.z, 3);
+  // close enough to show one zone, not the whole map
+  expect(view.opened.distance).toBeLessThan(view.farthest * 0.8);
   expect(errors).toEqual([]);
 });
 
