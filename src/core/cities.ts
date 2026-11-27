@@ -1,5 +1,6 @@
 /** Cities: yields, citizens, growth, the build queue and founding. */
 
+import { Terrain } from '../shared/mapData.ts';
 import {
   BUILDINGS,
   CITY,
@@ -8,19 +9,35 @@ import {
   COMBAT,
   FOCUS_WEIGHTS,
   IMPROVEMENTS,
-  MODERN_LAND_ERA,
   PROJECT,
   SETTLER,
   SETTLER_COST_STEP_PERCENT,
   SPECIALTY,
   UNITS,
+  baseBuilding,
+  baseImprovement,
+  buildingFor,
+  improvementFor,
   noYields,
   unitDef,
+  unitFor,
 } from './data.ts';
 import { suzerainCount } from './cityStates.ts';
-import { policySum, slotted } from './policies.ts';
+import {
+  addYields,
+  cityMatches,
+  cityMods,
+  hasBuildingKind,
+  hexMatches,
+  modsOf,
+  nationOf,
+  perCount,
+  percentOf,
+  routeMatches,
+  unitMatches,
+} from './modifiers.ts';
 import { partnersIn } from './relations.ts';
-import type { BuildingDef, Focus, ImprovementDef, UnitDef, Yields } from './data.ts';
+import type { BuildingDef, Focus, ImprovementDef, ImprovementId, UnitDef, Yields } from './data.ts';
 import {
   addUnit,
   at,
@@ -32,6 +49,7 @@ import {
 } from './context.ts';
 import type { Ctx } from './context.ts';
 import { checkUnit, knows, researches, specialtiesOf } from './tech.ts';
+import { NO_POLITY } from './types.ts';
 import type { BuildItem, City, RejectReason, Unit } from './types.ts';
 
 export function buildingDef(id: string): BuildingDef | undefined {
@@ -59,14 +77,27 @@ interface HexScore {
   food: number;
   production: number;
   gold: number;
+  science: number;
+  culture: number;
   score: number;
+}
+
+/**
+ * The hexes the city's citizens may work: those of its zone and the water in
+ * reach, and any mountain hex of the zone that carries an improvement.
+ */
+export function workableHexes(ctx: Ctx, city: City): readonly number[] {
+  const hexes = at(ctx.topo.workHexes, city.zone);
+  const improved = at(ctx.topo.zoneMountains, city.zone).filter((hex) => ctx.state.improvements[hex] !== undefined);
+  return improved.length === 0 ? hexes : [...hexes, ...improved];
 }
 
 /** The yields of every hex the city could work, best first under the focus. */
 function scoreHexes(ctx: Ctx, city: City, focus: Focus): HexScore[] {
   const { topo, state } = ctx;
   const weights = FOCUS_WEIGHTS[focus];
-  const cards = slotted(ctx, city.owner);
+  const bonuses = cityMods(ctx, city, 'hexYield');
+  const extra = noYields();
   let waterFood = 0;
   let waterProduction = 0;
   let waterGold = 0;
@@ -77,7 +108,7 @@ function scoreHexes(ctx: Ctx, city: City, focus: Focus): HexScore[] {
     waterGold += bonus.gold ?? 0;
   }
   const scores: HexScore[] = [];
-  for (const hex of at(topo.workHexes, city.zone)) {
+  for (const hex of workableHexes(ctx, city)) {
     let food = topo.baseFood[hex] as number;
     let production = topo.baseProduction[hex] as number;
     let gold = topo.baseGold[hex] as number;
@@ -88,25 +119,32 @@ function scoreHexes(ctx: Ctx, city: City, focus: Focus): HexScore[] {
       food += bonus.food;
       production += bonus.production;
       gold += bonus.gold;
-      for (const card of cards) {
-        const extra = card.improvementYields?.[improvement];
-        if (extra === undefined) continue;
-        food += extra.food ?? 0;
-        production += extra.production ?? 0;
-        gold += extra.gold ?? 0;
-      }
     }
     if (topo.water[hex] === 1) {
       food += waterFood;
       production += waterProduction;
       gold += waterGold;
     }
+    let science = 0;
+    let culture = 0;
+    if (bonuses.length > 0) {
+      extra.food = extra.production = extra.gold = extra.science = extra.culture = 0;
+      for (const bonus of bonuses) if (hexMatches(ctx, bonus.hex, hex)) addYields(extra, bonus.yields);
+      food += extra.food;
+      production += extra.production;
+      gold += extra.gold;
+      science = extra.science;
+      culture = extra.culture;
+    }
     scores.push({
       hex,
       food,
       production,
       gold,
-      score: food * weights.food + production * weights.production + gold * weights.gold,
+      science,
+      culture,
+      // Science and culture of a hex count like gold when the citizens choose.
+      score: food * weights.food + production * weights.production + (gold + science + culture) * weights.gold,
     });
   }
   return scores.sort((x, y) => y.score - x.score || x.hex - y.hex);
@@ -138,21 +176,61 @@ function pickHexes(ctx: Ctx, city: City): HexScore[] {
   return picked;
 }
 
-/** Morale of a city: 100, less its polity's war weariness, less unrest. */
-function cityMorale(ctx: Ctx, city: City): number {
-  const morale = 100 - polityOf(ctx, city.owner).warWeariness - (city.unrest > 0 ? CITY.unrestMorale : 0);
+/** Morale of a city: 100, less its polity's war weariness, less unrest, plus what modifiers add. */
+export function cityMorale(ctx: Ctx, city: City): number {
+  let morale = 100 - polityOf(ctx, city.owner).warWeariness - (city.unrest > 0 ? CITY.unrestMorale : 0);
+  for (const modifier of cityMods(ctx, city, 'morale')) {
+    if (cityMatches(ctx, modifier.city, city)) morale += modifier.morale;
+  }
   return Math.max(0, Math.min(100, morale));
+}
+
+/**
+ * What the city yields before percentages and morale are applied, and the
+ * percentages: the hexes its citizens work, its centre, its population, its
+ * buildings and every modifier.
+ */
+export function cityYieldParts(ctx: Ctx, city: City): { flat: Yields; percent: Yields } {
+  return yieldParts(ctx, city, pickHexes(ctx, city));
+}
+
+/** The yields of one hex for the city that works it, improvements, buildings and modifiers included. */
+export function hexYields(ctx: Ctx, city: City, hex: number): Yields {
+  const out = noYields();
+  const { topo, state } = ctx;
+  out.food = topo.baseFood[hex] as number;
+  out.production = topo.baseProduction[hex] as number;
+  out.gold = topo.baseGold[hex] as number;
+  const improvement = state.improvements[hex];
+  if (improvement !== undefined && (state.pillaged[hex] ?? 0) < state.turn) addYields(out, IMPROVEMENTS[improvement].yields);
+  if (topo.water[hex] === 1) for (const id of city.buildings) addYields(out, BUILDINGS[id].waterYields);
+  for (const bonus of cityMods(ctx, city, 'hexYield')) if (hexMatches(ctx, bonus.hex, hex)) addYields(out, bonus.yields);
+  return out;
 }
 
 /** Puts the citizens on hexes according to the focus and recomputes morale and yields. */
 export function assignCitizens(ctx: Ctx, city: City): void {
   const picked = pickHexes(ctx, city);
+  const { flat: yields, percent } = yieldParts(ctx, city, picked);
+  for (const key of YIELD_KEYS) yields[key] = Math.floor((yields[key] * (100 + percent[key])) / 100);
 
+  city.morale = cityMorale(ctx, city);
+  const factor = CITY.moraleFloor + ((1 - CITY.moraleFloor) * city.morale) / 100;
+  yields.production = city.unrest > 0 ? 0 : Math.floor(yields.production * factor);
+  yields.gold = Math.floor(yields.gold * factor);
+
+  city.worked = picked.map((entry) => entry.hex).sort((a, b) => a - b);
+  city.yields = yields;
+}
+
+function yieldParts(ctx: Ctx, city: City, picked: readonly HexScore[]): { flat: Yields; percent: Yields } {
   const yields: Yields = { ...CITY_CENTRE_YIELD };
   for (const entry of picked) {
     yields.food += entry.food;
     yields.production += entry.production;
     yields.gold += entry.gold;
+    yields.science += entry.science;
+    yields.culture += entry.culture;
   }
   yields.science += Math.floor(city.pop / CITY.popPerScience);
   yields.gold += Math.floor(city.pop / CITY.popPerGold);
@@ -165,38 +243,38 @@ export function assignCitizens(ctx: Ctx, city: City): void {
     }
   }
 
-  // Policy cards.
+  // Modifiers: policy cards, the trait, the leader and the city's own buildings.
   const owner = city.owner;
   const capital = polityOf(ctx, owner).capital === city.zone;
-  for (const card of slotted(ctx, owner)) {
-    if (card.popPerScience !== undefined) yields.science += Math.floor(city.pop / card.popPerScience);
-    for (const key of YIELD_KEYS) {
-      if (capital) yields[key] += card.capitalYields?.[key] ?? 0;
-      else percent[key] += card.nonCapitalPercent?.[key] ?? 0;
-      percent[key] += card.cityPercent?.[key] ?? 0;
-      for (const id of city.buildings) {
-        yields[key] += card.buildingYields?.[id]?.[key] ?? 0;
-        percent[key] += card.buildingPercent?.[id]?.[key] ?? 0;
-      }
+  for (const modifier of cityMods(ctx, city, 'cityYield')) {
+    if (!cityMatches(ctx, modifier.city, city)) continue;
+    const count = perCount(ctx, modifier.per, city);
+    if (count !== 0) addYields(yields, modifier.yields, count);
+  }
+  for (const modifier of cityMods(ctx, city, 'cityPercent')) {
+    if (modifier.building !== undefined && !hasBuildingKind(city, modifier.building)) continue;
+    if (cityMatches(ctx, modifier.city, city)) addYields(percent, modifier.percent);
+  }
+  const routeYields = cityMods(ctx, city, 'routeYield');
+  if (routeYields.length > 0) {
+    for (const route of ctx.state.routes) {
+      if (route.owner !== owner || route.from !== city.zone || route.pillagedUntil >= ctx.state.turn) continue;
+      for (const modifier of routeYields) if (routeMatches(ctx, modifier.route, route)) addYields(yields, modifier.yields);
     }
   }
   // Specialties, trade pacts and the city-states the owner is suzerain of.
-  yields.gold += SPECIALTY.goldPerCity * Math.min(SPECIALTY.max, specialtiesOf(ctx, owner).length);
+  yields.gold += Math.floor(
+    (SPECIALTY.goldPerCity * Math.min(SPECIALTY.max, specialtiesOf(ctx, owner).length) *
+      (100 + percentOf(ctx, owner, 'specialtyGold'))) /
+      100,
+  );
   percent.gold += tradePactGoldPercent(ctx, owner);
   percent.gold += CITY_STATE.financeGoldPercent * suzerainCount(ctx, owner, 'finance');
   if (capital) {
     yields.culture += CITY_STATE.cultureInCapital * suzerainCount(ctx, owner, 'culture');
     percent.production += CITY_STATE.industryCapitalProductionPercent * suzerainCount(ctx, owner, 'industry');
   }
-  for (const key of YIELD_KEYS) yields[key] = Math.floor((yields[key] * (100 + percent[key])) / 100);
-
-  city.morale = cityMorale(ctx, city);
-  const factor = CITY.moraleFloor + ((1 - CITY.moraleFloor) * city.morale) / 100;
-  yields.production = city.unrest > 0 ? 0 : Math.floor(yields.production * factor);
-  yields.gold = Math.floor(yields.gold * factor);
-
-  city.worked = picked.map((entry) => entry.hex).sort((a, b) => a - b);
-  city.yields = yields;
+  return { flat: yields, percent };
 }
 
 export const YIELD_KEYS = ['food', 'production', 'gold', 'science', 'culture'] as const;
@@ -209,24 +287,36 @@ export const YIELD_KEYS = ['food', 'production', 'gold', 'science', 'culture'] a
 export function tradePactGoldPercent(ctx: Ctx, polity: number): number {
   const partners = partnersIn(ctx, 'tradePact', polity);
   if (partners.length === 0) return 0;
-  let percent = policySum(ctx, polity, 'tradePactGoldPercent');
-  for (const partner of partners) percent = Math.max(percent, policySum(ctx, partner, 'tradePactGoldPercent'));
+  const own = (who: number): number => {
+    let total = 0;
+    for (const modifier of modsOf(ctx, who, 'tradePactGold')) total += modifier.percent;
+    return total;
+  };
+  let percent = own(polity);
+  for (const partner of partners) percent = Math.max(percent, own(partner));
   return percent;
 }
 
-/** Production the city puts into `item` this turn: its production, plus what its owner's cards add for the kind of item. */
+/** Production the city puts into `item` this turn: its production, plus what modifiers add for the kind of item. */
 export function productionTowards(ctx: Ctx, city: City, item: BuildItem): number {
+  return Math.floor((city.yields.production * (100 + productionPercent(ctx, city, item))) / 100);
+}
+
+/** Percentage modifiers add to the city's production while it builds `item`. */
+export function productionPercent(ctx: Ctx, city: City, item: BuildItem): number {
   let percent = 0;
-  if (item.kind === 'unit') {
-    const def = UNITS[item.unit];
-    percent += policySum(ctx, city.owner, 'unitProductionPercent');
-    if (def !== undefined && def.domain === 'land' && def.strength > 0 && def.era >= MODERN_LAND_ERA) {
-      percent += policySum(ctx, city.owner, 'modernLandUnitProductionPercent');
+  for (const modifier of cityMods(ctx, city, 'production')) {
+    if (modifier.item !== item.kind) continue;
+    if (item.kind === 'unit') {
+      const def = UNITS[unitFor(nationOf(ctx, city.owner), item.unit)];
+      if (modifier.unit !== undefined && (def === undefined || !unitMatches(modifier.unit, def))) continue;
+    } else if (item.kind === 'building') {
+      if (modifier.building !== undefined && baseBuilding(item.building) !== modifier.building) continue;
+      if (modifier.firstBuilding === true && city.buildings.length > 0) continue;
     }
-  } else if (item.kind === 'building') {
-    percent += policySum(ctx, city.owner, 'buildingProductionPercent');
+    percent += modifier.percent;
   }
-  return Math.floor((city.yields.production * (100 + percent)) / 100);
+  return percent;
 }
 
 // ----------------------------------------------------------- build items
@@ -235,7 +325,7 @@ export function productionTowards(ctx: Ctx, city: City, item: BuildItem): number
 export function itemCost(ctx: Ctx, city: City, item: BuildItem): number {
   switch (item.kind) {
     case 'unit': {
-      const def = UNITS[item.unit];
+      const def = UNITS[unitFor(nationOf(ctx, city.owner), item.unit)];
       if (def === undefined) return 0;
       if (def.id !== SETTLER) return def.cost;
       const built = polityOf(ctx, city.owner).settlersBuilt;
@@ -280,6 +370,58 @@ export function improvesHills(ctx: Ctx, def: ImprovementDef, polity: number): bo
 }
 
 /**
+ * True if a city of `polity` may put the improvement on the hex as far as
+ * the ground goes: its terrain, feature, river, shore and hills, with what
+ * the polity's techs and modifiers allow beyond the improvement's own rules.
+ */
+export function canImprove(ctx: Ctx, polity: number, id: ImprovementId, hex: number): boolean {
+  const { map, topo } = ctx;
+  const def: ImprovementDef = IMPROVEMENTS[id];
+  const kind = baseImprovement(id);
+  const terrain = map.terrain[hex] as number;
+  let terrainFits = def.terrains.includes(terrain);
+  let hillsFree = improvesHills(ctx, def, polity);
+  let granted = false;
+  for (const modifier of modsOf(ctx, polity, 'improvementSite')) {
+    if (!modifier.improvements.includes(kind)) continue;
+    if (modifier.terrains?.includes(terrain) === true) {
+      terrainFits = true;
+      granted = true;
+    }
+    if (modifier.hills === true) hillsFree = true;
+  }
+  if (!terrainFits) return false;
+  if (!def.features.includes(map.feature[hex] as number)) return false;
+  if (def.river === true && map.riverEdges[hex] === 0) return false;
+  if (def.shore === true) {
+    let shore = false;
+    for (let d = 0; d < 6 && !shore; d++) {
+      const next = topo.neighbors[hex * 6 + d] as number;
+      shore = next >= 0 && topo.water[next] === 1;
+    }
+    if (!shore) return false;
+  }
+  // A mountain is neither hilly nor flat: where a modifier allows it, the hills rule does not apply.
+  if (terrain === Terrain.Mountain) return granted;
+  const hilly = map.hills[hex] === 1;
+  if (hilly && hillsFree) return true;
+  return def.hills === 'any' || (def.hills === 'yes') === hilly;
+}
+
+/** True if the hex is one the city may improve: one its citizens work, or a mountain of its zone. */
+export function inImprovementReach(ctx: Ctx, city: City, hex: number): boolean {
+  if (ctx.topo.workZone[hex] === city.zone) return true;
+  return ctx.map.zone[hex] === city.zone && ctx.map.terrain[hex] === Terrain.Mountain;
+}
+
+/** The hexes the city could improve: those its citizens work and the mountains of its zone. */
+export function improvableHexes(ctx: Ctx, city: City): readonly number[] {
+  const mountains = at(ctx.topo.zoneMountains, city.zone);
+  const hexes = at(ctx.topo.workHexes, city.zone);
+  return mountains.length === 0 ? hexes : [...hexes, ...mountains];
+}
+
+/**
  * Why the city cannot build the item, or null if it can.
  *
  * @param queued true when the item already sits in the queue, so that being
@@ -288,10 +430,13 @@ export function improvesHills(ctx: Ctx, def: ImprovementDef, polity: number): bo
 export function checkItem(ctx: Ctx, city: City, item: BuildItem, queued = false): RejectReason | null {
   const { state, map, topo } = ctx;
   const kind = at(map.polities, city.owner).kind;
+  const nation = nationOf(ctx, city.owner);
   switch (item.kind) {
     case 'unit': {
-      const def = UNITS[item.unit];
+      // A nation builds its unique unit where the others build the generic one; the generic id stands for it.
+      const def = UNITS[unitFor(nation, item.unit)];
       if (def === undefined || !def.buildable) return 'badItem';
+      if (def.nation !== null && def.nation !== nation) return 'badItem';
       if (def.id === SETTLER && kind !== 'nation') return 'badItem';
       const reason = checkUnit(ctx, city.owner, def);
       if (reason !== null) return reason;
@@ -301,18 +446,24 @@ export function checkItem(ctx: Ctx, city: City, item: BuildItem, queued = false)
     case 'building': {
       const def = buildingDef(item.building);
       if (def === undefined) return 'badItem';
+      // A unique building belongs to its nation, which builds it instead of the one it replaces.
+      if (def.nation !== null && def.nation !== nation) return 'badItem';
+      if (buildingFor(nation, item.building) !== item.building) return 'badItem';
       if (!knows(ctx, city.owner, def.tech)) return 'needsTech';
-      if (city.buildings.includes(item.building)) return 'alreadyBuilt';
+      if (hasBuildingKind(city, baseBuilding(item.building))) return 'alreadyBuilt';
       if (def.coastal && topo.coastal[city.zone] !== true) return 'needsCoast';
+      if (def.capitalOnly && polityOf(ctx, city.owner).capital !== city.zone) return 'notCapital';
       break;
     }
     case 'improvement': {
       const def = improvementDef(item.improvement);
       if (def === undefined) return 'badItem';
+      if (def.nation !== undefined && def.nation !== nation) return 'badItem';
+      if (improvementFor(nation, item.improvement) !== item.improvement) return 'badItem';
       if (!Number.isInteger(item.hex) || item.hex < 0 || item.hex >= topo.count) return 'badHex';
-      if (topo.workZone[item.hex] !== city.zone) return 'badHex';
+      if (!inImprovementReach(ctx, city, item.hex)) return 'badHex';
       if (!knows(ctx, city.owner, def.tech)) return 'needsTech';
-      if (!improvementFits(ctx, def, item.hex, improvesHills(ctx, def, city.owner))) return 'badHex';
+      if (!canImprove(ctx, city.owner, item.improvement, item.hex)) return 'badHex';
       if (state.improvements[item.hex] !== undefined) return 'alreadyBuilt';
       break;
     }
@@ -413,16 +564,16 @@ function siteFree(ctx: Ctx, zone: number, owner: number): boolean {
 export function deliverItem(ctx: Ctx, city: City, item: BuildItem): boolean {
   switch (item.kind) {
     case 'unit': {
-      const def = unitDef(item.unit);
+      const def = unitDef(unitFor(nationOf(ctx, city.owner), item.unit));
       const hex = spawnHex(ctx, city, def);
       if (hex < 0) return false;
       const unit = addUnit(ctx, def.id, city.owner, hex);
       if (def.id === SETTLER) polityOf(ctx, city.owner).settlersBuilt++;
-      if (def.domain === 'sea') {
-        // Ships of the suzerain of a naval city-state start with experience.
-        unit.xp = CITY_STATE.navalXp * suzerainCount(ctx, city.owner, 'naval');
-        while (unit.level < COMBAT.levelXp.length && unit.xp >= at(COMBAT.levelXp, unit.level)) unit.level++;
-      }
+      // Ships of the suzerain of a naval city-state start with experience, and so do the units modifiers name.
+      if (def.domain === 'sea') unit.xp = CITY_STATE.navalXp * suzerainCount(ctx, city.owner, 'naval');
+      for (const modifier of cityMods(ctx, city, 'startXp')) if (unitMatches(modifier.unit, def)) unit.xp += modifier.xp;
+      for (const ability of def.abilities) if (ability.type === 'startXp') unit.xp += ability.xp;
+      while (unit.level < COMBAT.levelXp.length && unit.xp >= at(COMBAT.levelXp, unit.level)) unit.level++;
       return true;
     }
     case 'building':
@@ -430,6 +581,10 @@ export function deliverItem(ctx: Ctx, city: City, item: BuildItem): boolean {
       return true;
     case 'improvement':
       ctx.state.improvements[item.hex] = item.improvement;
+      if (IMPROVEMENTS[item.improvement].road === true && ctx.state.roads[item.hex] === undefined) {
+        ctx.state.roads[item.hex] = 1;
+        ctx.events.push({ type: 'roadsBuilt', hexes: [item.hex], level: 1 });
+      }
       return true;
     case 'city':
       if (!siteFree(ctx, item.zone, city.owner)) return false;
@@ -446,6 +601,13 @@ export function deliverItem(ctx: Ctx, city: City, item: BuildItem): boolean {
 
 // --------------------------------------------------------- turn processing
 
+/** Food the city needs to gain a citizen. */
+export function growthNeed(ctx: Ctx, city: City): number {
+  const base = CITY.growthBase + CITY.growthPerPop * city.pop;
+  const percent = city.owner === NO_POLITY ? 0 : percentOf(ctx, city.owner, 'growth');
+  return percent === 0 ? base : Math.max(1, Math.floor((base * (100 + percent)) / 100));
+}
+
 /** One turn of a city: citizens, growth, production, repairs. */
 export function processCity(ctx: Ctx, city: City): void {
   const { state } = ctx;
@@ -453,7 +615,7 @@ export function processCity(ctx: Ctx, city: City): void {
 
   // Growth.
   city.food += city.yields.food - city.pop * CITY.foodPerCitizen;
-  const need = CITY.growthBase + CITY.growthPerPop * city.pop;
+  const need = growthNeed(ctx, city);
   if (city.food >= need && city.pop < CITY.maxPop) {
     city.food -= need;
     city.pop++;

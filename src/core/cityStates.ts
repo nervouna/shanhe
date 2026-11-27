@@ -4,7 +4,7 @@ import { CITY_STATE } from './data.ts';
 import type { CityStateType } from './data.ts';
 import { dropKey, polityOf } from './context.ts';
 import type { Ctx } from './context.ts';
-import { policySum } from './policies.ts';
+import { percentOf } from './modifiers.ts';
 import { isCityState } from './relations.ts';
 import { NO_POLITY } from './types.ts';
 
@@ -60,7 +60,7 @@ export function addInfluence(ctx: Ctx, cityState: number, polity: number, amount
   if (!isCityState(ctx, cityState) || polity === cityState) return;
   const self = polityOf(ctx, cityState);
   if (!self.alive) return;
-  const gain = amount > 0 ? Math.floor((amount * (100 + policySum(ctx, polity, 'influencePercent'))) / 100) : amount;
+  const gain = amount > 0 ? Math.floor((amount * (100 + percentOf(ctx, polity, 'influence'))) / 100) : amount;
   const value = Math.max(0, Math.min(CITY_STATE.maxInfluence, (self.influence[polity] ?? 0) + gain));
   if (value === 0) dropKey(self.influence, polity);
   else self.influence[polity] = value;

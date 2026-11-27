@@ -4,6 +4,8 @@ import { POLICIES, POLICY, isPolicyId, policyCost } from './data.ts';
 import type { PolicyDef, PolicyId } from './data.ts';
 import { at, polityOf } from './context.ts';
 import type { Ctx } from './context.ts';
+import { kitOfNation } from './kits.ts';
+import { forgetMods, modsOf } from './modifiers.ts';
 import { NO_POLITY } from './types.ts';
 import type { PolityState, RejectReason } from './types.ts';
 
@@ -12,10 +14,26 @@ export function policySlots(era: number): number {
   return at(POLICY.slotsByEra, Math.max(0, Math.min(POLICY.slotsByEra.length - 1, era)));
 }
 
-/** Gives a polity the empty slots its era adds. Called when it enters an era. */
-export function growSlots(polity: PolityState, nation: boolean): void {
+/**
+ * Policy slots of the nation with the id (`MapPolity.id`) in era `era`: those
+ * of the era, plus what its kit adds.
+ */
+export function policySlotsFor(nation: string, era: number): number {
+  let slots = policySlots(era);
+  const kit = kitOfNation(nation);
+  if (kit === null) return slots;
+  for (const modifier of [...kit.trait, ...kit.leader]) if (modifier.type === 'policySlots') slots += modifier.slots;
+  return slots;
+}
+
+/**
+ * Gives a polity the empty slots its era adds. Called when it enters an era.
+ *
+ * @param id the polity's `MapPolity.id`, for the slots its kit adds.
+ */
+export function growSlots(polity: PolityState, nation: boolean, id = ''): void {
   if (!nation) return;
-  while (polity.slots.length < policySlots(polity.era)) polity.slots.push(null);
+  while (polity.slots.length < policySlotsFor(id, polity.era)) polity.slots.push(null);
 }
 
 /** True if the polity has the card in a slot. */
@@ -89,14 +107,22 @@ export function checkSlot(ctx: Ctx, polity: number, policy: unknown, slot: unkno
   return ctx.state.turn >= self.swapReadyOn ? null : 'swapCooldown';
 }
 
+/** Turns before another paid swap after one. */
+export function swapCooldown(ctx: Ctx, polity: number): number {
+  let turns: number = POLICY.swapCooldown;
+  for (const modifier of modsOf(ctx, polity, 'swapCooldown')) turns += modifier.turns;
+  return Math.max(0, turns);
+}
+
 /** Carries out what {@link checkSlot} has passed. */
 export function slotPolicy(ctx: Ctx, polity: number, policy: PolicyId | null, slot: number): void {
   const self = polityOf(ctx, polity);
   const replaced = at(self.slots, slot);
   if (policy !== null && replaced !== null) {
     if (self.freeSwaps > 0) self.freeSwaps--;
-    else self.swapReadyOn = ctx.state.turn + POLICY.swapCooldown;
+    else self.swapReadyOn = ctx.state.turn + swapCooldown(ctx, polity);
   }
   self.slots[slot] = policy;
+  forgetMods(ctx, polity);
   ctx.events.push({ type: 'policySlotted', polity, slot, policy, replaced });
 }

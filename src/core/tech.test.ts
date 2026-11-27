@@ -6,10 +6,11 @@ import { Feature, NO_RESOURCE, Terrain } from '../shared/mapData.ts';
 import {
   AIR_STRIKE,
   BUILDINGS,
-  BUILDING_IDS,
+  GENERIC_BUILDING_IDS,
+  GENERIC_IMPROVEMENT_IDS,
+  UNIT_IDS,
   ERAS,
   IMPROVEMENTS,
-  IMPROVEMENT_IDS,
   PROJECT,
   RESEARCH,
   STRATEGIC_RESOURCES,
@@ -148,9 +149,9 @@ describe('tech table', () => {
     };
     for (const tech of TECH_IDS) {
       const unlocked = [
-        ...IMPROVEMENT_IDS.filter((id) => IMPROVEMENTS[id].tech === tech),
-        ...BUILDING_IDS.filter((id) => BUILDINGS[id].tech === tech),
-        ...Object.values(UNITS).filter((unit) => unit.tech === tech).map((unit) => unit.id),
+        ...GENERIC_IMPROVEMENT_IDS.filter((id) => IMPROVEMENTS[id].tech === tech),
+        ...GENERIC_BUILDING_IDS.filter((id) => BUILDINGS[id].tech === tech),
+        ...UNIT_IDS.filter((id) => UNITS[id]!.tech === tech),
       ];
       expect(unlocked.sort(), tech).toEqual([...expected[tech]].sort());
     }
@@ -171,7 +172,7 @@ describe('tech table', () => {
 
   it('gates units by strategic resource as doc 04 says', () => {
     const needing = (resource: string): string[] =>
-      Object.values(UNITS).filter((unit) => unit.resource === resource).map((unit) => unit.id).sort();
+      UNIT_IDS.filter((id) => UNITS[id]!.resource === resource).sort();
     expect(needing('horses')).toEqual(['chariot', 'dragoon', 'heavyCavalry', 'horseman', 'mountedRifleman']);
     expect(needing('iron')).toEqual(['heavyInfantry', 'swordsman']);
     expect(needing('coal')).toEqual(['ironclad']);
@@ -180,11 +181,11 @@ describe('tech table', () => {
   });
 
   it('has the 16 generic buildings, each with an effect, an upkeep and a tech of its era', () => {
-    expect(BUILDING_IDS.sort()).toEqual([
+    expect([...GENERIC_BUILDING_IDS].sort()).toEqual([
       'academy', 'airfield', 'bank', 'factory', 'granary', 'harbour', 'hospital', 'market', 'observatory', 'powerPlant',
       'printShop', 'researchInstitute', 'temple', 'university', 'walls', 'workshop',
     ]);
-    for (const id of BUILDING_IDS) {
+    for (const id of GENERIC_BUILDING_IDS) {
       const def = BUILDINGS[id];
       const effects =
         Object.keys(def.yields).length + Object.keys(def.percent).length + Object.keys(def.waterYields).length +
@@ -329,7 +330,7 @@ describe('unlocks', () => {
   it('opens a building with its tech', () => {
     expect(build(base, { kind: 'building', building: 'granary' })).toBe('needsTech');
     expect(build(learn(base, JIA, ['farming']), { kind: 'building', building: 'granary' })).toBe('ok');
-    for (const id of BUILDING_IDS) {
+    for (const id of GENERIC_BUILDING_IDS) {
       if (BUILDINGS[id].coastal) continue;
       const item: BuildItem = { kind: 'building', building: id };
       expect(build(learn(base, JIA, TECH_IDS.filter((tech) => tech !== BUILDINGS[id].tech)), item), id).toBe('needsTech');
