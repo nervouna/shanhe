@@ -2,9 +2,11 @@
 
 import { hexNeighbors, indexToOffset } from '../shared/hex.ts';
 import type { MapData } from '../shared/mapData.ts';
-import { cloneState } from './context.ts';
-import { unitDef } from './data.ts';
+import { cloneState, createCtx } from './context.ts';
+import { TECH_IDS, unitDef } from './data.ts';
+import type { TechId } from './data.ts';
 import { applyAction } from './game.ts';
+import { learnTech } from './tech.ts';
 import { topologyOf } from './topology.ts';
 import type { Action, GameEvent, GameState, MutableGameState, Unit } from './types.ts';
 
@@ -70,6 +72,28 @@ export function findPair(map: MapData, test: (a: number, b: number) => boolean):
     for (const b of around(map, a)) if (test(a, b)) return [a, b];
   }
   throw new Error('no such pair of hexes on this map');
+}
+
+/**
+ * A copy of `state` in which `polity` (or every polity) knows the given
+ * techs (default: all of them), with the era and flags that follow from them.
+ * Prerequisites and costs are not checked.
+ */
+export function learn(state: GameState, polity: number | 'all', techs: readonly TechId[] = TECH_IDS): GameState {
+  const ctx = createCtx(cloneState(state));
+  const polities = polity === 'all' ? ctx.state.polities.map((_, index) => index) : [polity];
+  for (const index of polities) for (const tech of techs) learnTech(ctx, index, tech);
+  return ctx.state;
+}
+
+/** A copy of `map` with the resource `id` on each of `hexes`; the resource is added to the list if it is new. */
+export function withResource(map: MapData, id: string, hexes: readonly number[]): MapData {
+  const resources = [...map.resources];
+  let index = resources.findIndex((entry) => entry.id === id);
+  if (index < 0) index = resources.push({ id, nameZh: id, nameEn: id }) - 1;
+  const resource = Int16Array.from(map.resource);
+  for (const hex of hexes) resource[hex] = index;
+  return { ...map, resources, resource };
 }
 
 /** True if no two units share a hex. */

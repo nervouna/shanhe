@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
+import { Terrain } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
 import { createSyntheticMap } from '../shared/syntheticMap.ts';
-import { CITY, EMBARK_COAST_ERA, UNITS, eraOfTurn } from './data.ts';
+import { CITY, TECHS, UNITS } from './data.ts';
 import { NO_POLITY, createGame, endTurn, hexOwner } from './game.ts';
 import type { Action, GameEvent, GameSetup, GameState } from './game.ts';
 import { topologyOf } from './topology.ts';
@@ -20,7 +21,10 @@ function violation(state: GameState): string | null {
     const def = UNITS[unit.type]!;
     const afloat = topo.water[unit.hex] === 1;
     if (def.domain === 'sea' && !afloat) return `ship ${unit.id} on land`;
-    if (def.domain === 'land' && afloat && eraOfTurn(state.turn) < EMBARK_COAST_ERA) return `unit ${unit.id} afloat too early`;
+    const known = unit.owner === NO_POLITY ? [] : state.polities[unit.owner]!.techs;
+    if (def.domain === 'land' && afloat && !known.includes('boats')) return `unit ${unit.id} afloat without Boats`;
+    if (map.terrain[unit.hex] === Terrain.Ocean && !known.includes('compass')) return `unit ${unit.id} on the ocean without Compass`;
+    if (def.tech !== null && !known.includes(def.tech)) return `unit ${unit.id} is a ${unit.type} without its tech`;
     if (unit.owner === NO_POLITY) continue;
     if (!state.polities[unit.owner]!.alive) return `unit ${unit.id} of a dead polity`;
     const owner = hexOwner(state, unit.hex);
@@ -38,7 +42,12 @@ function violation(state: GameState): string | null {
     if (!state.polities[city.owner]!.alive) return `city ${city.zone} belongs to a dead polity`;
     if (city.worked.length > city.pop) return `city ${city.zone} works too many hexes`;
   }
-  for (const polity of state.polities) if (polity.gold < 0) return 'negative treasury';
+  for (const polity of state.polities) {
+    if (polity.gold < 0) return 'negative treasury';
+    for (const tech of polity.techs) {
+      if (TECHS[tech].era > polity.era) return `a polity knows ${tech} before its era`;
+    }
+  }
   return null;
 }
 
@@ -93,6 +102,24 @@ describe('simulated games on the fixture', () => {
     expect(Math.max(...cities.map((city) => city.pop))).toBeGreaterThan(8);
     expect(Object.keys(long.state.improvements).length).toBeGreaterThan(10);
     expect(cities.every((city) => city.buildings.length > 0)).toBe(true);
+  });
+
+  it('have the major research through the eras, build what that unlocks and take the others along', () => {
+    const jia = long.state.polities[0]!;
+    expect(jia.techs.length).toBeGreaterThanOrEqual(24);
+    expect(jia.era).toBeGreaterThanOrEqual(3);
+    const eras = long.events.filter((event): event is Extract<GameEvent, { type: 'eraEntered' }> => event.type === 'eraEntered');
+    expect(eras.filter((event) => event.polity === 0).map((event) => event.era)).toEqual(
+      Array.from({ length: jia.era }, (_, i) => i + 1),
+    );
+    const built = new Set(long.state.cities.flatMap((city) => (city === null ? [] : city.buildings)));
+    for (const building of ['academy', 'market', 'workshop', 'printShop', 'university', 'observatory', 'bank'] as const) {
+      expect(built.has(building), building).toBe(true);
+    }
+    expect(new Set(Object.values(long.state.improvements)).has('irrigationCanal')).toBe(true);
+    // The nations that do not research know what the only researching nation knows.
+    const yi = long.state.polities[1]!;
+    if (yi.alive) expect([...yi.techs].sort()).toEqual([...jia.techs].sort());
   });
 
   it('have only major nations declare war, and wars end in peace or conquest', () => {

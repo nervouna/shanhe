@@ -3,18 +3,28 @@
 import { hexRange, indexToOffset } from '../shared/hex.ts';
 import {
   AI,
+  AIR_STRIKE,
   BUILDING_IDS,
   FOCUSES,
   IMPROVEMENT_IDS,
+  PROJECT,
   SETTLER,
   UNIT_IDS,
   UPGRADE_GOLD_PER_COST,
   WAR,
   unitDef,
-  upgradeTarget,
 } from './data.ts';
-import { assignCitizens, checkItem, foundCity, improvementFits, improvementDef } from './cities.ts';
-import { hexesApart, resolveAttack, unitPower } from './combat.ts';
+import type { UnitDef } from './data.ts';
+import {
+  assignCitizens,
+  checkItem,
+  foundCity,
+  hasBuilding,
+  improvementFits,
+  improvementDef,
+  improvesHills,
+} from './cities.ts';
+import { hexesApart, resolveAirStrike, resolveAttack, unitPower } from './combat.ts';
 import {
   at,
   atWar,
@@ -32,6 +42,7 @@ import {
   terrainAllows,
 } from './context.ts';
 import type { Ctx } from './context.ts';
+import { checkResearch, openTechs, upgradeTargetFor } from './tech.ts';
 import { NO_POLITY } from './types.ts';
 import type { Action, BuildItem, City, RejectReason, Unit } from './types.ts';
 
@@ -88,7 +99,7 @@ export function stepCost(ctx: Ctx, unit: Unit, to: number): number {
 /** Why `unit` cannot step onto `to`, or null. Movement points are not checked. */
 export function checkStep(ctx: Ctx, unit: Unit, to: number): RejectReason | null {
   if (!isAdjacent(ctx, unit.hex, to)) return 'notAdjacent';
-  if (!terrainAllows(ctx, unitDef(unit.type), to)) return 'impassable';
+  if (!terrainAllows(ctx, unitDef(unit.type), to, unit.owner)) return 'impassable';
   if (!bordersOpen(ctx, unit.owner, to)) return 'closedBorders';
   if (ctx.unitAt.has(to)) return 'hexOccupied';
   const city = cityAtHex(ctx, to);
@@ -107,10 +118,27 @@ function inOwnBorders(ctx: Ctx, unit: Unit): boolean {
   return false;
 }
 
-export function upgradeCost(unit: Unit): number {
-  const target = upgradeTarget(unit.type);
-  if (target === null) return 0;
+/** Gold it costs to upgrade `unit` to `target`. */
+export function upgradeCost(unit: Unit, target: UnitDef): number {
   return Math.max(0, target.cost - unitDef(unit.type).cost) * UPGRADE_GOLD_PER_COST;
+}
+
+/** Why the city cannot make its air strike on `target`, or null. */
+function checkAirStrike(ctx: Ctx, city: City, target: unknown): RejectReason | null {
+  if (!hasBuilding(city, (building) => building.airStrike)) return 'noAirfield';
+  if (city.airStruck) return 'alreadyStruck';
+  if (!isHex(ctx, target)) return 'badHex';
+  if (hexesApart(ctx, at(ctx.map.zones, city.zone).siteHex, target) > AIR_STRIKE.range) return 'outOfRange';
+  const enemyCity = cityAtHex(ctx, target);
+  const defender = ctx.unitAt.get(target);
+  const victim =
+    enemyCity !== null && enemyCity.owner !== city.owner
+      ? enemyCity.owner
+      : defender !== undefined
+        ? defender.owner
+        : city.owner;
+  if (victim === city.owner) return 'noTarget';
+  return atWar(ctx, city.owner, victim) ? null : 'atPeace';
 }
 
 /** Military strength of a polity: the sum of its units' power. */
@@ -187,11 +215,11 @@ export function validate(ctx: Ctx, action: Action): RejectReason | null {
     case 'upgrade': {
       const unit = ownUnit(ctx, polity, action.unit);
       if (typeof unit === 'string') return unit;
-      const target = upgradeTarget(unit.type);
-      if (target === null || target.era > ctx.era) return 'noUpgrade';
+      const target = upgradeTargetFor(ctx, unit);
+      if (target === null) return 'noUpgrade';
       if (unit.moves <= 0) return 'noMovesLeft';
       if (!inOwnBorders(ctx, unit)) return 'notInOwnBorders';
-      return polityOf(ctx, polity).gold >= upgradeCost(unit) ? null : 'notEnoughGold';
+      return polityOf(ctx, polity).gold >= upgradeCost(unit, target) ? null : 'notEnoughGold';
     }
     case 'settle': {
       const unit = ownUnit(ctx, polity, action.unit);
@@ -216,6 +244,13 @@ export function validate(ctx: Ctx, action: Action): RejectReason | null {
       return Number.isInteger(action.index) && action.index >= 0 && action.index < city.queue.length
         ? null
         : 'badIndex';
+    }
+    case 'setResearch':
+      return checkResearch(ctx, polity, action.tech);
+    case 'airStrike': {
+      const city = ownCity(ctx, polity, action.city);
+      if (typeof city === 'string') return city;
+      return checkAirStrike(ctx, city, action.target);
     }
     case 'declareWar': {
       if (!isPolity(ctx, action.target) || action.target === polity) return 'badTarget';
@@ -271,9 +306,9 @@ export function execute(ctx: Ctx, action: Action): void {
     }
     case 'upgrade': {
       const unit = ctx.unitById.get(action.unit) as Unit;
-      const target = upgradeTarget(unit.type);
+      const target = upgradeTargetFor(ctx, unit);
       if (target === null) return;
-      polityOf(ctx, action.polity).gold -= upgradeCost(unit);
+      polityOf(ctx, action.polity).gold -= upgradeCost(unit, target);
       ctx.events.push({ type: 'unitUpgraded', unit: unit.id, from: unit.type, to: target.id });
       unit.type = target.id;
       unit.moves = 0;
@@ -301,6 +336,12 @@ export function execute(ctx: Ctx, action: Action): void {
       if (action.index === 0) city.progress = 0;
       return;
     }
+    case 'setResearch':
+      polityOf(ctx, action.polity).research = action.tech;
+      return;
+    case 'airStrike':
+      resolveAirStrike(ctx, state.cities[action.city] as City, action.target);
+      return;
     case 'declareWar': {
       const a = Math.min(action.polity, action.target);
       const b = Math.max(action.polity, action.target);
@@ -378,15 +419,27 @@ export function legalActions(ctx: Ctx, polity: number): Action[] {
     for (const improvement of IMPROVEMENT_IDS) {
       const def = improvementDef(improvement);
       if (def === undefined) continue;
+      const onHills = improvesHills(ctx, def, polity);
       for (const hex of at(topo.workHexes, city.zone)) {
-        if (improvementFits(ctx, def, hex)) items.push({ kind: 'improvement', improvement, hex });
+        if (improvementFits(ctx, def, hex, onHills)) items.push({ kind: 'improvement', improvement, hex });
       }
     }
+    items.push({ kind: 'project', project: PROJECT.id });
     state.zoneOwner.forEach((owner, zone) => {
       if (owner === polity && state.cities[zone] === null) items.push({ kind: 'city', zone });
     });
     for (const item of items) offer({ type: 'queueBuild', polity, city: city.zone, item });
     city.queue.forEach((_, index) => out.push({ type: 'unqueueBuild', polity, city: city.zone, index }));
+    if (hasBuilding(city, (building) => building.airStrike) && !city.airStruck) {
+      for (const offset of hexRange(indexToOffset(at(map.zones, city.zone).siteHex, map.width), AIR_STRIKE.range)) {
+        if (offset.col < 0 || offset.col >= map.width || offset.row < 0 || offset.row >= map.height) continue;
+        offer({ type: 'airStrike', polity, city: city.zone, target: offset.row * map.width + offset.col });
+      }
+    }
+  }
+
+  for (const tech of openTechs(ctx, polity)) {
+    if (polityOf(ctx, polity).research !== tech) out.push({ type: 'setResearch', polity, tech });
   }
 
   for (let target = 0; target < ctx.n; target++) {

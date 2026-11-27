@@ -6,7 +6,7 @@
 
 import { Terrain } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
-import { EMBARK_COAST_ERA, OCEAN_ERA, eraOfTurn, unitDef } from './data.ts';
+import { TECHS, unitDef } from './data.ts';
 import type { UnitDef } from './data.ts';
 import { topologyOf } from './topology.ts';
 import type { Topology } from './topology.ts';
@@ -25,8 +25,19 @@ export interface Ctx {
   readonly n: number;
   /** `n * n` flags: 1 where the two polities are at war. */
   readonly war: Uint8Array;
-  /** Era of the current turn. */
-  era: number;
+  /** Per polity, from its techs: 0 land only, 1 may be on coast and lake, 2 on ocean too. */
+  readonly seaLevel: Uint8Array;
+}
+
+/** 0: land only. 1: coast and lake (Boats). 2: ocean too (Compass). */
+export function seaLevelOf(polity: Pick<PolityState, 'techs'>): number {
+  let level = 0;
+  for (const tech of polity.techs) {
+    const sea = TECHS[tech].sea;
+    if (sea === 'ocean') level = Math.max(level, 2);
+    else if (sea === 'coast') level = Math.max(level, 1);
+  }
+  return level;
 }
 
 /** Copies plain JSON data. */
@@ -58,7 +69,7 @@ export function createCtx(state: MutableGameState): Ctx {
     unitById: new Map(),
     n,
     war: new Uint8Array(n * n),
-    era: eraOfTurn(state.turn),
+    seaLevel: Uint8Array.from(state.polities, seaLevelOf),
   };
   for (const unit of state.units) {
     ctx.unitAt.set(unit.hex, unit);
@@ -131,13 +142,17 @@ export function warCount(ctx: Ctx, polity: number): number {
 
 // --------------------------------------------------------------- movement
 
-/** True if the unit type may stand on the hex's terrain in the current era. */
-export function terrainAllows(ctx: Ctx, def: UnitDef, hex: number): boolean {
+/**
+ * True if a unit of the type that belongs to `owner` may stand on the hex's
+ * terrain. Land units embark on coast and lake once their owner knows Boats;
+ * ocean is closed to them and to ships until it knows Compass.
+ */
+export function terrainAllows(ctx: Ctx, def: UnitDef, hex: number, owner: number): boolean {
   if (ctx.topo.enterable[hex] !== 1) return false;
   if (ctx.topo.water[hex] === 1) {
-    const ocean = ctx.map.terrain[hex] === Terrain.Ocean;
-    if (def.domain === 'sea') return !ocean || ctx.era >= OCEAN_ERA;
-    return ocean ? ctx.era >= OCEAN_ERA : ctx.era >= EMBARK_COAST_ERA;
+    const level = owner === NO_POLITY ? 0 : (ctx.seaLevel[owner] as number);
+    if (ctx.map.terrain[hex] === Terrain.Ocean) return level >= 2;
+    return def.domain === 'sea' || level >= 1;
   }
   return def.domain === 'land';
 }

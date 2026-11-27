@@ -3,15 +3,18 @@
  * keeps its one piece of memory (`PolityState.aiTarget`) in the state. Every
  * decision is issued as an action through the same validator a player uses.
  *
- * - Major nations develop, found their cities, keep an army their income can
- *   pay for, declare war on a weaker neighbour, march on one city at a time
- *   and make peace when the war goes badly.
- * - Other nations and city-states develop and defend.
+ * - Major nations research, develop, found their cities, keep an army their
+ *   income can pay for, declare war on a weaker neighbour, march on one city
+ *   at a time and make peace when the war goes badly. The one that leads in
+ *   science builds the endgame project.
+ * - Other nations and city-states develop and defend with the techs the
+ *   world has in common.
  */
 
 import { hexRange, indexToOffset } from '../shared/hex.ts';
 import {
   AI,
+  AIR_STRIKE,
   BUILDINGS,
   BUILDING_IDS,
   CITY,
@@ -19,15 +22,15 @@ import {
   FREE_UNITS_PER_CITY,
   IMPROVEMENTS,
   IMPROVEMENT_IDS,
+  PROJECT,
   ROSTER,
   SETTLER,
   UNIT_UPKEEP,
   WAR,
   unitDef,
-  upgradeTarget,
 } from './data.ts';
 import { checkStep, isSettleSite, militaryStrength, upgradeCost, validate } from './actions.ts';
-import { checkItem, improvementFits } from './cities.ts';
+import { checkItem, hasBuilding, improvementFits, improvesHills } from './cities.ts';
 import {
   attackStrength,
   cityStrength,
@@ -37,6 +40,7 @@ import {
 } from './combat.ts';
 import { at, atWar, bordersOpen, cityAtHex, polityOf, relationOf, terrainAllows } from './context.ts';
 import type { Ctx } from './context.ts';
+import { bestUnit, knows, pursuesScience, researches, suggestResearch, upgradeTargetFor } from './tech.ts';
 import { NO_POLITY } from './types.ts';
 import type { Action, BuildItem, City, Unit } from './types.ts';
 
@@ -62,9 +66,51 @@ export function runAi(ctx: Ctx, polity: number, act: Act): void {
   const kind = at(map.polities, polity).kind;
   const major = kind === 'nation' && state.majors.includes(polity);
 
+  chooseResearch(ctx, polity, act);
   diplomacy(ctx, polity, major, cities, act);
   manageCities(ctx, polity, major, cities, act);
+  airStrikes(ctx, polity, cities, act);
   commandUnits(ctx, polity, major, cities, act);
+}
+
+// --------------------------------------------------------------- research
+
+function chooseResearch(ctx: Ctx, polity: number, act: Act): void {
+  if (!researches(ctx.state, polity) || polityOf(ctx, polity).research !== null) return;
+  const tech = suggestResearch(ctx, polity);
+  if (tech !== null) act({ type: 'setResearch', polity, tech });
+}
+
+// ------------------------------------------------------------ air strikes
+
+/** Every airfield strikes the enemy unit it hurts most, or failing that an enemy city that still stands. */
+function airStrikes(ctx: Ctx, polity: number, cities: City[], act: Act): void {
+  const { map } = ctx;
+  for (const city of cities) {
+    if (city.airStruck || !hasBuilding(city, (building) => building.airStrike)) continue;
+    let best = -1;
+    let bestScore = 0;
+    for (const offset of hexRange(indexToOffset(at(map.zones, city.zone).siteHex, map.width), AIR_STRIKE.range)) {
+      if (offset.col < 0 || offset.col >= map.width || offset.row < 0 || offset.row >= map.height) continue;
+      const hex = offset.row * map.width + offset.col;
+      if (validate(ctx, { type: 'airStrike', polity, city: city.zone, target: hex }) !== null) continue;
+      const enemyCity = cityAtHex(ctx, hex);
+      let score: number;
+      if (enemyCity !== null && enemyCity.owner !== polity) {
+        score = enemyCity.hp > 0 ? 50 : 0;
+      } else {
+        const defender = ctx.unitAt.get(hex);
+        if (defender === undefined || defender.owner === NO_POLITY) continue;
+        const dealt = combatDamage(AIR_STRIKE.strength, defenceStrength(ctx, defender), 1);
+        score = 100 + Math.min(dealt, defender.hp) + (dealt >= defender.hp ? 100 : 0);
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = hex;
+      }
+    }
+    if (best >= 0) act({ type: 'airStrike', polity, city: city.zone, target: best });
+  }
 }
 
 // -------------------------------------------------------------- diplomacy
@@ -198,20 +244,27 @@ function manageFocus(polity: number, city: City, act: Act): void {
   }
 }
 
-function fieldUnit(ctx: Ctx, plans: Plans): BuildItem {
-  let best: string = AI.armyMix[0][0];
+/** The best infantry the polity can build: the warrior at the least. */
+function infantry(ctx: Ctx, polity: number): BuildItem {
+  return { kind: 'unit', unit: bestUnit(ctx, polity, 'infantry')?.id ?? at(ROSTER.infantry, 0) };
+}
+
+/** The best unit of the class furthest below its share of the army, among the classes the polity can build. */
+function fieldUnit(ctx: Ctx, polity: number, plans: Plans): BuildItem {
+  let best: BuildItem = infantry(ctx, polity);
   let lowest = Infinity;
   for (const [unitClass, share] of AI.armyMix) {
+    const def = bestUnit(ctx, polity, unitClass);
+    if (def === null) continue;
     // The garrisons are infantry that never take the field.
     const serving = (plans.byClass[unitClass] ?? 0) - (unitClass === 'infantry' ? plans.garrisons : 0);
     const filled = Math.max(0, serving) / share;
     if (filled < lowest) {
       lowest = filled;
-      best = unitClass;
+      best = { kind: 'unit', unit: def.id };
     }
   }
-  const roster = ROSTER[best as keyof typeof ROSTER];
-  return { kind: 'unit', unit: at(roster, ctx.era) };
+  return best;
 }
 
 function chooseImprovement(ctx: Ctx, city: City, hexes: readonly number[]): BuildItem | null {
@@ -222,7 +275,8 @@ function chooseImprovement(ctx: Ctx, city: City, hexes: readonly number[]): Buil
     if (ctx.state.improvements[hex] !== undefined) continue;
     for (const improvement of IMPROVEMENT_IDS) {
       const def = IMPROVEMENTS[improvement];
-      if (!improvementFits(ctx, def, hex)) continue;
+      if (!knows(ctx, city.owner, def.tech)) continue;
+      if (!improvementFits(ctx, def, hex, improvesHills(ctx, def, city.owner))) continue;
       const gain =
         def.yields.food * weights.food + def.yields.production * weights.production + def.yields.gold * weights.gold;
       if (gain > bestGain) {
@@ -257,9 +311,10 @@ function chooseBuild(ctx: Ctx, polity: number, city: City, cities: City[], plans
   const can = (item: BuildItem): boolean => checkItem(ctx, city, item) === null;
 
   // A garrison for every city comes first.
-  if (plans.military < Math.min(plans.wanted, cities.length)) {
-    return { kind: 'unit', unit: at(ROSTER.infantry, ctx.era) };
-  }
+  if (plans.military < Math.min(plans.wanted, cities.length)) return infantry(ctx, polity);
+  // The leader in science builds the project in its capital as soon as a stage is open.
+  const project: BuildItem = { kind: 'project', project: PROJECT.id };
+  if (polityOf(ctx, polity).capital === city.zone && can(project) && pursuesScience(ctx, polity)) return project;
   if (nation && city.pop >= AI.expandPop) {
     for (let zone = 0; zone < state.cities.length; zone++) {
       const item: BuildItem = { kind: 'city', zone };
@@ -267,14 +322,14 @@ function chooseBuild(ctx: Ctx, polity: number, city: City, cities: City[], plans
     }
   }
   const recruiting = plans.military < plans.wanted && plans.barracks < plans.maxBarracks;
-  if (recruiting && (plans.atWar || plans.military * 2 < plans.wanted)) return fieldUnit(ctx, plans);
+  if (recruiting && (plans.atWar || plans.military * 2 < plans.wanted)) return fieldUnit(ctx, polity, plans);
   const worked = chooseImprovement(ctx, city, city.worked);
   if (worked !== null) return worked;
   for (const building of AI.buildingOrder.slice(0, AI.coreBuildings)) {
     const item: BuildItem = { kind: 'building', building };
     if (can(item)) return item;
   }
-  if (recruiting) return fieldUnit(ctx, plans);
+  if (recruiting) return fieldUnit(ctx, polity, plans);
   if (nation && !plans.settler && city.pop >= AI.expandPop && can({ kind: 'unit', unit: SETTLER })) {
     if (settleTargetNear(ctx, at(map.zones, city.zone).siteHex) >= 0) {
       plans.settler = true;
@@ -315,7 +370,7 @@ function pathField(ctx: Ctx, polity: number, goal: number, limit = PATH_LIMIT): 
       for (let d = 0; d < 6; d++) {
         const next = topo.neighbors[hex * 6 + d] as number;
         if (next < 0 || total >= (cost[next] as number)) continue;
-        if (!terrainAllows(ctx, walker, next) || !bordersOpen(ctx, polity, next)) continue;
+        if (!terrainAllows(ctx, walker, next, polity) || !bordersOpen(ctx, polity, next)) continue;
         cost[next] = total;
         let target = buckets[total];
         if (target === undefined) {
@@ -473,11 +528,10 @@ function commandUnits(ctx: Ctx, polity: number, major: boolean, cities: City[], 
       continue;
     }
 
-    const upgrade = upgradeTarget(unit.type);
+    const upgrade = upgradeTargetFor(ctx, unit);
     if (
       upgrade !== null &&
-      upgrade.era <= ctx.era &&
-      self.gold >= upgradeCost(unit) + AI.upgradeReserve &&
+      self.gold >= upgradeCost(unit, upgrade) + AI.upgradeReserve &&
       act({ type: 'upgrade', polity, unit: unit.id })
     ) {
       continue;
