@@ -3,9 +3,14 @@ import {
   CAMERA_FOV,
   FAR_TILT,
   NEAR_TILT,
+  DEFAULT_ZOOM,
+  POLITICAL_FROM,
+  POLITICAL_FULL,
   cameraLimits,
   cameraPose,
   clampCamera,
+  distanceAtZoom,
+  politicalShare,
   rayAtHeight,
   screenRay,
   tiltForDistance,
@@ -125,5 +130,31 @@ describe('screenRay', () => {
   it('never meets a plane behind it', () => {
     const ray = screenRay(pose, CAMERA_FOV, 2, 0, 0);
     expect(rayAtHeight(ray, 1000)).toBeNull();
+  });
+});
+
+describe('zoom fractions and the political map', () => {
+  it('distanceAtZoom is the inverse of zoomFraction', () => {
+    expect(distanceAtZoom(0, limits)).toBeCloseTo(limits.minDistance);
+    expect(distanceAtZoom(1, limits)).toBeCloseTo(limits.maxDistance);
+    for (const fraction of [0.1, 0.5, DEFAULT_ZOOM, 0.9]) {
+      expect(zoomFraction(distanceAtZoom(fraction, limits), limits)).toBeCloseTo(fraction);
+    }
+    expect(distanceAtZoom(7, limits)).toBeCloseTo(limits.maxDistance);
+  });
+
+  it('the opening zoom shows terrain, the farthest the political map, with a smooth change between', () => {
+    expect(politicalShare(DEFAULT_ZOOM)).toBe(0);
+    expect(politicalShare(0)).toBe(0);
+    expect(politicalShare(POLITICAL_FROM)).toBe(0);
+    expect(politicalShare(POLITICAL_FULL)).toBe(1);
+    expect(politicalShare(1)).toBe(1);
+    let last = 0;
+    for (let zoom = POLITICAL_FROM; zoom <= POLITICAL_FULL; zoom += 0.005) {
+      const share = politicalShare(zoom);
+      expect(share).toBeGreaterThanOrEqual(last);
+      last = share;
+    }
+    expect(politicalShare((POLITICAL_FROM + POLITICAL_FULL) / 2)).toBeCloseTo(0.5);
   });
 });

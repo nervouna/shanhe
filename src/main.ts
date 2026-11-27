@@ -3,7 +3,7 @@
 import type { GameState } from './core/game.ts';
 import { createRenderer } from './render/api.ts';
 import type { CameraState, FrameStats, Renderer } from './render/api.ts';
-import { attachFrameReadout, createDemoScene } from './render/demo.ts';
+import { attachDemoControls, attachFrameReadout, createDemoScene } from './render/demo.ts';
 import { loadMap } from './render/loadMap.ts';
 import { setLanguage, t } from './shared/i18n.ts';
 import type { RenderBackend } from './shared/types.ts';
@@ -97,7 +97,7 @@ const app = createApp({
 
 if (query.get('demo') === 'render') {
   app.hide();
-  board.renderer.setScene(createDemoScene(board.map));
+  attachDemoControls(board.renderer, board.map, createDemoScene(board.map));
   attachFrameReadout(board.renderer);
 }
 

@@ -4,8 +4,13 @@
  * importing `api.ts`.
  */
 
+import type { Language } from '../shared/i18n.ts';
 import type { RenderBackend } from '../shared/types.ts';
 import type { CameraState } from './cameraRig.ts';
+import type { Quality } from './renderScale.ts';
+
+export { QUALITY_TIERS } from './renderScale.ts';
+export type { Quality } from './renderScale.ts';
 
 /** The material a piece is made of, one per era. */
 export const PieceEra = {
@@ -49,6 +54,11 @@ export interface RenderCity {
   readonly population: number;
   /** Shown as the label, as given. */
   readonly name: string;
+  /**
+   * Capitals keep their label longest when zooming out. If omitted, a city
+   * on the site of a capital zone of the map counts as one.
+   */
+  readonly capital?: boolean;
 }
 
 /** What the player knows about a hex. Values of `RenderScene.fog`. */
@@ -92,6 +102,78 @@ export interface HexHighlight {
   readonly opacity?: number;
 }
 
+/**
+ * Aids for giving an order to the selected piece, drawn over the hexes.
+ * Every part is optional.
+ */
+export interface SelectionAids {
+  /** Hexes the piece can reach: a tinted area with an outline around it. */
+  readonly reachable?: readonly number[];
+  /** The path of the order under the pointer. */
+  readonly path?: {
+    /** From the piece's hex to the target, both included. */
+    readonly hexes: readonly number[];
+    /**
+     * Positions in `hexes` where a turn's movement ends, in order. Each gets
+     * a marker with the number of turns it takes to get there.
+     */
+    readonly turnEnds?: readonly number[];
+  };
+  /** A hex to mark as the target of an attack. */
+  readonly attackTarget?: number;
+  /** Colour of the reachable area and the path as `0xRRGGBB`; a pale paper tone if omitted. */
+  readonly color?: number;
+}
+
+/**
+ * Something that happened on the board, to be shown by {@link Renderer.play}.
+ * Units are named by `RenderUnit.id` and must be in the current scene; hexes
+ * by their index.
+ */
+export type VisualEvent =
+  /** The piece is lifted, slides along the path and is set down in a puff of dust. */
+  | { readonly type: 'move'; readonly unit: number; /** From the piece's hex to its destination, both included. */ readonly path: readonly number[] }
+  /** The piece strikes towards the target hex and bounces back. */
+  | { readonly type: 'melee'; readonly unit: number; readonly targetHex: number }
+  /** The piece stays put; a volley of arrows flies in an arc and lands in smoke. */
+  | { readonly type: 'ranged'; readonly unit: number; readonly targetHex: number }
+  /** As `ranged`, with a few heavy shells, a higher arc and more smoke. */
+  | { readonly type: 'siege'; readonly unit: number; readonly targetHex: number }
+  /** A city shoots at a hex. */
+  | { readonly type: 'cityStrike'; readonly cityHex: number; readonly targetHex: number }
+  /** The piece cracks, falls over and is taken off the board. */
+  | { readonly type: 'destroy'; readonly unit: number }
+  /** A flash of gold on the piece. */
+  | { readonly type: 'promote'; readonly unit: number }
+  /** The hexes of a zone take the colour of their new owner, sweeping out from the city. */
+  | {
+      readonly type: 'capture';
+      readonly cityHex: number;
+      /** The hexes that change hands. */
+      readonly hexes: readonly number[];
+      /** The new owner: a polity index. */
+      readonly polity: number;
+    };
+
+export type VisualEventType = VisualEvent['type'];
+
+/** How many events of one type {@link Renderer.play} has taken so far. The numbers only grow. */
+export interface AnimationCount {
+  /** Events that were in view and got an animation. */
+  readonly animated: number;
+  /** Events applied without an animation: out of view, or played while rendering was paused. */
+  readonly instant: number;
+  /** Events of both kinds whose end state is on the board. */
+  readonly finished: number;
+  /** Events that named a unit that is not in the scene or a hex that is not on the map. */
+  readonly ignored: number;
+}
+
+export interface PlayOptions {
+  /** Multiplies the speed of these events, on top of {@link Renderer.setAnimationSpeed}. 1 if omitted. */
+  readonly speed?: number;
+}
+
 export interface FrameStats {
   /** Frames rendered since the renderer started. */
   readonly frames: number;
@@ -103,6 +185,21 @@ export interface FrameStats {
   readonly drawCalls: number;
   /** Triangles of the last frame, shadow pass included. */
   readonly triangles: number;
+  /**
+   * The render scale in use: 1 draws at the capped device pixel ratio, lower
+   * values draw fewer pixels and stretch them over the canvas.
+   */
+  readonly renderScale: number;
+  /** The pixel ratio frames are drawn at: the capped device pixel ratio times the render scale. */
+  readonly pixelRatio: number;
+  /** How far the view has turned into the political map: 0 terrain, 1 political map. */
+  readonly political: number;
+  /** Whether the political map with its polity names is shown. */
+  readonly politicalMap: boolean;
+  /** Labels shown in the last frame, after the ones that would overlap were hidden. */
+  readonly labels: number;
+  /** Whether an animation started by {@link Renderer.play} is running. */
+  readonly animating: boolean;
 }
 
 export interface RendererOptions {
@@ -119,11 +216,21 @@ export interface RendererOptions {
   readonly maxFps?: number;
   /** Start with rendering paused, see {@link Renderer.setPaused}. */
   readonly paused?: boolean;
+  /** The quality tier to start with; `auto` if omitted. */
+  readonly quality?: Quality;
+  /** Language of the polity names on the political map; the current language of `i18n` if omitted. */
+  readonly language?: Language;
 }
 
 export interface FocusOptions {
   /** Zoom distance to move to; the current one if omitted. */
   readonly distance?: number;
+  /**
+   * `zone` picks the distance that shows the whole zone the hex belongs to,
+   * for example a city and its land. Ignored when `distance` is given, and
+   * for a hex outside every zone.
+   */
+  readonly frame?: 'zone';
   /** Jump instead of gliding. */
   readonly immediate?: boolean;
 }
@@ -144,6 +251,54 @@ export interface Renderer {
   focusHex(hex: number, options?: FocusOptions): void;
   /** Replaces the marked hexes. */
   setHighlights(highlights: readonly HexHighlight[]): void;
+  /**
+   * Replaces the aids for ordering the selected piece: the reachable area,
+   * the path with its turn markers and the attack target. `null` removes
+   * them. Independent of {@link Renderer.setHighlights}.
+   */
+  setSelectionAids(aids: SelectionAids | null): void;
+  /**
+   * Sets the quality tier. `auto`, the default, lowers the render scale
+   * when frames run long and restores it when they do not; the other tiers
+   * hold a fixed resolution and level of detail.
+   */
+  setQuality(quality: Quality): void;
+  readonly quality: Quality;
+  /** Sets the language of the polity names on the political map. */
+  setLanguage(language: Language): void;
+  /**
+   * Shows what happened on the board, one event after the other, and
+   * resolves when the last one has finished.
+   *
+   * Call it while the scene still shows the board as it was before the
+   * events, then call {@link Renderer.setScene} with the board after them.
+   * Until that call, what an event leaves behind stays: a moved piece
+   * stands on its destination, a destroyed piece is gone, a captured zone
+   * has its new colour. `setScene` ends every running animation and draws
+   * exactly the new scene.
+   *
+   * An event whose hexes are all outside the view takes no time. Events for
+   * a unit that is not in the scene, or with a hex that is not on the map,
+   * are skipped. While rendering is paused nothing is animated and the
+   * promise resolves at once. Calls made while events are playing queue up
+   * behind them.
+   */
+  play(events: readonly VisualEvent[], options?: PlayOptions): Promise<void>;
+  /** Multiplies the speed of all animations; 1 is the normal speed. */
+  setAnimationSpeed(factor: number): void;
+  /** Finishes every playing and queued event at once; their promises resolve. */
+  skip(): void;
+  /**
+   * What `play` has done since the renderer started, per event type. Unlike
+   * `FrameStats.animating` these numbers do not depend on when they are read.
+   */
+  getAnimationCounts(): Readonly<Record<VisualEventType, AnimationCount>>;
+  /**
+   * The hex a unit's piece stands on as drawn: the hex of the scene, or where
+   * the events played since have left it. `null` for a unit that is not in
+   * the scene or was destroyed by an event.
+   */
+  getUnitHex(unit: number): number | null;
   /** Shows or hides the hex grid overlay. */
   setGridVisible(visible: boolean): void;
   /** The camera state being drawn. */

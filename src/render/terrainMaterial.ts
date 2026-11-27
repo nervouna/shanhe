@@ -1,14 +1,15 @@
 /**
  * The ground material, entirely shader code: rock, grass, forest floor,
  * desert, snow and tundra are blended by land cover, slope and altitude and
- * broken up with procedural noise. Territory tint, the hex grid and the fog
- * of war are laid over the result.
+ * broken up with procedural noise. Territory tint, the political map, the
+ * hex grid and the fog of war are laid over the result.
  */
 
 import {
   attribute,
   cameraPosition,
   color,
+  dot,
   float,
   mix,
   normalWorld,
@@ -86,6 +87,13 @@ export function createTerrainMaterial(u: MapUniforms): MeshStandardNodeMaterial 
   // the tint stays off the sea floor and is weaker on rock and snow
   const tintable = smoothstep(-2, 2, metres).mul(float(1).sub(saturate(rocky.add(snowy)).mul(0.6)));
   let surface = mix(ground, territory.rgb, territory.a.mul(u.tintStrength).mul(tintable));
+  // the political map: every polity filled with its colour, land nobody owns
+  // pale; the relief still shows through the lighting and a trace of the ground
+  const brightness = dot(ground, vec3(0.2126, 0.7152, 0.0722));
+  const filled = mix(territory.rgb, vec3(brightness), 0.16);
+  const unclaimed = mix(vec3(brightness), color(0xb9b3a2), 0.6);
+  const politicalColor = mix(unclaimed, filled, territory.a);
+  surface = mix(surface, politicalColor, u.political.mul(smoothstep(-2, 2, metres)));
   surface = withGrid(u, surface, xz);
   surface = withFogOfWar(surface, texture(u.textures.fog, mapUv(u, xz)).r);
 

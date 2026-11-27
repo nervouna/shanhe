@@ -4,6 +4,10 @@
  * camera: level `n` uses every `2^n`-th height sample. Geometry is built
  * when a level is first needed, a few chunks per frame, and a skirt around
  * each chunk hides the cracks between neighbouring levels.
+ *
+ * Chunks are grouped into blocks. A block whose chunks all want one of the
+ * coarse levels is drawn as one mesh, so that the distant ground and the
+ * whole map seen from far away cost a handful of draw calls.
  */
 
 import { BufferAttribute, BufferGeometry, Group, Mesh } from 'three/webgpu';
@@ -18,12 +22,28 @@ export interface Terrain {
    * @param viewHeight height of the view at distance 1: `2 * tan(fov / 2)`.
    * @param maxBuilds finer geometries built in this call at most.
    */
-  update(cameraPosition: Vector3, viewHeight: number, maxBuilds?: number): void;
+  update(cameraPosition: Vector3, viewHeight: number, maxBuilds?: number): TerrainUpdate;
+  /**
+   * Sets the target size of a triangle edge on screen, as a fraction of the
+   * view height. Takes effect with the next update.
+   */
+  setEdgeFraction(fraction: number): void;
   dispose(): void;
 }
 
+export interface TerrainUpdate {
+  /** Whether any mesh changed its geometry or visibility. */
+  readonly changed: boolean;
+  /** Finer geometries built in this call. */
+  readonly builds: number;
+}
+
 /** Target size of a triangle edge on screen, as a fraction of the view height. */
-const EDGE_FRACTION = 0.012;
+export const DEFAULT_EDGE_FRACTION = 0.018;
+/** Chunks along each side of a block. */
+const BLOCK_CHUNKS = 4;
+/** A block is drawn as one mesh at the coarsest level and this many levels below it. */
+const MERGED_LEVELS = 3;
 /** Finer geometry built per frame at most, so that zooming never stalls. */
 const BUILDS_PER_FRAME = 2;
 const MAX_CHUNKS = 400;
@@ -40,6 +60,20 @@ interface Chunk {
   readonly maxX: number;
   readonly minZ: number;
   readonly maxZ: number;
+}
+
+interface Block {
+  /** The whole block as one mesh. */
+  readonly mesh: Mesh;
+  /** The geometries of the whole block built so far, by level. */
+  readonly merged: Map<number, BufferGeometry>;
+  /** The level `mesh` shows, or -1 while the chunks are drawn instead. */
+  level: number;
+  readonly i0: number;
+  readonly j0: number;
+  readonly i1: number;
+  readonly j1: number;
+  readonly chunks: Chunk[];
 }
 
 /** `from`, `from + step`, ... and always `to`. */
@@ -178,7 +212,9 @@ export function createTerrain(field: HeightField, material: Material, floorY: nu
 
   const object = new Group();
   object.name = 'terrain';
-  const chunks: Chunk[] = [];
+  const blocks: Block[] = [];
+  const blockCells = chunkCells * BLOCK_CHUNKS;
+  let edgeFraction = DEFAULT_EDGE_FRACTION;
   for (let j0 = 0; j0 < rows - 1; j0 += chunkCells) {
     for (let i0 = 0; i0 < cols - 1; i0 += chunkCells) {
       const i1 = Math.min(i0 + chunkCells, cols - 1);
@@ -187,8 +223,34 @@ export function createTerrain(field: HeightField, material: Material, floorY: nu
       const mesh = new Mesh(coarse, material);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
+      mesh.visible = false;
       object.add(mesh);
-      chunks.push({
+      const blocksPerRow = Math.ceil((cols - 1) / blockCells);
+      const blockIndex = Math.floor(j0 / blockCells) * blocksPerRow + Math.floor(i0 / blockCells);
+      let block = blocks[blockIndex];
+      if (block === undefined) {
+        const bi0 = Math.floor(i0 / blockCells) * blockCells;
+        const bj0 = Math.floor(j0 / blockCells) * blockCells;
+        const bi1 = Math.min(bi0 + blockCells, cols - 1);
+        const bj1 = Math.min(bj0 + blockCells, rows - 1);
+        const whole = buildChunkGeometry(field, bi0, bj0, bi1, bj1, 2 ** maxLevel, floorY);
+        const blockMesh = new Mesh(whole, material);
+        blockMesh.castShadow = true;
+        blockMesh.receiveShadow = true;
+        object.add(blockMesh);
+        block = {
+          mesh: blockMesh,
+          merged: new Map([[maxLevel, whole]]),
+          level: maxLevel,
+          i0: bi0,
+          j0: bj0,
+          i1: bi1,
+          j1: bj1,
+          chunks: [],
+        };
+        blocks[blockIndex] = block;
+      }
+      block.chunks.push({
         i0,
         j0,
         i1,
@@ -204,30 +266,82 @@ export function createTerrain(field: HeightField, material: Material, floorY: nu
     }
   }
 
+  const wantedLevels: number[] = [];
+
   return {
     object,
     update(cameraPosition, viewHeight, maxBuilds = BUILDS_PER_FRAME) {
       let builds = 0;
-      for (const chunk of chunks) {
-        const dx = Math.max(chunk.minX - cameraPosition.x, 0, cameraPosition.x - chunk.maxX);
-        const dz = Math.max(chunk.minZ - cameraPosition.z, 0, cameraPosition.z - chunk.maxZ);
-        const distance = Math.hypot(dx, dz, Math.max(0, cameraPosition.y - field.maxY));
-        // the sample spacing that keeps triangle edges near the target size
-        const spacing = distance * viewHeight * EDGE_FRACTION;
-        const wanted = Math.min(maxLevel, Math.max(0, Math.floor(Math.log2(Math.max(spacing / cell, 1)))));
-        if (wanted === chunk.level) continue;
-        if (wanted === maxLevel) {
-          swap(chunk, chunk.coarse, wanted);
-        } else if (builds < maxBuilds) {
-          builds++;
-          swap(chunk, buildChunkGeometry(field, chunk.i0, chunk.j0, chunk.i1, chunk.j1, 2 ** wanted, floorY), wanted);
+      let changed = false;
+      const mergeFrom = Math.max(0, maxLevel - MERGED_LEVELS + 1);
+      for (const block of blocks) {
+        let finest = maxLevel;
+        block.chunks.forEach((chunk, k) => {
+          const dx = Math.max(chunk.minX - cameraPosition.x, 0, cameraPosition.x - chunk.maxX);
+          const dz = Math.max(chunk.minZ - cameraPosition.z, 0, cameraPosition.z - chunk.maxZ);
+          const distance = Math.hypot(dx, dz, Math.max(0, cameraPosition.y - field.maxY));
+          // the sample spacing that keeps triangle edges near the target size
+          const spacing = distance * viewHeight * edgeFraction;
+          const wanted = Math.min(maxLevel, Math.max(0, Math.floor(Math.log2(Math.max(spacing / cell, 1)))));
+          wantedLevels[k] = wanted;
+          finest = Math.min(finest, wanted);
+        });
+
+        if (finest >= mergeFrom) {
+          // far enough away: the whole block as one mesh, at its finest chunk's level
+          if (block.level === finest) continue;
+          let geometry = block.merged.get(finest);
+          if (geometry === undefined) {
+            if (builds >= maxBuilds) continue;
+            builds++;
+            geometry = buildChunkGeometry(field, block.i0, block.j0, block.i1, block.j1, 2 ** finest, floorY);
+            block.merged.set(finest, geometry);
+          }
+          block.mesh.geometry = geometry;
+          if (block.level === -1) {
+            block.mesh.visible = true;
+            for (const chunk of block.chunks) {
+              chunk.mesh.visible = false;
+              // hidden chunks do not hold on to fine geometry
+              if (chunk.level !== maxLevel) swap(chunk, chunk.coarse, maxLevel);
+            }
+          }
+          block.level = finest;
+          changed = true;
+          continue;
         }
+
+        if (block.level !== -1) {
+          block.level = -1;
+          block.mesh.visible = false;
+          for (const chunk of block.chunks) chunk.mesh.visible = true;
+          changed = true;
+        }
+        block.chunks.forEach((chunk, k) => {
+          const wanted = wantedLevels[k] as number;
+          if (wanted === chunk.level) return;
+          if (wanted === maxLevel) {
+            swap(chunk, chunk.coarse, wanted);
+            changed = true;
+          } else if (builds < maxBuilds) {
+            builds++;
+            changed = true;
+            swap(chunk, buildChunkGeometry(field, chunk.i0, chunk.j0, chunk.i1, chunk.j1, 2 ** wanted, floorY), wanted);
+          }
+        });
       }
+      return { changed, builds };
+    },
+    setEdgeFraction(fraction) {
+      edgeFraction = fraction;
     },
     dispose() {
-      for (const chunk of chunks) {
-        if (chunk.mesh.geometry !== chunk.coarse) chunk.mesh.geometry.dispose();
-        chunk.coarse.dispose();
+      for (const block of blocks) {
+        for (const geometry of block.merged.values()) geometry.dispose();
+        for (const chunk of block.chunks) {
+          if (chunk.mesh.geometry !== chunk.coarse) chunk.mesh.geometry.dispose();
+          chunk.coarse.dispose();
+        }
       }
     },
   };

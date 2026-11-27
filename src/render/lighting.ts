@@ -16,8 +16,12 @@ export interface Lighting {
    * @param target the point the camera looks at.
    * @param distance from the camera to the target.
    * @param tilt of the view above the horizon, in radians.
+   * @param dirty whether anything that casts a shadow changed since the last
+   *   call. The shadow map is drawn again only then, or when the view has
+   *   left the ground it covers.
+   * @returns whether the shadow map is drawn again in the next frame.
    */
-  update(target: Vector3, distance: number, tilt: number): void;
+  update(target: Vector3, distance: number, tilt: number, dirty: boolean): boolean;
   dispose(): void;
 }
 
@@ -34,6 +38,12 @@ export function createLighting(scene: Scene, mapSpan: number): Lighting {
 
   const sun = new DirectionalLight(SUN_COLOR, 2.6);
   sun.castShadow = true;
+  // drawn on request only, see `update`
+  sun.shadow.autoUpdate = false;
+  sun.shadow.needsUpdate = true;
+  /** The view the shadow map was last fitted to. */
+  const fitted = new Vector3(Infinity, 0, 0);
+  let fittedDistance = 0;
   sun.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
   scene.add(sun, sun.target);
 
@@ -46,28 +56,40 @@ export function createLighting(scene: Scene, mapSpan: number): Lighting {
 
   return {
     sunDirection,
-    update(target, distance, tilt) {
-      // the shadow map covers the ground in view and a margin around it
-      const half = Math.min(Math.max(distance * 1.15, 3), mapSpan);
-      sun.target.position.copy(target);
-      sun.position.copy(target).addScaledVector(sunDirection, half * 3);
-      const camera = sun.shadow.camera;
-      camera.left = -half;
-      camera.right = half;
-      camera.top = half;
-      camera.bottom = -half;
-      camera.near = half * 0.5;
-      camera.far = half * 6;
-      camera.updateProjectionMatrix();
-      const texel = (2 * half) / SHADOW_MAP_SIZE;
-      sun.shadow.bias = -0.0004;
-      sun.shadow.normalBias = texel * 2;
+    update(target, distance, tilt, dirty) {
+      // the shadow map covers the ground in view and a margin around it; it
+      // is fitted again when the view has used up a part of that margin
+      const ratio = distance / (fittedDistance || 1);
+      const moved = Math.hypot(target.x - fitted.x, target.z - fitted.z);
+      const refit = ratio > 1.2 || ratio < 0.7 || moved > fittedDistance * 0.3;
+      if (refit) {
+        fitted.copy(target);
+        fittedDistance = distance;
+        const half = Math.min(Math.max(distance * 1.7, 3), mapSpan);
+        sun.target.position.copy(target);
+        sun.position.copy(target).addScaledVector(sunDirection, half * 3);
+        sun.target.updateMatrixWorld();
+        const camera = sun.shadow.camera;
+        camera.left = -half;
+        camera.right = half;
+        camera.top = half;
+        camera.bottom = -half;
+        camera.near = half * 0.5;
+        camera.far = half * 6;
+        camera.updateProjectionMatrix();
+        const texel = (2 * half) / SHADOW_MAP_SIZE;
+        sun.shadow.bias = -0.0004;
+        sun.shadow.normalBias = texel * 2;
+      }
+      const redraw = refit || dirty;
+      if (redraw) sun.shadow.needsUpdate = true;
 
       // looking down, everything is about `distance` away and stays clear;
       // looking across, the far ground fades into the haze
       const oblique = Math.cos(tilt);
       fog.near = distance * (1.1 + 0.6 * (1 - oblique));
       fog.far = distance * (4.5 + 14 * (1 - oblique));
+      return redraw;
     },
     dispose() {
       scene.remove(sun, sun.target, sky);
