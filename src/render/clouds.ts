@@ -34,7 +34,8 @@ export function createClouds(u: MapUniforms, rect: WorldRect, height: number): C
   // thicker cloud is brighter in the middle and grey at its thin edge
   const billow = noiseTile(u, xz.div(u.hexSize).div(7).add(u.clock.mul(0.004))).g;
   material.colorNode = vec3(mix(vec3(0.78, 0.8, 0.84), vec3(1, 1, 1), smoothstep(0.1, 0.9, cover.mul(0.7).add(billow.mul(0.3)))));
-  material.opacityNode = cover.mul(mix(float(0.7), float(1), billow)).mul(u.cloudLayer);
+  // thin over the political map, which has to stay readable
+  material.opacityNode = cover.mul(mix(float(0.7), float(1), billow)).mul(u.cloudLayer).mul(mix(float(1), float(0.4), u.political));
   material.transparent = true;
   material.depthWrite = false;
   material.fog = false;

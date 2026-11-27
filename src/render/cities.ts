@@ -38,15 +38,15 @@ const F = CityFamily;
 const FAMILY_OF: Readonly<Record<string, CityFamilyId>> = {
   wu: F.Jiangnan, yue: F.Jiangnan, min: F.Jiangnan, dongning: F.Jiangnan, lingnan: F.Jiangnan,
   luoyue: F.Jiangnan, qiongya: F.Jiangnan, yuzhang: F.Jiangnan, huainan: F.Jiangnan,
-  xiangjiang: F.Jiangnan, haojing: F.Jiangnan, jinmen: F.Jiangnan,
+  xiangjiang: F.Jiangnan, haojing: F.Jiangnan, shen: F.Jiangnan,
   tubo: F.Tibetan, qingtang: F.Tibetan,
-  mobei: F.Steppe, monan: F.Steppe, xiyu: F.Steppe, jibei: F.Steppe,
+  mobei: F.Steppe, monan: F.Steppe, xiyu: F.Steppe,
   togoku: F.Japanese, yamato: F.Japanese, tsukushi: F.Japanese, ryukyu: F.Japanese, tsushima: F.Japanese,
   jiaozhi: F.SoutheastAsian, champa: F.SoutheastAsian, lanxang: F.SoutheastAsian, chenla: F.SoutheastAsian,
   siam: F.SoutheastAsian, pagan: F.SoutheastAsian, malacca: F.SoutheastAsian, srivijaya: F.SoutheastAsian,
   shepo: F.SoutheastAsian, boni: F.SoutheastAsian, luzon: F.SoutheastAsian, sulu: F.SoutheastAsian,
   maluku: F.SoutheastAsian, temasek: F.SoutheastAsian, wenlai: F.SoutheastAsian, dimen: F.SoutheastAsian,
-  heishui: F.Siberian, beihai: F.Siberian, shuaibin: F.Siberian, ezo: F.Siberian, jiankun: F.Siberian, liugui: F.Siberian,
+  heishui: F.Siberian, beihai: F.Siberian, shuaibin: F.Siberian, ezo: F.Siberian, jiankun: F.Siberian, jibei: F.Siberian, liugui: F.Siberian,
 };
 
 /** The architectural family of a polity's cities: by its id, Central Plains for any other. */

@@ -76,8 +76,8 @@ export function cascadeNeedsFit(fit: CascadeFit | null, x: number, z: number, di
 }
 
 /** The layer starts to show at this zoom fraction and is at its fullest at the next one. */
-const SHOW_FROM = 0.5;
-const SHOW_FULL = 0.8;
+const SHOW_FROM = 0.42;
+const SHOW_FULL = 0.7;
 /** Opacity of the thickest cloud at the farthest zoom. */
 const MAX_OPACITY = 0.5;
 

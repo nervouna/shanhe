@@ -328,14 +328,17 @@ export interface Renderer {
   /**
    * Sets the quality tier. `auto`, the default, lowers the render scale
    * when frames run long and restores it when they do not; the other tiers
-   * hold a fixed resolution and level of detail.
+   * hold a fixed resolution and level of detail. Each tier also has its set
+   * of effects of the finish, none at `low`; switches set with
+   * {@link Renderer.setEffects} are dropped.
    */
   setQuality(quality: Quality): void;
   readonly quality: Quality;
   /**
    * Switches effects of the finish on or off by hand, on top of what the
    * quality tier asks for. The switches add to the ones set before; `null`
-   * clears them all, so that every effect follows the tier again. An effect the backend does not carry stays
+   * clears them all, so that every effect follows the tier again, and so
+   * does {@link Renderer.setQuality}. An effect the backend does not carry stays
    * off whatever is asked.
    */
   setEffects(overrides: Readonly<Partial<Record<PostEffect, boolean>>> | null): void;

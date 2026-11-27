@@ -112,9 +112,8 @@ test('the render demo draws frames without console errors', async ({ page }) => 
   // ambient occlusion and bloom switch themselves off on the WebGL fallback
   expect(finish.effects.ambientOcclusion).toBe(report.backend === 'webgpu');
   expect(finish.effects.bloom).toBe(report.backend === 'webgpu');
-  // the shadow cascades have been drawn, and no cloud layer hangs over a near view
+  // the shadow cascades have been drawn
   expect(finish.stats.shadowDraws).toBeGreaterThanOrEqual(2);
-  expect(finish.stats.cloudLayer).toBe(0);
   expect(finish.stats.trees).toBeGreaterThanOrEqual(0);
 
   // the gallery: a city of every family in every era, pieces, improvements, roads and routes

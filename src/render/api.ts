@@ -547,6 +547,8 @@ export async function createRenderer(
       scaleController.reset();
       renderScale = settings.scale ?? 1;
       resize();
+      // choosing a tier means its effects: switches set by hand are dropped
+      effectOverrides = {};
       applyEffects();
       shadowDirty = true;
     },

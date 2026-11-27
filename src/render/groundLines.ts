@@ -9,6 +9,7 @@
 import {
   abs,
   attribute,
+  cameraPosition,
   color,
   float,
   fract,
@@ -127,7 +128,14 @@ export function createGroundLines(surface: Surface, u: MapUniforms): GroundLines
   const fogged = texture(u.textures.fog, mapUv(u, xz)).r;
   /** From far away a line grows wider, so that it does not vanish between pixels. */
   const widened = (share: number) =>
-    positionLocal.add(vec3(outward.x.mul(u.borderExtra).mul(share), u.borderExtra.mul(0.3), outward.y.mul(u.borderExtra).mul(share)));
+    positionLocal.add(
+      vec3(
+        outward.x.mul(u.borderExtra).mul(share),
+        // and floats higher: far ground is drawn with a coarser mesh, which would bury a line laid close on it
+        u.borderExtra.mul(0.3).add(cameraPosition.sub(positionLocal).length().mul(0.0035)),
+        outward.y.mul(u.borderExtra).mul(share),
+      ),
+    );
 
   // rivers: water with streaks that run downstream and darker banks
   const riverMaterial = new MeshStandardNodeMaterial();

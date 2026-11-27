@@ -182,10 +182,10 @@ export function withGrid(u: MapUniforms, color: Vec3, xz: Vec2): Vec3 {
   return mix(color, vec3(0.04, 0.05, 0.06), hexGridLine(u, xz).mul(0.42));
 }
 
-/** Desaturates and dims a colour where the fog of war says the hex is not in view. */
+/** Slightly desaturates and dims a colour where the fog of war says the hex is not in view. */
 export function withFogOfWar(color: Vec3, visibility: Float): Vec3 {
   const grey = dot(color, vec3(0.2126, 0.7152, 0.0722));
-  const dimmed = mix(vec3(grey), color, 0.35).mul(0.78);
+  const dimmed = mix(vec3(grey), color, 0.5).mul(0.85);
   return mix(dimmed, color, visibility);
 }
 

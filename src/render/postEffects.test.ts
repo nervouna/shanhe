@@ -128,10 +128,10 @@ describe('the light', () => {
 
   it('shows the cloud layer only from far above', () => {
     expect(cloudLayerOpacity(0)).toBe(0);
-    expect(cloudLayerOpacity(0.5)).toBe(0);
-    expect(cloudLayerOpacity(0.65)).toBeGreaterThan(0);
-    expect(cloudLayerOpacity(0.65)).toBeLessThan(cloudLayerOpacity(0.8));
-    expect(cloudLayerOpacity(1)).toBe(cloudLayerOpacity(0.8));
+    expect(cloudLayerOpacity(0.4)).toBe(0);
+    expect(cloudLayerOpacity(0.55)).toBeGreaterThan(0);
+    expect(cloudLayerOpacity(0.55)).toBeLessThan(cloudLayerOpacity(0.7));
+    expect(cloudLayerOpacity(1)).toBe(cloudLayerOpacity(0.7));
     expect(cloudLayerOpacity(1)).toBeLessThanOrEqual(0.6);
   });
 });
