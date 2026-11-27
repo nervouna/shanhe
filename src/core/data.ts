@@ -851,12 +851,14 @@ export const FAVOUR = {
   openBorders: 10,
   alliance: 30,
   vassalage: 15,
-  /** Per resource deal between the two, at most twice. */
+  /** Per resource deal between the two. */
   deal: 5,
-  /** Per trade route between the two, at most twice. */
+  /** Per trade route between the two. */
   route: 5,
-  /** Per third polity both are at war with, at most twice. */
+  /** Per third polity both are at war with. */
   sharedEnemy: 10,
+  /** Deals, routes and shared enemies each count at most this many times. */
+  maxCounted: 2,
   // One-off changes.
   warDeclared: -30,
   /** Towards a polity whose ally it attacked. */

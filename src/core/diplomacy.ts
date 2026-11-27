@@ -231,7 +231,10 @@ function closeWar(ctx: Ctx, x: number, y: number): boolean {
   polityOf(ctx, relation.a).aiTarget = -1;
   polityOf(ctx, relation.b).aiTarget = -1;
   ctx.events.push({ type: 'peaceMade', a: relation.a, b: relation.b });
-  if (polityOf(ctx, relation.a).alive && polityOf(ctx, relation.b).alive) {
+  // Between two nations the truce is also listed as an agreement. For a pair with a
+  // city-state the date of the peace in the relation holds it: city-states make no agreements.
+  const nations = isNation(ctx, relation.a) && isNation(ctx, relation.b);
+  if (nations && polityOf(ctx, relation.a).alive && polityOf(ctx, relation.b).alive) {
     const truce = findAgreement(ctx, 'truce', relation.a, relation.b);
     if (truce !== undefined) state.agreements.splice(state.agreements.indexOf(truce), 1);
     addAgreement(ctx, 'truce', relation.a, relation.b, state.turn + WAR.truceTurns - 1);
@@ -512,16 +515,16 @@ export function processDiplomacy(ctx: Ctx): void {
   }
   for (const deal of state.deals) {
     const entry = standing(deal.seller, deal.buyer);
-    if (entry !== null && entry.deals++ < 2) entry.target += FAVOUR.deal;
+    if (entry !== null && entry.deals++ < FAVOUR.maxCounted) entry.target += FAVOUR.deal;
   }
   for (const route of state.routes) {
     const owner = route.toCity < 0 ? undefined : state.cities[route.toCity]?.owner;
     const entry = owner === undefined ? null : standing(route.owner, owner);
-    if (entry !== null && entry.routes++ < 2) entry.target += FAVOUR.route;
+    if (entry !== null && entry.routes++ < FAVOUR.maxCounted) entry.target += FAVOUR.route;
   }
   for (const entry of standings.values()) {
     let shared = 0;
-    for (let other = 0; other < ctx.n && shared < 2; other++) {
+    for (let other = 0; other < ctx.n && shared < FAVOUR.maxCounted; other++) {
       if (ctx.war[entry.a * ctx.n + other] === 1 && ctx.war[entry.b * ctx.n + other] === 1) shared++;
     }
     const target = Math.max(-FAVOUR.max, Math.min(FAVOUR.max, entry.target + shared * FAVOUR.sharedEnemy));

@@ -143,7 +143,7 @@ export interface PolityState {
   era: number;
   /** Stages of the endgame project it has completed. */
   projectStage: number;
-  /** Trade route slots its techs give. Its total is `routeSlots` in `game.ts`. */
+  /** Trade route slots its techs give. Its total is `tradeRouteSlots` in `game.ts`. */
   tradeRoutes: number;
   /** True once its techs open the off-map land ports to its trade routes. */
   landPorts: boolean;

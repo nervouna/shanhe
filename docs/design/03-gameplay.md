@@ -123,6 +123,8 @@ An agreement is proposed with an action. An AI answers at once; a human player g
 - A trade pact, open borders and an alliance can be cancelled after 10 turns. War between the two ends them at once.
 - A nation has at most two alliances. An alliance is defensive: an ally does not follow its partner into a war the partner starts, and an ally that is also allied with the attacker stays out.
 - War cannot be declared on an ally: the alliance has to be cancelled first.
+- An ally that was drawn into a war is at war in its own right: it stays in until it makes its own peace, whatever the attacked nation does.
+- A truce between two nations is listed among their agreements. Peace with a city-state brings the same 10 turns without war, but no agreement: city-states make none.
 - When an agreement that opened borders ends, units standing on the other's land are moved out.
 
 ### Vassals

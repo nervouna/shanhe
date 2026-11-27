@@ -298,6 +298,14 @@ describe('agreements', () => {
     expect(over.agreements).toHaveLength(0);
     expect(reason(over, { type: 'declareWar', polity: JIA, target: YI })).toBe('ok');
   });
+
+  it('truce: holds after a peace with a city-state too, without an agreement, since city-states make none', () => {
+    const fighting = turns(war(base, JIA, WUCHENG), WAR.minTurns).state;
+    const peace = apply(fighting, { type: 'makePeace', polity: JIA, target: WUCHENG });
+    expect(peace.agreements).toHaveLength(0);
+    expect(reason(peace, { type: 'declareWar', polity: JIA, target: WUCHENG })).toBe('truce');
+    expect(reason(turns(peace, WAR.truceTurns).state, { type: 'declareWar', polity: JIA, target: WUCHENG })).toBe('ok');
+  });
 });
 
 describe('vassalage', () => {

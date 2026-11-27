@@ -10,7 +10,7 @@ Rules:
 - Every tech after the Ancient era has 1–2 prerequisites, all from earlier eras (see [Prerequisites](#prerequisites)). Ancient techs have none. Within an era the order is free.
 - A tech can be researched once its era has been entered. Entering the next era requires at least 4 techs of the current era; a nation's era is the highest it has entered, and each nation has its own.
 - **Catch-up**: a tech already known by any other living nation or city-state costs 20% less.
-- Cost per tech by era: 7, 32, 100, 250, 720, 1000 science. With these the leading major nation enters the Modern era around turn 110–125 and knows 35–40 of the 40 techs when the game ends (fewer when it wins by science before turn 150); the other major nations end with 22 or more.
+- Cost per tech by era: 7, 32, 100, 250, 720, 1000 science. With these the leading major nation enters the Modern era around turn 110–127 and knows 35–40 of the 40 techs when the game ends (fewer when it wins by science before turn 150); the other major nations end with 22 or more.
 - **Simplified-AI nations and city-states do not research.** They know a tech once half of the researching nations (the living major nations and the player) know it, and their era follows from what they know.
 - A unit, building or improvement is available only with its tech. The settler needs no tech: it needs the Classical era.
 
