@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
-import { DEAL, DIPLOMACY, FAVOUR, WAR } from './data.ts';
+import { AI, DEAL, DIPLOMACY, FAVOUR, WAR } from './data.ts';
 import {
   NO_POLITY,
   agreementsOf,
@@ -162,22 +162,24 @@ describe('agreements', () => {
     expect(reason(favoured(observed, BING, YI, -30), propose(BING, YI, 'tradePact'))).toBe('refused');
     expect(reason(favoured(observed, BING, DING, -30), propose(BING, DING, 'tradePact'))).toBe('ok');
     expect(reason(observed, propose(BING, YI, 'openBorders'))).toBe('refused');
-    expect(reason(favoured(observed, BING, YI, 5), propose(BING, YI, 'openBorders'))).toBe('ok');
+    expect(reason(favoured(observed, BING, YI, AI.openBordersFavour), propose(BING, YI, 'openBorders'))).toBe('ok');
     expect(reason(observed, propose(BING, YI, 'alliance'))).toBe('refused');
-    expect(reason(favoured(observed, BING, YI, 20), propose(BING, YI, 'alliance'))).toBe('ok');
-    expect(reason(observed, propose(BING, DING, 'alliance'))).toBe('ok');
-    expect(reason(favoured(observed, BING, DING, -1), propose(BING, DING, 'alliance'))).toBe('refused');
+    expect(reason(favoured(observed, BING, YI, AI.allianceFavour - 1), propose(BING, YI, 'alliance'))).toBe('refused');
+    expect(reason(favoured(observed, BING, YI, AI.allianceFavour), propose(BING, YI, 'alliance'))).toBe('ok');
+    expect(AI.simpleAllianceFavour).toBeLessThan(AI.allianceFavour);
+    expect(reason(favoured(observed, BING, DING, AI.simpleAllianceFavour), propose(BING, DING, 'alliance'))).toBe('ok');
+    expect(reason(favoured(observed, BING, DING, AI.simpleAllianceFavour - 1), propose(BING, DING, 'alliance'))).toBe('refused');
     // Nobody allies with the ally of its enemy.
-    const hostile = withAgreement(war(observed, DING, JIA), 'alliance', JIA, BING);
+    const hostile = favoured(withAgreement(war(observed, DING, JIA), 'alliance', JIA, BING), BING, DING, 50);
     expect(reason(hostile, propose(BING, DING, 'alliance'))).toBe('refused');
     // Vassalage without a fight: only a far weaker nation on the simplified AI, and only on good terms.
-    const strong = edit(favoured(observed, BING, DING, 30), (draft) => {
+    const strong = edit(favoured(observed, BING, DING, AI.vassalFavour), (draft) => {
       const free = topo.zoneHexes[5]!.filter((hex) => isPlainGround(map, hex) && !draft.units.some((unit) => unit.hex === hex));
-      for (let i = 0; i < 4; i++) put(draft, 'warrior', BING, free[i]!);
+      for (let i = 0; i < AI.vassalStrengthRatio; i++) put(draft, 'warrior', BING, free[i]!);
     });
     expect(reason(strong, propose(BING, DING, 'vassalage'))).toBe('ok');
-    expect(reason(favoured(strong, BING, DING, 0), propose(BING, DING, 'vassalage'))).toBe('refused');
-    expect(reason(favoured(observed, BING, DING, 30), propose(BING, DING, 'vassalage'))).toBe('refused');
+    expect(reason(favoured(strong, BING, DING, AI.vassalFavour - 1), propose(BING, DING, 'vassalage'))).toBe('refused');
+    expect(reason(favoured(observed, BING, DING, AI.vassalFavour), propose(BING, DING, 'vassalage'))).toBe('refused');
     expect(reason(favoured(strong, BING, YI, 90), propose(BING, YI, 'vassalage'))).toBe('refused');
   });
 
@@ -243,7 +245,7 @@ describe('agreements', () => {
   });
 
   it('alliance: joins the ally\'s defensive wars, and only those', () => {
-    const allied = apply(favoured(base, JIA, YI, 30), propose(JIA, YI, 'alliance'));
+    const allied = apply(favoured(base, JIA, YI, 50), propose(JIA, YI, 'alliance'));
     expect(allied.stats.alliancesFormed).toBe(1);
     expect(allied.agreements).toEqual([{ kind: 'alliance', a: JIA, b: YI, since: 1, until: 0 }]);
     expect(reason(allied, { type: 'declareWar', polity: JIA, target: YI })).toBe('allied');
@@ -269,7 +271,7 @@ describe('agreements', () => {
 
   it('alliance: is limited in number and ends when cancelled', () => {
     expect(DIPLOMACY.maxAlliances).toBe(2);
-    let state = favoured(favoured(favoured(base, JIA, YI, 30), JIA, BING, 30), JIA, DING, 30);
+    let state = favoured(favoured(favoured(base, JIA, YI, 50), JIA, BING, 50), JIA, DING, 50);
     state = apply(state, propose(JIA, YI, 'alliance'));
     state = apply(state, propose(JIA, BING, 'alliance'));
     expect(reason(state, propose(JIA, DING, 'alliance'))).toBe('tooManyAlliances');
@@ -578,7 +580,7 @@ describe('resource deals', () => {
 
 describe('diplomacy in a saved game', () => {
   it('survives a round trip', () => {
-    let state = apply(favoured(base, JIA, YI, 30), propose(JIA, YI, 'alliance'));
+    let state = apply(favoured(base, JIA, YI, 50), propose(JIA, YI, 'alliance'));
     state = apply(state, propose(DING, JIA, 'tradePact'));
     state = turns(state, 3).state;
     const loaded = loadGame(saveGame(state), map);

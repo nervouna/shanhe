@@ -803,8 +803,8 @@ export const POLICY = {
   slotsByEra: [2, 3, 4, 5, 6, 6],
   /** Culture the card after `n` unlocked ones costs: `costBase + costStep * n + costCurve * n * n`, rounded. */
   costBase: 6,
-  costStep: 4,
-  costCurve: 1.5,
+  costStep: 0,
+  costCurve: 0.85,
   /** Turns before another paid swap after one. */
   swapCooldown: 5,
 } as const;
@@ -1058,17 +1058,19 @@ export const AI = {
   /** Favour at which a major accepts a trade pact, open borders and an alliance. */
   tradePactFavour: -10,
   openBordersFavour: 5,
-  allianceFavour: 20,
+  allianceFavour: 30,
   /** A nation on the simplified AI accepts an alliance at this favour. */
-  simpleAllianceFavour: 0,
+  simpleAllianceFavour: 10,
   /** A nation on the simplified AI becomes a vassal peacefully when the other is this many times stronger... */
-  vassalStrengthRatio: 4,
+  vassalStrengthRatio: 8,
   /** ...and favour is at least this. */
-  vassalFavour: 20,
+  vassalFavour: 40,
   /** A major takes a capital's owner as a vassal instead of the city when it is this many times stronger. */
   demandVassalRatio: 2,
+  /** ...and it is at war with somebody else too, or its war weariness has reached this. */
+  vassalWeariness: 15,
   /** Vassals a major wants at most. */
-  maxVassals: 4,
+  maxVassals: 3,
   /** Gold kept back before gifts, and before buying when nothing threatens. */
   goldReserve: 80,
   /** Gold of one gift to a city-state. */
@@ -1078,5 +1080,5 @@ export const AI = {
   /** An enemy unit this close to a city is a threat. */
   threatRange: 3,
   /** Candidate destinations it tries per free route slot. */
-  routeTries: 3,
+  routeTries: 8,
 } as const;

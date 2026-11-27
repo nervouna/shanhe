@@ -3,6 +3,7 @@ import { createFixtureMap } from '../shared/fixtureMap.ts';
 import { Terrain } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
 import { createSyntheticMap } from '../shared/syntheticMap.ts';
+import { BORDER_OPENING } from './context.ts';
 import { CITY, TECHS, UNITS } from './data.ts';
 import { NO_POLITY, createGame, endTurn, hexOwner } from './game.ts';
 import type { Action, GameEvent, GameSetup, GameState } from './game.ts';
@@ -30,7 +31,15 @@ function violation(state: GameState): string | null {
     const owner = hexOwner(state, unit.hex);
     if (owner !== NO_POLITY && owner !== unit.owner) {
       const key = owner < unit.owner ? `${owner}:${unit.owner}` : `${unit.owner}:${owner}`;
-      if (state.relations[key]?.atWar !== true) return `unit ${unit.id} of ${unit.owner} inside ${owner} at peace`;
+      // Open borders, an alliance and a vassalage let each side's units into the other's land.
+      const invited = state.agreements.some(
+        (agreement) =>
+          BORDER_OPENING.includes(agreement.kind) &&
+          ((agreement.a === owner && agreement.b === unit.owner) || (agreement.a === unit.owner && agreement.b === owner)),
+      );
+      if (state.relations[key]?.atWar !== true && !invited) {
+        return `unit ${unit.id} of ${unit.owner} inside ${owner} at peace and without open borders`;
+      }
     }
     const city = topo.siteZone[unit.hex]! >= 0 ? state.cities[topo.siteZone[unit.hex]!] : null;
     if (city !== null && city !== undefined && city.owner !== unit.owner) return `unit ${unit.id} inside a foreign city`;
