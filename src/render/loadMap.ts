@@ -30,11 +30,13 @@ async function fetchBytes(url: URL): Promise<Uint8Array | null> {
 }
 
 /**
+ * @param source `fixture` skips the file and returns the built-in map.
  * @throws if `data/map.json` is a map file but it or one of its buffers
  *   cannot be read. A missing heightmap file is not an error: the relief is
  *   then built from the hex elevations.
  */
-export async function loadMap(): Promise<LoadedMap> {
+export async function loadMap(source: 'file' | 'fixture' = 'file'): Promise<LoadedMap> {
+  if (source === 'fixture') return { map: createFixtureMap(), source: 'fixture' };
   const base = new URL(MAP_FILE, document.baseURI);
   const response = await fetch(base);
   const type = response.headers.get('content-type') ?? '';

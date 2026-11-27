@@ -30,6 +30,16 @@ export default tseslint.config(
     rules: { 'no-restricted-imports': ['error', { patterns: [three] }] },
   },
   {
+    // the turn worker runs outside the page: rules and shared code only
+    files: ['src/ui/turnWorker.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { patterns: [three, render, { group: ['./*'], message: 'The turn worker may import src/core and src/shared only.' }] },
+      ],
+    },
+  },
+  {
     // tests index into arrays whose contents they have just asserted
     files: ['**/*.test.ts'],
     rules: { '@typescript-eslint/no-non-null-assertion': 'off' },

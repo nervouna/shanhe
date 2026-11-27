@@ -156,12 +156,21 @@ export async function createRenderer(
   const listeners = new Set<(stats: FrameStats) => void>();
   let lastTime: number | null = null;
   let disposed = false;
+  let paused = options.paused === true;
+  // a little slack, so that a cap at the display's own rate does not drop every other frame
+  const minFrameMs = options.maxFps === undefined ? 0 : 1000 / options.maxFps - 2;
   let ownersKey = '';
   let fogged = false;
 
   const frame = (): void => {
     if (disposed) return;
+    if (paused) {
+      // time does not pass for the camera while nothing is drawn
+      lastTime = null;
+      return;
+    }
     const start = performance.now();
+    if (lastTime !== null && start - lastTime < minFrameMs) return;
     const elapsed = lastTime === null ? 0 : start - lastTime;
     lastTime = start;
     applyCamera(controller.update(elapsed / 1000), stats.frames === 0);
@@ -238,6 +247,12 @@ export async function createRenderer(
     },
     getStats() {
       return stats;
+    },
+    setPaused(value) {
+      paused = value;
+    },
+    get paused() {
+      return paused;
     },
     onFrame(listener) {
       listeners.add(listener);
