@@ -2,6 +2,7 @@
 
 [English](README.md) | 简体中文
 
+[![CI](https://github.com/nervouna/shanhe/actions/workflows/ci.yml/badge.svg)](https://github.com/nervouna/shanhe/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Browser: WebGPU](https://img.shields.io/badge/browser-WebGPU-lightgrey)
 
