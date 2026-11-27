@@ -1,6 +1,6 @@
 /**
- * Smoke test of the render demo in headless Chromium: the page must start
- * without any console error and keep rendering frames.
+ * Smoke tests in headless Chromium: the render demo and the default page
+ * must start without any console error and keep rendering frames.
  *
  * Set `SHANHE_CAPTURE_DIR` to a folder outside the repository to also save
  * screenshots of the demo at the near and the far zoom.
@@ -87,5 +87,16 @@ test('the render demo draws frames without console errors', async ({ page }) => 
     }
   }
 
+  expect(errors).toEqual([]);
+});
+
+test('the default page draws frames and follows the language switch', async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.goto('/');
+  await waitForFrames(page, MIN_FRAMES);
+  const before = await page.evaluate(() => window.__shanhe?.render.stats.frames ?? 0);
+  await page.click('#language');
+  await waitForFrames(page, before + 10);
+  expect(await page.evaluate(() => document.documentElement.lang)).toBe('en');
   expect(errors).toEqual([]);
 });
