@@ -90,6 +90,8 @@ Conventions that keep this working:
 | `npm run lint` | ESLint, including the layer rules |
 | `npm run check:assets` | Fail if a model, texture, image, audio, video or font file is tracked outside `docs/images/` |
 | `npm run sim -- --map <fixture\|synthetic\|path> --turns 150 --seed N` | Play an AI-only game headless and print a summary |
+| `npm run pipeline` | Rebuild `public/data` from public datasets (downloads into `data/raw/`; `-- --offline` uses the cache) |
+| `npm run pipeline:check` | Validate the committed map data |
 | `npm run e2e` | Build, serve and smoke-test the page in headless Chromium (Playwright) |
 
 CI (`.github/workflows/ci.yml`) runs lint, typecheck, test, build, check:assets and e2e on pushes to `main` and on pull requests.
