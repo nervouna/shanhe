@@ -57,7 +57,7 @@ The ones that constrain all work:
 | `src/core/` | Rules. Pure functions on plain data; runs in Node |
 | `src/render/` | Three.js |
 | `src/ui/` | Plain DOM |
-| `src/main.ts` | Wires the layers and exposes `window.__shanhe = { backend, state }` for automated checks |
+| `src/main.ts` | Wires the layers and exposes `window.__shanhe = { backend, state, render }` for automated checks |
 | `tools/` | Node scripts (`sim.ts`, `check-assets.ts`) and `tools/pipeline/`, the build-time map pipeline |
 | `public/data/` | Generated map files: `.json` and `.bin` only |
 
@@ -89,6 +89,7 @@ Conventions that keep this working:
 | `npm run typecheck` | Type-check the core without the DOM, then the app, then the tools |
 | `npm run lint` | ESLint, including the layer rules |
 | `npm run check:assets` | Fail if a model, texture, image, audio, video or font file is tracked outside `docs/images/` |
-| `npm run sim` | Run the rules core headless on the fixture map |
+| `npm run sim -- --map <fixture\|synthetic\|path> --turns 150 --seed N` | Play an AI-only game headless and print a summary |
+| `npm run e2e` | Build, serve and smoke-test the page in headless Chromium (Playwright) |
 
-CI (`.github/workflows/ci.yml`) runs lint, typecheck, test, build and check:assets on pushes to `main` and on pull requests.
+CI (`.github/workflows/ci.yml`) runs lint, typecheck, test, build, check:assets and e2e on pushes to `main` and on pull requests.
