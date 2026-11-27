@@ -18,21 +18,26 @@ import {
   BUILDINGS,
   BUILDING_IDS,
   CITY,
+  CITY_STATE,
   FOCUS_WEIGHTS,
   FREE_UNITS_PER_CITY,
   IMPROVEMENTS,
   IMPROVEMENT_IDS,
+  POLICIES,
   PROJECT,
   ROSTER,
   SETTLER,
+  TRADE,
   UNIT_UPKEEP,
   WAR,
   unitDef,
 } from './data.ts';
+import type { PolicyId } from './data.ts';
 import { checkStep, isSettleSite, militaryStrength, upgradeCost, validate } from './actions.ts';
 import { checkItem, hasBuilding, improvementFits, improvesHills } from './cities.ts';
 import {
   attackStrength,
+  checkDemandVassalage,
   cityStrength,
   combatDamage,
   defenceStrength,
@@ -40,9 +45,13 @@ import {
 } from './combat.ts';
 import { at, atWar, bordersOpen, cityAtHex, polityOf, relationOf, terrainAllows } from './context.ts';
 import type { Ctx } from './context.ts';
-import { bestUnit, knows, pursuesScience, researches, suggestResearch, upgradeTargetFor } from './tech.ts';
+import { dealPrice, wantsResource } from './diplomacy.ts';
+import { openPolicies } from './policies.ts';
+import { alliesOf, enemiesOf, favourOf, isNation, partnersIn, vassalsOf } from './relations.ts';
+import { bestUnit, knows, ownsResource, pursuesScience, researches, suggestResearch, upgradeTargetFor } from './tech.ts';
+import { checkPillage, checkRouteTarget, routeIncome, routeSlots, routesOf } from './trade.ts';
 import { NO_POLITY } from './types.ts';
-import type { Action, BuildItem, City, Unit } from './types.ts';
+import type { Action, BuildItem, City, RouteTarget, Unit } from './types.ts';
 
 /** Applies an action if it is legal and says whether it was. */
 export type Act = (action: Action) => boolean;
@@ -67,7 +76,13 @@ export function runAi(ctx: Ctx, polity: number, act: Act): void {
   const major = kind === 'nation' && state.majors.includes(polity);
 
   chooseResearch(ctx, polity, act);
+  if (kind === 'nation') choosePolicies(ctx, polity, act);
   diplomacy(ctx, polity, major, cities, act);
+  if (major) {
+    statecraft(ctx, polity, cities, act);
+    openRoutes(ctx, polity, cities, act);
+    buyDefenders(ctx, polity, cities, act);
+  }
   manageCities(ctx, polity, major, cities, act);
   airStrikes(ctx, polity, cities, act);
   commandUnits(ctx, polity, major, cities, act);
@@ -115,12 +130,6 @@ function airStrikes(ctx: Ctx, polity: number, cities: City[], act: Act): void {
 
 // -------------------------------------------------------------- diplomacy
 
-function enemiesOf(ctx: Ctx, polity: number): number[] {
-  const list: number[] = [];
-  for (let other = 0; other < ctx.n; other++) if (other !== polity && atWar(ctx, polity, other)) list.push(other);
-  return list;
-}
-
 function diplomacy(ctx: Ctx, polity: number, major: boolean, cities: City[], act: Act): void {
   const { state, topo } = ctx;
   const self = polityOf(ctx, polity);
@@ -157,7 +166,10 @@ function diplomacy(ctx: Ctx, polity: number, major: boolean, cities: City[], act
   let weakest = Infinity;
   for (const other of [...neighbours].sort((a, b) => a - b)) {
     if (validate(ctx, { type: 'declareWar', polity, target: other }) !== null) continue;
+    // Its allies and vassals would stand by it, and a friend is not attacked.
+    if (favourOf(ctx, polity, other) >= AI.allianceFavour) continue;
     let defence = militaryStrength(ctx, other);
+    for (const friend of [...alliesOf(ctx, other), ...vassalsOf(ctx, other)]) defence += militaryStrength(ctx, friend);
     for (const city of state.cities) if (city !== null && city.owner === other) defence += cityStrength(ctx, city) / 2;
     if (defence < weakest) {
       weakest = defence;
@@ -165,6 +177,233 @@ function diplomacy(ctx: Ctx, polity: number, major: boolean, cities: City[], act
     }
   }
   if (target >= 0 && strength >= weakest * AI.warStrengthRatio) act({ type: 'declareWar', polity, target });
+}
+
+// ---------------------------------------------------------------- policies
+
+/** True if the card would do something for the polity as it stands now. */
+function policyApplies(ctx: Ctx, polity: number, id: PolicyId): boolean {
+  const def = POLICIES[id];
+  if (def.allyStrengthPercent !== undefined || def.allyRouteMultiplier !== undefined) {
+    return alliesOf(ctx, polity).length > 0;
+  }
+  if (def.tradePactGoldPercent !== undefined) return partnersIn(ctx, 'tradePact', polity).length > 0;
+  if (def.seaRouteGold !== undefined) return routesOf(ctx, polity).some((route) => route.sea);
+  if (def.tributePercent !== undefined || def.influencePercent !== undefined) {
+    const courted = ctx.state.polities.some(
+      (other) => other.alive && other.cityStateType !== null && (other.influence[polity] ?? 0) > 0,
+    );
+    return courted || (def.tributePercent !== undefined && vassalsOf(ctx, polity).length > 0);
+  }
+  return true;
+}
+
+/** How much the polity wants the card: by its kind at peace or at war, a little more for a later era, far less if it does nothing now. */
+function policyScore(ctx: Ctx, polity: number, id: PolicyId, fighting: boolean): number {
+  const def = POLICIES[id];
+  const weights = fighting ? AI.policyAtWar : AI.policyAtPeace;
+  return weights[def.kind] + def.era * AI.policyEraWeight - (policyApplies(ctx, polity, id) ? 0 : 10);
+}
+
+/**
+ * Unlocks the best card the polity can afford, fills its empty slots with
+ * its best unlocked cards, and swaps a card out when a clearly better one is
+ * waiting and the swap is free or the cooldown is over.
+ */
+function choosePolicies(ctx: Ctx, polity: number, act: Act): void {
+  const self = polityOf(ctx, polity);
+  const fighting = enemiesOf(ctx, polity).length > 0;
+  const score = (id: PolicyId): number => policyScore(ctx, polity, id, fighting);
+  const best = (list: readonly PolicyId[]): PolicyId | null => {
+    let pick: PolicyId | null = null;
+    for (const id of list) if (pick === null || score(id) > score(pick)) pick = id;
+    return pick;
+  };
+  for (;;) {
+    const policy = best(openPolicies(ctx, polity));
+    if (policy === null || !act({ type: 'unlockPolicy', polity, policy })) break;
+  }
+  for (let guard = 0; guard < self.slots.length + 1; guard++) {
+    const waiting = best(self.policies.filter((id) => !self.slots.includes(id)));
+    if (waiting === null) return;
+    let slot = self.slots.indexOf(null);
+    if (slot < 0) {
+      // No room: the weakest card makes way if the new one is clearly better.
+      slot = 0;
+      self.slots.forEach((id, index) => {
+        const worst = at(self.slots, slot);
+        if (id !== null && worst !== null && score(id) < score(worst)) slot = index;
+      });
+      const worst = at(self.slots, slot);
+      if (worst === null || score(waiting) < score(worst) + 1) return;
+    }
+    if (!act({ type: 'slotPolicy', polity, policy: waiting, slot })) return;
+  }
+}
+
+// -------------------------------------------------------------- statecraft
+
+/** The nations whose land touches the polity's, ascending. */
+function neighbourNations(ctx: Ctx, polity: number, cities: City[]): number[] {
+  const found = new Set<number>();
+  for (const city of cities) {
+    for (const zone of at(ctx.topo.zoneNeighbors, city.zone)) {
+      const owner = at(ctx.state.zoneOwner, zone);
+      if (owner !== NO_POLITY && owner !== polity && isNation(ctx, owner)) found.add(owner);
+    }
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
+/**
+ * Every few turns a major nation looks at its neighbours: it offers a trade
+ * pact, open borders and an alliance where favour allows, takes a far weaker
+ * one as a vassal, sells a resource a neighbour lacks, and courts the
+ * nearest city-state with a gift. One of each per look. It writes to a human
+ * player a third as often, so that a refusal is not repeated at once.
+ */
+function statecraft(ctx: Ctx, polity: number, cities: City[], act: Act): void {
+  const { state, map } = ctx;
+  if ((state.turn + polity) % AI.diplomacyInterval !== 0) return;
+  const self = polityOf(ctx, polity);
+  const toPlayer = (state.turn + polity) % (AI.diplomacyInterval * 3) === 0;
+  const neighbours = neighbourNations(ctx, polity, cities)
+    .filter((other) => other !== state.player || toPlayer)
+    .sort((a, b) => favourOf(ctx, polity, b) - favourOf(ctx, polity, a) || a - b);
+  const first = (make: (target: number) => Action | null): void => {
+    for (const target of neighbours) {
+      const action = make(target);
+      if (action !== null && act(action)) return;
+    }
+  };
+
+  first((target) => ({ type: 'propose', polity, target, agreement: 'tradePact' }));
+  first((target) =>
+    favourOf(ctx, polity, target) >= AI.openBordersFavour
+      ? { type: 'propose', polity, target, agreement: 'openBorders' }
+      : null,
+  );
+  if (self.overlord === NO_POLITY) {
+    first((target) =>
+      favourOf(ctx, polity, target) >= AI.allianceFavour ? { type: 'propose', polity, target, agreement: 'alliance' } : null,
+    );
+    if (vassalsOf(ctx, polity).length < AI.maxVassals) {
+      first((target) =>
+        state.majors.includes(target) ? null : { type: 'propose', polity, target, agreement: 'vassalage' },
+      );
+    }
+  }
+  // A resource of its own for a neighbour that has a use for it.
+  first((target) => {
+    for (const resource of map.resources) {
+      if (!ownsResource(ctx, polity, resource.id) || !wantsResource(ctx, target, resource.id)) continue;
+      return {
+        type: 'proposeDeal', polity, target, seller: polity, resource: resource.id, goldPerTurn: dealPrice(resource.id),
+      };
+    }
+    return null;
+  });
+
+  // The nearest city-state at peace, until it is safely won.
+  if (self.gold < AI.goldReserve + AI.giftGold || self.capital < 0) return;
+  const home = at(map.zones, self.capital).siteHex;
+  let nearest = -1;
+  let nearestApart: number = AI.courtRange + 1;
+  state.polities.forEach((other, index) => {
+    if (!other.alive || other.cityStateType === null || other.capital < 0 || atWar(ctx, polity, index)) return;
+    if (other.suzerain === polity && (other.influence[polity] ?? 0) >= CITY_STATE.suzerainInfluence + AI.giftGold) return;
+    const apart = hexesApart(ctx, home, at(map.zones, other.capital).siteHex);
+    if (apart < nearestApart) {
+      nearestApart = apart;
+      nearest = index;
+    }
+  });
+  if (nearest >= 0) act({ type: 'gift', polity, target: nearest, amount: AI.giftGold });
+}
+
+/**
+ * Fills one free route slot per turn with the destination that promises the
+ * most: every city and open port in reach is rated by what a route of that
+ * length would earn, and the best few are tried until one has a path.
+ */
+function openRoutes(ctx: Ctx, polity: number, cities: City[], act: Act): void {
+  const { state, map } = ctx;
+  const own = routesOf(ctx, polity);
+  if (own.length >= routeSlots(ctx, polity)) return;
+  const reach = Math.max(TRADE.landRange, TRADE.seaRange);
+  const options: { income: number; city: number; to: RouteTarget }[] = [];
+  const rate = (city: City, to: RouteTarget, apart: number): void => {
+    if (checkRouteTarget(ctx, polity, city.zone, to) !== null) return;
+    if (own.some((route) => (to.kind === 'city' ? route.toCity === to.zone : route.toPort === to.port))) return;
+    const income = routeIncome(ctx, {
+      id: 0,
+      owner: polity,
+      from: city.zone,
+      toCity: to.kind === 'city' ? to.zone : -1,
+      toPort: to.kind === 'port' ? to.port : -1,
+      sea: false,
+      path: Array.from({ length: apart + 1 }, () => 0),
+      income: 0,
+      pillagedUntil: 0,
+    });
+    options.push({ income, city: city.zone, to });
+  };
+  for (const city of cities) {
+    const site = at(map.zones, city.zone).siteHex;
+    for (const other of state.cities) {
+      if (other === null || other === city) continue;
+      const apart = hexesApart(ctx, site, at(map.zones, other.zone).siteHex);
+      if (apart <= reach) rate(city, { kind: 'city', zone: other.zone }, apart);
+    }
+    map.offMapPorts.forEach((port, index) => {
+      const apart = hexesApart(ctx, site, port.hex);
+      if (apart <= reach) rate(city, { kind: 'port', port: index }, apart);
+    });
+  }
+  options.sort(
+    (a, b) =>
+      b.income - a.income ||
+      a.city - b.city ||
+      (a.to.kind === 'city' ? a.to.zone : 10000 + a.to.port) - (b.to.kind === 'city' ? b.to.zone : 10000 + b.to.port),
+  );
+  for (const option of options.slice(0, AI.routeTries)) {
+    if (act({ type: 'establishRoute', polity, city: option.city, to: option.to })) return;
+  }
+}
+
+/** At war, a city with an enemy at its gates and nobody inside buys the best infantry it can pay for. */
+function buyDefenders(ctx: Ctx, polity: number, cities: City[], act: Act): void {
+  if (enemiesOf(ctx, polity).length === 0) return;
+  const { state, map } = ctx;
+  for (const city of cities) {
+    const site = at(map.zones, city.zone).siteHex;
+    const holder = ctx.unitAt.get(site);
+    if (holder !== undefined && holder.owner === polity && isMilitary(holder)) continue;
+    const threatened = state.units.some(
+      (unit) =>
+        unit.owner !== NO_POLITY &&
+        unit.owner !== polity &&
+        atWar(ctx, polity, unit.owner) &&
+        isMilitary(unit) &&
+        hexesApart(ctx, unit.hex, site) <= AI.threatRange,
+    );
+    if (threatened) act({ type: 'buy', polity, city: city.zone, item: infantry(ctx, polity) });
+  }
+}
+
+/**
+ * True if the unit should demand vassalage at `target` instead of taking
+ * the city: a fallen capital of a nation much weaker than its own, while it
+ * still has room for vassals.
+ */
+function prefersVassal(ctx: Ctx, unit: Unit, target: number): boolean {
+  const city = cityAtHex(ctx, target);
+  if (city === null || city.hp > 0 || checkDemandVassalage(ctx, unit, target) !== null) return false;
+  if (vassalsOf(ctx, unit.owner).length >= AI.maxVassals) return false;
+  // A fresh army takes the city; a weary one, or one with another war to fight, settles for a vassal.
+  const weary = polityOf(ctx, unit.owner).warWeariness >= AI.vassalWeariness;
+  if (!weary && enemiesOf(ctx, unit.owner).length < 2) return false;
+  return militaryStrength(ctx, unit.owner) >= militaryStrength(ctx, city.owner) * AI.demandVassalRatio;
 }
 
 // ----------------------------------------------------------------- cities
@@ -550,11 +789,17 @@ function commandUnits(ctx: Ctx, polity: number, major: boolean, cities: City[], 
     for (let step = 0; step < 8 && alive(unit) && unit.moves > 0; step++) {
       const target = holding && def.range === 0 ? -1 : chooseTarget(ctx, unit, focus, resting);
       if (target >= 0) {
-        act({ type: 'attack', polity, unit: unit.id, target });
+        if (!(major && prefersVassal(ctx, unit, target) && act({ type: 'demandVassalage', polity, unit: unit.id, target }))) {
+          act({ type: 'attack', polity, unit: unit.id, target });
+        }
         break;
       }
       if (holding || resting || field === null) break;
       if (!advanceOneStep(ctx, unit, field, act)) break;
+    }
+    // With nothing to fight, an army in enemy land lives off it.
+    if (major && !holding && alive(unit) && unit.moves > 0 && checkPillage(ctx, unit) === null) {
+      act({ type: 'pillage', polity, unit: unit.id });
     }
     if (alive(unit) && !unit.acted && unit.status !== 'fortified') act({ type: 'fortify', polity, unit: unit.id });
   }

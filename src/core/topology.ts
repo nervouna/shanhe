@@ -50,6 +50,8 @@ export interface Topology {
   readonly coastal: readonly boolean[];
   /** Per resource (index into `map.resources`): the hexes that carry it, ascending. */
   readonly resourceHexes: readonly (readonly number[])[];
+  /** Per zone: the resources (indices into `map.resources`) on its land and on the water its city works, ascending. */
+  readonly zoneResources: readonly (readonly number[])[];
 }
 
 const cache = new WeakMap<MapData, Topology>();
@@ -192,9 +194,16 @@ function buildTopology(map: MapData): Topology {
   const zoneNeighbors = adjacent.map((set) => [...set].sort((a, b) => a - b));
 
   const resourceHexes: number[][] = map.resources.map(() => []);
+  const zoneResourceSets: Set<number>[] = map.zones.map(() => new Set<number>());
   for (let h = 0; h < count; h++) {
-    if (map.owner[h] !== OWNER_OFF_MAP) resourceHexes[map.resource[h] as number]?.push(h);
+    if (map.owner[h] === OWNER_OFF_MAP) continue;
+    const resource = map.resource[h] as number;
+    if (resource < 0 || resource >= map.resources.length) continue;
+    (resourceHexes[resource] as number[]).push(h);
+    const z = (map.zone[h] as number) >= 0 ? (map.zone[h] as number) : (workZone[h] as number);
+    if (z >= 0 && z < zoneCount) (zoneResourceSets[z] as Set<number>).add(resource);
   }
+  const zoneResources = zoneResourceSets.map((set) => [...set].sort((a, b) => a - b));
 
   return {
     count,
@@ -212,5 +221,6 @@ function buildTopology(map: MapData): Topology {
     zoneNeighbors,
     coastal,
     resourceHexes,
+    zoneResources,
   };
 }

@@ -25,9 +25,14 @@ export interface Ctx {
   readonly n: number;
   /** `n * n` flags: 1 where the two polities are at war. */
   readonly war: Uint8Array;
+  /** `n * n` flags: 1 where an agreement (open borders, alliance, vassalage) opens the two polities' borders to each other. */
+  readonly open: Uint8Array;
   /** Per polity, from its techs: 0 land only, 1 may be on coast and lake, 2 on ocean too. */
   readonly seaLevel: Uint8Array;
 }
+
+/** The agreements that let each side's units into the other's land. */
+export const BORDER_OPENING: readonly string[] = ['openBorders', 'alliance', 'vassalage'];
 
 /** 0: land only. 1: coast and lake (Boats). 2: ocean too (Compass). */
 export function seaLevelOf(polity: Pick<PolityState, 'techs'>): number {
@@ -51,6 +56,11 @@ export function deepClone<T>(value: T): T {
   return value;
 }
 
+/** Removes an entry from a record of the state. */
+export function dropKey(record: Record<string, unknown>, key: string | number): void {
+  Reflect.deleteProperty(record, String(key));
+}
+
 /** A copy of `state` that shares only the map. */
 export function cloneState(state: GameState): MutableGameState {
   const { map, ...rest } = state;
@@ -69,8 +79,12 @@ export function createCtx(state: MutableGameState): Ctx {
     unitById: new Map(),
     n,
     war: new Uint8Array(n * n),
+    open: new Uint8Array(n * n),
     seaLevel: Uint8Array.from(state.polities, seaLevelOf),
   };
+  for (const agreement of state.agreements) {
+    if (BORDER_OPENING.includes(agreement.kind)) setOpenFlag(ctx, agreement.a, agreement.b, true);
+  }
   for (const unit of state.units) {
     ctx.unitAt.set(unit.hex, unit);
     ctx.unitById.set(unit.id, unit);
@@ -125,6 +139,11 @@ export function setWarFlag(ctx: Ctx, a: number, b: number, value: boolean): void
   ctx.war[b * ctx.n + a] = value ? 1 : 0;
 }
 
+export function setOpenFlag(ctx: Ctx, a: number, b: number, value: boolean): void {
+  ctx.open[a * ctx.n + b] = value ? 1 : 0;
+  ctx.open[b * ctx.n + a] = value ? 1 : 0;
+}
+
 export function relationKey(a: number, b: number): string {
   return a < b ? `${a}:${b}` : `${b}:${a}`;
 }
@@ -157,10 +176,15 @@ export function terrainAllows(ctx: Ctx, def: UnitDef, hex: number, owner: number
   return def.domain === 'land';
 }
 
-/** True if `polity`'s units may be on the hex: its own land, nobody's, or an enemy's. */
+/**
+ * True if `polity`'s units may be on the hex: its own land, nobody's, an
+ * enemy's, or that of a polity whose borders an agreement opens to it.
+ */
 export function bordersOpen(ctx: Ctx, polity: number, hex: number): boolean {
   const owner = ownerOf(ctx, hex);
-  return owner === NO_POLITY || owner === polity || atWar(ctx, polity, owner);
+  if (owner === NO_POLITY || owner === polity) return true;
+  if (polity === NO_POLITY) return true;
+  return ctx.war[polity * ctx.n + owner] === 1 || ctx.open[polity * ctx.n + owner] === 1;
 }
 
 /** True for a land unit standing on water. */
