@@ -81,6 +81,8 @@ The rules of a route:
 - **Pillaging.** A unit can pillage an improvement, disabling it for a time and earning gold, or a trade route it stands on. The improvement must belong to a polity the unit's owner is at war with. It yields nothing for 10 turns and then works again by itself; the pillager gets half its production cost in gold. Pillaging takes the rest of the unit's turn. Where both stand on the hex, the improvement is pillaged first.
 - Roster: one generic unit per class per era, 30 in total, plus 50 unique units. The generic roster is in [04-tech-and-policies.md](04-tech-and-policies.md).
 
+Rules that the nation kits added to combat and to the AI (attacks from the water, attrition, tolls, vision ranges, AI navies) are listed under "Rules added for the kits" in [02-nations.md](02-nations.md).
+
 ## Diplomacy
 
 - A favour score between each pair of nations.

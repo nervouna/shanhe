@@ -4,7 +4,7 @@ What the design still leaves open. Everything else in these docs is settled: on 
 
 ## Design
 
-1. **Tech prerequisites.** Each tech has 1–2 prerequisites, but the actual links are not drawn.
+Nothing open.
 
 ## Known weak spots
 
@@ -21,8 +21,6 @@ Accepted for now; revisit after playtesting.
 
 ## Technology
 
-7. Language, build tooling and project layout are not chosen. Only "browser, Three.js on WebGPU with a WebGL fallback" is fixed.
-8. The specific geographic datasets and their licences.
 9. English names for nations are romanisations for now; the final English display names are not reviewed.
 10. Audio was not discussed. The procedural rule implies synthesised sound.
 
@@ -37,3 +35,4 @@ Accepted for now; revisit after playtesting.
 - Era, class and piece character set for all unique units; kind and unlock tech set for all unique buildings.
 - One-city nations stay playable; the imbalance is accepted.
 - Every nation has its architectural family, its difficulty rating and its leader's AI personality, and every kit has its numbers: see [02-nations.md](02-nations.md).
+- Tech prerequisites are drawn in [04-tech-and-policies.md](04-tech-and-policies.md); the stack and layout are in `CLAUDE.md`; the datasets and their licences are in `tools/pipeline/DATA.md`.
