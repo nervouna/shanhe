@@ -35,6 +35,7 @@ import {
 } from './cameraRig.ts';
 import type { CameraPose, CameraState } from './cameraRig.ts';
 import { createCities } from './cities.ts';
+import { latitudeTerms } from './climate.ts';
 import { createCameraController } from './controls.ts';
 import { createEffects } from './effects.ts';
 import { createSurface, mapWorldRect, surfaceHeightAt, unitsPerMetre } from './heightField.ts';
@@ -54,6 +55,7 @@ import type { FrameStats, Renderer, RendererOptions } from './scene.ts';
 import { createMapUniforms } from './shaderLib.ts';
 import { createTerrain } from './terrain.ts';
 import { createTerrainMaterial } from './terrainMaterial.ts';
+import { createVegetation } from './vegetation.ts';
 import { createWater } from './water.ts';
 
 export type { CameraState } from './cameraRig.ts';
@@ -64,6 +66,9 @@ const TABLE_COLOR = 0x2b2622;
 
 /** The camera stays this far above the ground under it, in hex sizes. */
 const CAMERA_CLEARANCE = 0.5;
+
+/** How high the clouds float over the ground, in hex sizes. */
+const CLOUD_HEIGHT = 5;
 
 /** Weight of the newest frame in the running averages of the statistics. */
 const STATS_BLEND = 0.1;
@@ -76,6 +81,16 @@ const MIN_BORDER_PIXELS = 1.7;
 const BORDER_WIDTH = 0.085;
 /** City houses smaller than this on screen are not drawn, in CSS pixels. */
 const MIN_HOUSE_PIXELS = 0.8;
+
+const NO_IMPROVEMENTS: ReadonlyMap<number, number> = new Map();
+
+/** A string that changes when the entries of a map do. */
+function keyOfMap(map: ReadonlyMap<number, number>): string {
+  if (map.size === 0) return '';
+  let key = '';
+  for (const [hex, value] of map) key += `${hex}:${value},`;
+  return key;
+}
 
 /**
  * Starts drawing `mapData` on `canvas`. Resolves once the renderer has
@@ -110,7 +125,7 @@ export async function createRenderer(
   const lighting = createLighting(scene, renderer, span, surface.field.maxY - surface.field.minY);
 
   const textures = createMapTextures(mapData, createHexRaster(mapData));
-  const uniforms = createMapUniforms(rect, layout, unitsPerMetre(mapData), textures);
+  const uniforms = createMapUniforms(rect, layout, unitsPerMetre(mapData), textures, latitudeTerms(mapData.projection));
   const terrainMaterial = createTerrainMaterial(uniforms);
   // the table the map stands on, a little below its lowest point
   const tableY = surface.field.minY - 0.35 * layout.size;
@@ -122,11 +137,12 @@ export async function createRenderer(
   const table = new Mesh(tableGeometry, tableMaterial);
   table.position.set((rect.minX + rect.maxX) / 2, tableY, (rect.minZ + rect.maxZ) / 2);
   table.receiveShadow = true;
+  const vegetation = createVegetation(surface, uniforms);
   const pieces = createPieces(surface);
   const cities = createCities(surface);
   const labels = createLabels();
   const effects = createEffects();
-  scene.add(terrain.object, water.object, overlays.object, table, pieces.object, cities.object, effects.object);
+  scene.add(terrain.object, water.object, overlays.object, table, vegetation.object, pieces.object, cities.object, effects.object);
   // with the finish, labels are drawn on their own and laid over the picture
   const labelScene = new Scene();
   renderer.setClearColor(0x000000, 0);
@@ -224,6 +240,7 @@ export async function createRenderer(
   let political = 0;
   let shownLabels = 0;
   let terrainBuilds = 0;
+  let shownTrees = 0;
   const applyCamera = (state: CameraState, firstFrame: boolean): void => {
     const pose = poseOf(state);
     camera.position.set(...pose.position);
@@ -249,6 +266,9 @@ export async function createRenderer(
     cities.object.visible = (0.12 * layout.size) / perPixel >= MIN_HOUSE_PIXELS;
     const update = terrain.update(camera.position, viewHeight, firstFrame ? Infinity : undefined);
     terrainBuilds = update.builds;
+    const grown = vegetation.update(camera.position, firstFrame ? 64 : undefined);
+    shownTrees = grown.trees;
+    if (grown.changed) shadowDirty = true;
     lighting.update(
       target,
       state.distance,
@@ -258,6 +278,10 @@ export async function createRenderer(
     );
     shadowDirty = false;
     shadowMoving = false;
+    uniforms.clock.value = seconds;
+    // the cloud that shades a point floats between it and the sun
+    const sunward = (CLOUD_HEIGHT * layout.size) / lighting.sunDirection.y;
+    uniforms.cloudOffset.value.set(lighting.sunDirection.x * sunward, lighting.sunDirection.z * sunward);
     shownLabels = labels.update(camera, Math.max(1, canvas.clientWidth), height, zoom, political);
     postfx.update(state.distance, zoom);
   };
@@ -307,6 +331,7 @@ export async function createRenderer(
     labels: 0,
     animating: false,
     shadowDraws: 0,
+    trees: 0,
   };
   const listeners = new Set<(stats: FrameStats) => void>();
   let lastTime: number | null = null;
@@ -316,6 +341,7 @@ export async function createRenderer(
   const minFrameMs = options.maxFps === undefined ? 0 : 1000 / options.maxFps - 2;
   let ownersKey = '';
   let fogged = false;
+  let improvementsKey = '';
 
   const frame = (): void => {
     if (disposed) return;
@@ -365,6 +391,7 @@ export async function createRenderer(
       labels: shownLabels,
       animating: animator.playing,
       shadowDraws: lighting.shadowDraws,
+      trees: shownTrees,
     };
     for (const listener of listeners) listener(stats);
   };
@@ -414,6 +441,13 @@ export async function createRenderer(
       }
       if (next.fog !== null || fogged) textures.setFog(next.fog);
       fogged = next.fog !== null;
+
+      const improvements = next.improvements ?? NO_IMPROVEMENTS;
+      const improvementKey = keyOfMap(improvements);
+      if (improvementKey !== improvementsKey) {
+        improvementsKey = improvementKey;
+        textures.setImprovements(improvements);
+      }
     },
     pickHex(clientX, clientY) {
       const bounds = canvas.getBoundingClientRect();
@@ -530,6 +564,7 @@ export async function createRenderer(
       listeners.clear();
       controller.dispose();
       terrain.dispose();
+      vegetation.dispose();
       water.dispose();
       pieces.dispose();
       cities.dispose();

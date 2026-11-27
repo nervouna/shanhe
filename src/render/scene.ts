@@ -64,6 +64,29 @@ export interface RenderCity {
   readonly capital?: boolean;
 }
 
+/** What has been built on a hex. Values of `RenderScene.improvements`. */
+export const Improvement = {
+  /** Fields with furrows; terraces on slopes. */
+  Farm: 1,
+  /** Fenced grazing land with a herd. */
+  Pasture: 2,
+  /** A pit head with its spoil heap. */
+  Mine: 3,
+  /** Boats and fish traps, on a water hex. */
+  Fishery: 4,
+} as const;
+export type ImprovementId = (typeof Improvement)[keyof typeof Improvement];
+
+/** One trade route, drawn as a faint dotted line in its owner's colour. */
+export interface RenderRoute {
+  /** The hexes the route passes, in order. */
+  readonly path: readonly number[];
+  /** The polity that owns the route. */
+  readonly polity: number;
+  /** Whether it is a sea route: drawn over the water instead of on the ground. */
+  readonly sea: boolean;
+}
+
 /** What the player knows about a hex. Values of `RenderScene.fog`. */
 export const FogState = {
   /** Never seen. */
@@ -94,6 +117,12 @@ export interface RenderScene {
    * drawn slightly desaturated.
    */
   readonly fog: Uint8Array | null;
+  /** Improvements by hex index. None if omitted. */
+  readonly improvements?: ReadonlyMap<number, ImprovementId>;
+  /** Roads by hex index: 1 for a road, 2 for a railway. Drawn through the hex centres. None if omitted. */
+  readonly roads?: ReadonlyMap<number, 1 | 2>;
+  /** Trade routes. None if omitted. */
+  readonly routes?: readonly RenderRoute[];
 }
 
 /** A hex to mark, for selections, move ranges and the like. */
@@ -209,6 +238,8 @@ export interface FrameStats {
    * stays on the ground the cascades cover.
    */
   readonly shadowDraws: number;
+  /** Trees drawn in the last frame; 0 from far away, where forests are colour and relief only. */
+  readonly trees: number;
 }
 
 export interface RendererOptions {

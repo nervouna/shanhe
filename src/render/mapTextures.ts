@@ -1,21 +1,27 @@
 /**
- * Per-hex map data as small textures, generated at run time: land cover for
- * the terrain shader, and the two layers that change during a game,
- * territory and fog of war.
+ * Per-hex map data as small textures, generated at run time: land cover and
+ * features for the terrain shader, the layers that change during a game
+ * (territory, fog of war, improvements), and the noise the shaders read.
  */
 
 import {
   ClampToEdgeWrapping,
   DataTexture,
   LinearFilter,
+  LinearMipmapLinearFilter,
   RGBAFormat,
+  RepeatWrapping,
   SRGBColorSpace,
   UnsignedByteType,
 } from 'three/webgpu';
 import { Feature, Terrain } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
-import { FogState } from './scene.ts';
+import { FogState, Improvement } from './scene.ts';
 import type { HexRaster } from './hexRaster.ts';
+import { buildNoiseTile } from './noiseTile.ts';
+
+/** Side of the noise texture in pixels. */
+const NOISE_SIZE = 256;
 
 export interface MapTextures {
   /** RGBA: weight of grassland, desert, tundra and snow. Plains are what is left. */
@@ -26,10 +32,18 @@ export interface MapTextures {
   readonly territory: DataTexture;
   /** R: 1 where the hex is in view, lower where it is not. */
   readonly fog: DataTexture;
+  /** RGBA: weight of farmland, pasture, mine and fishery. */
+  readonly improvement: DataTexture;
+  /** R: volcano, G: oasis. */
+  readonly feature: DataTexture;
+  /** Four fractal noises that repeat without a seam, see `noiseTile.ts`. */
+  readonly noise: DataTexture;
   /** Repaints the territory layer. `owner` is per hex, as in `MapData.owner`. */
   setOwners(owner: Int16Array): void;
   /** Repaints the fog layer. `null` puts the whole map in view. */
   setFog(fog: Uint8Array | null): void;
+  /** Repaints the improvement layer: hex index to an `Improvement` value. */
+  setImprovements(improvements: ReadonlyMap<number, number>): void;
   dispose(): void;
 }
 
@@ -56,30 +70,72 @@ function bytes(texture: DataTexture): Uint8Array {
   return texture.image.data as Uint8Array;
 }
 
+/**
+ * Softens a layer in place: every pixel becomes the mean of the 3 x 3
+ * around it, `passes` times. Hex outlines in the land cover turn into
+ * gradual transitions, which the terrain shader then breaks up with noise.
+ */
+export function blurLayer(data: Uint8Array, width: number, height: number, passes: number): void {
+  const copy = new Uint8Array(data.length);
+  for (let pass = 0; pass < passes; pass++) {
+    copy.set(data);
+    for (let j = 0; j < height; j++) {
+      for (let i = 0; i < width; i++) {
+        for (let c = 0; c < 4; c++) {
+          let sum = 0;
+          for (let dj = -1; dj <= 1; dj++) {
+            const jj = Math.min(Math.max(j + dj, 0), height - 1);
+            for (let di = -1; di <= 1; di++) {
+              const ii = Math.min(Math.max(i + di, 0), width - 1);
+              sum += copy[(jj * width + ii) * 4 + c] as number;
+            }
+          }
+          data[(j * width + i) * 4 + c] = Math.round(sum / 9);
+        }
+      }
+    }
+  }
+}
+
 export function createMapTextures(map: MapData, raster: HexRaster): MapTextures {
   const coverA = makeTexture(raster);
   const coverB = makeTexture(raster);
   const territory = makeTexture(raster);
   const fog = makeTexture(raster);
+  const improvement = makeTexture(raster);
+  const feature = makeTexture(raster);
   const pixels = raster.width * raster.height;
+
+  const noise = new DataTexture(buildNoiseTile(NOISE_SIZE), NOISE_SIZE, NOISE_SIZE, RGBAFormat, UnsignedByteType);
+  noise.wrapS = RepeatWrapping;
+  noise.wrapT = RepeatWrapping;
+  noise.magFilter = LinearFilter;
+  noise.minFilter = LinearMipmapLinearFilter;
+  noise.generateMipmaps = true;
+  noise.needsUpdate = true;
 
   const a = bytes(coverA);
   const b = bytes(coverB);
+  const f = bytes(feature);
   for (let p = 0; p < pixels; p++) {
     const hex = raster.hexAt[p] as number;
     if (hex < 0) continue;
     const terrain = map.terrain[hex] as number;
-    const feature = map.feature[hex] as number;
+    const hexFeature = map.feature[hex] as number;
     const o = p * 4;
-    if (terrain === Terrain.Grassland || feature === Feature.Oasis) a[o] = 255;
-    if (terrain === Terrain.Desert && feature !== Feature.Oasis) a[o + 1] = 255;
+    if (terrain === Terrain.Grassland || hexFeature === Feature.Oasis) a[o] = 255;
+    if (terrain === Terrain.Desert && hexFeature !== Feature.Oasis) a[o + 1] = 255;
     if (terrain === Terrain.Tundra) a[o + 2] = 255;
     if (terrain === Terrain.Snow) a[o + 3] = 255;
-    if (feature === Feature.Forest) b[o] = 255;
-    if (feature === Feature.Jungle) b[o + 1] = 255;
-    if (terrain === Terrain.Mountain || feature === Feature.Volcano) b[o + 2] = 255;
-    if (feature === Feature.Marsh) b[o + 3] = 255;
+    if (hexFeature === Feature.Forest) b[o] = 255;
+    if (hexFeature === Feature.Jungle) b[o + 1] = 255;
+    if (terrain === Terrain.Mountain || hexFeature === Feature.Volcano) b[o + 2] = 255;
+    if (hexFeature === Feature.Marsh) b[o + 3] = 255;
+    if (hexFeature === Feature.Volcano) f[o] = 255;
+    if (hexFeature === Feature.Oasis) f[o + 1] = 255;
   }
+  blurLayer(a, raster.width, raster.height, 2);
+  blurLayer(b, raster.width, raster.height, 2);
 
   // polity colours are stored as sRGB bytes; sampling returns linear colour
   territory.colorSpace = SRGBColorSpace;
@@ -92,6 +148,26 @@ export function createMapTextures(map: MapData, raster: HexRaster): MapTextures 
     coverB,
     territory,
     fog,
+    improvement,
+    feature,
+    noise,
+    setImprovements(improvements) {
+      const data = bytes(improvement);
+      data.fill(0);
+      if (improvements.size > 0) {
+        for (let p = 0; p < pixels; p++) {
+          const hex = raster.hexAt[p] as number;
+          if (hex < 0) continue;
+          const kind = improvements.get(hex);
+          if (kind === undefined) continue;
+          if (kind === Improvement.Farm) data[p * 4] = 255;
+          else if (kind === Improvement.Pasture) data[p * 4 + 1] = 255;
+          else if (kind === Improvement.Mine) data[p * 4 + 2] = 255;
+          else if (kind === Improvement.Fishery) data[p * 4 + 3] = 255;
+        }
+      }
+      improvement.needsUpdate = true;
+    },
     setOwners(owner) {
       const data = bytes(territory);
       for (let p = 0; p < pixels; p++) {
@@ -119,6 +195,9 @@ export function createMapTextures(map: MapData, raster: HexRaster): MapTextures 
       coverB.dispose();
       territory.dispose();
       fog.dispose();
+      improvement.dispose();
+      feature.dispose();
+      noise.dispose();
     },
   };
   textures.setOwners(map.owner);
