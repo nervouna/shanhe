@@ -78,6 +78,24 @@ export function zoomFraction(distance: number, limits: CameraLimits): number {
   return Math.log(d / limits.minDistance) / Math.log(limits.maxDistance / limits.minDistance);
 }
 
+/** The distance at a zoom fraction: the inverse of {@link zoomFraction}. */
+export function distanceAtZoom(fraction: number, limits: CameraLimits): number {
+  const t = clamp(fraction, 0, 1);
+  return limits.minDistance * (limits.maxDistance / limits.minDistance) ** t;
+}
+
+/** The zoom fraction the camera starts at: whole provinces in view, the ground still drawn as terrain. */
+export const DEFAULT_ZOOM = 0.62;
+/** Zoom fractions between which the ground crossfades into the political map. */
+export const POLITICAL_FROM = 0.7;
+export const POLITICAL_FULL = 0.8;
+
+/** How far the view has turned into the political map at a zoom fraction, 0 to 1. */
+export function politicalShare(zoom: number): number {
+  const t = clamp((zoom - POLITICAL_FROM) / (POLITICAL_FULL - POLITICAL_FROM), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
 /**
  * The tilt that goes with a zoom: {@link NEAR_TILT} at the nearest zoom,
  * rising smoothly and monotonically to {@link FAR_TILT} at the farthest.

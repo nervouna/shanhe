@@ -1,51 +1,44 @@
 /**
  * City markers: a procedural cluster of houses that grows with the
- * population, and the city's name on a label that keeps its size on screen
- * at any zoom.
+ * population. All houses of all cities are two instanced meshes. The names
+ * are drawn by the label batch (`labels.ts`); this module says where they
+ * stand.
  */
 
 import { attribute, positionWorld, vec3 } from 'three/tsl';
 import {
   BoxGeometry,
-  CanvasTexture,
   Color,
   ConeGeometry,
   Group,
   InstancedBufferAttribute,
   InstancedMesh,
-  LinearFilter,
   Matrix4,
   MeshStandardNodeMaterial,
   Quaternion,
-  SRGBColorSpace,
-  Sprite,
-  SpriteNodeMaterial,
   Vector3,
 } from 'three/webgpu';
-import type { BufferGeometry, PerspectiveCamera } from 'three/webgpu';
+import type { BufferGeometry } from 'three/webgpu';
 import { hexToWorld, indexToOffset } from '../shared/hex.ts';
 import { sampleHeight, surfaceHeightAtHex } from './heightField.ts';
 import type { Surface } from './heightField.ts';
+import { cityTier } from './labelLayout.ts';
+import type { CityLabel } from './labels.ts';
 import type { RenderCity } from './scene.ts';
 import { noise } from './shaderLib.ts';
 
 export interface Cities {
   readonly object: Group;
-  setCities(cities: readonly RenderCity[]): void;
   /**
-   * Keeps the labels at a fixed size on screen.
+   * Replaces the cities.
    *
-   * @param viewportHeight height of the canvas in CSS pixels.
+   * @returns where the name of each city stands, or `null` if the cities
+   *   are the same as before.
    */
-  update(camera: PerspectiveCamera, viewportHeight: number): void;
+  setCities(cities: readonly RenderCity[]): CityLabel[] | null;
   dispose(): void;
 }
 
-/** Height of a label on screen, in CSS pixels. */
-const LABEL_HEIGHT = 24;
-/** Labels are drawn at this many canvas pixels per CSS pixel. */
-const LABEL_SCALE = 3;
-const LABEL_FONT = '600 15px system-ui, "PingFang SC", "Microsoft YaHei", sans-serif';
 const WALL_COLORS = [0xd9ccb2, 0xcfc0a3, 0xe4dac6, 0xbfae92];
 const ROOF_COLOR = 0x4b4540;
 const MAX_HOUSES = 28;
@@ -63,51 +56,6 @@ function randomFrom(seed: number): () => number {
     state = hash(state);
     return state / 4294967296;
   };
-}
-
-interface Label {
-  readonly sprite: Sprite;
-  readonly texture: CanvasTexture;
-  readonly material: SpriteNodeMaterial;
-  /** Width divided by height. */
-  readonly aspect: number;
-}
-
-function createLabel(name: string, polityColor: number): Label {
-  const canvas = document.createElement('canvas');
-  const context = canvas.getContext('2d');
-  if (context === null) throw new Error('2D canvas is not available');
-  context.font = LABEL_FONT;
-  const dot = 8;
-  const padding = 9;
-  const width = Math.ceil(context.measureText(name).width) + padding * 2 + dot + 6;
-  canvas.width = width * LABEL_SCALE;
-  canvas.height = LABEL_HEIGHT * LABEL_SCALE;
-  context.scale(LABEL_SCALE, LABEL_SCALE);
-  context.fillStyle = 'rgb(16 21 28 / 78%)';
-  context.beginPath();
-  context.roundRect(0, 0, width, LABEL_HEIGHT, LABEL_HEIGHT / 2);
-  context.fill();
-  context.fillStyle = `#${polityColor.toString(16).padStart(6, '0')}`;
-  context.beginPath();
-  context.arc(padding + dot / 2, LABEL_HEIGHT / 2, dot / 2, 0, Math.PI * 2);
-  context.fill();
-  context.font = LABEL_FONT;
-  context.fillStyle = '#f2ede2';
-  context.textBaseline = 'middle';
-  context.fillText(name, padding + dot + 6, LABEL_HEIGHT / 2 + 1);
-
-  const texture = new CanvasTexture(canvas);
-  texture.colorSpace = SRGBColorSpace;
-  texture.minFilter = LinearFilter;
-  texture.generateMipmaps = false;
-  const material = new SpriteNodeMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false });
-  material.fog = false;
-  const sprite = new Sprite(material);
-  // anchored at the middle of its lower edge, above the houses
-  sprite.center.set(0.5, 0);
-  sprite.renderOrder = 10;
-  return { sprite, texture, material, aspect: width / LABEL_HEIGHT };
 }
 
 function instanced(geometry: BufferGeometry, material: MeshStandardNodeMaterial, count: number): InstancedMesh {
@@ -141,9 +89,8 @@ export function createCities(surface: Surface): Cities {
 
   let walls: InstancedMesh | null = null;
   let roofs: InstancedMesh | null = null;
-  let labels: { readonly label: Label; readonly key: string }[] = [];
-  const labelCache = new Map<string, Label>();
   let shownKey = '';
+  const capitalSites = new Set(map.zones.filter((zone) => zone.capital).map((zone) => zone.siteHex));
 
   const clearMeshes = (): void => {
     for (const mesh of [walls, roofs]) {
@@ -162,16 +109,14 @@ export function createCities(surface: Surface): Cities {
   const position = new Vector3();
   const scale = new Vector3();
   const tint = new Color();
-  const cameraSpace = new Vector3();
 
   return {
     object,
     setCities(cities) {
-      const key = JSON.stringify(cities.map((c) => [c.hex, c.polity, c.population, c.name]));
-      if (key === shownKey) return;
+      const key = JSON.stringify(cities.map((c) => [c.hex, c.polity, c.population, c.name, c.capital]));
+      if (key === shownKey) return null;
       shownKey = key;
       clearMeshes();
-      for (const { label } of labels) object.remove(label.sprite);
 
       // lay out every house first, to know how many instances are needed
       interface House {
@@ -186,8 +131,7 @@ export function createCities(surface: Surface): Cities {
         roof: number;
       }
       const houses: House[] = [];
-      const used = new Set<string>();
-      labels = [];
+      const labels: CityLabel[] = [];
       for (const city of cities) {
         if (city.hex < 0 || city.hex >= map.width * map.height) continue;
         const centre = hexToWorld(indexToOffset(city.hex, map.width), layout);
@@ -222,23 +166,16 @@ export function createCities(surface: Surface): Cities {
           tallest = Math.max(tallest, house.y + house.h * 1.6);
         }
 
-        const labelKey = `${polityColor}:${city.name}`;
-        let label = labelCache.get(labelKey);
-        if (label === undefined) {
-          label = createLabel(city.name, polityColor);
-          labelCache.set(labelKey, label);
-        }
-        used.add(labelKey);
         const ground = Math.max(surfaceHeightAtHex(surface, city.hex), tallest);
-        label.sprite.position.set(centre.x, ground + 0.06 * size, centre.z);
-        object.add(label.sprite);
-        labels.push({ label, key: labelKey });
-      }
-      for (const [labelKey, label] of labelCache) {
-        if (used.has(labelKey)) continue;
-        label.texture.dispose();
-        label.material.dispose();
-        labelCache.delete(labelKey);
+        labels.push({
+          name: city.name,
+          color: polityColor,
+          x: centre.x,
+          y: ground + 0.06 * size,
+          z: centre.z,
+          tier: cityTier(city.capital ?? capitalSites.has(city.hex), city.population),
+          population: city.population,
+        });
       }
 
       const newWalls = instanced(boxGeometry, material, houses.length);
@@ -264,23 +201,10 @@ export function createCities(surface: Surface): Cities {
       walls = newWalls;
       roofs = newRoofs;
       object.add(newWalls, newRoofs);
-    },
-    update(camera, viewportHeight) {
-      const perPixel = (2 * Math.tan((camera.fov * Math.PI) / 360)) / viewportHeight;
-      for (const { label } of labels) {
-        // depth along the view direction: what perspective divides by
-        cameraSpace.copy(label.sprite.position).applyMatrix4(camera.matrixWorldInverse);
-        const height = LABEL_HEIGHT * perPixel * Math.max(-cameraSpace.z, camera.near);
-        label.sprite.scale.set(height * label.aspect, height, 1);
-      }
+      return labels;
     },
     dispose() {
       clearMeshes();
-      for (const label of labelCache.values()) {
-        label.texture.dispose();
-        label.material.dispose();
-      }
-      labelCache.clear();
       boxGeometry.dispose();
       roofGeometry.dispose();
       material.dispose();

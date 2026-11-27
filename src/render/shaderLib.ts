@@ -48,6 +48,10 @@ export interface MapUniforms {
   readonly gridOpacity: UniformNode<'float'>;
   /** How strongly territory tints the ground, 0 to 1. */
   readonly tintStrength: UniformNode<'float'>;
+  /** How far the ground has turned into the political map, 0 to 1. */
+  readonly political: UniformNode<'float'>;
+  /** Width added to the territory borders so that they stay visible from far away, in world units. */
+  readonly borderExtra: UniformNode<'float'>;
   /** World units of height per metre. */
   readonly unitsPerMetre: UniformNode<'float'>;
   readonly textures: MapTextures;
@@ -67,6 +71,8 @@ export function createMapUniforms(
     hexSize: uniform(layout.size),
     gridOpacity: uniform(0),
     tintStrength: uniform(0.2),
+    political: uniform(0),
+    borderExtra: uniform(0),
     unitsPerMetre: uniform(unitsPerMetre),
     textures,
   };
