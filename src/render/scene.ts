@@ -111,6 +111,14 @@ export interface RendererOptions {
    * the relief is built from the hex elevations.
    */
   readonly heightmap?: Uint16Array;
+  /**
+   * Upper limit of frames per second. Without it every animation frame is
+   * drawn. Software rendering under automation uses every core, so the page
+   * caps it there.
+   */
+  readonly maxFps?: number;
+  /** Start with rendering paused, see {@link Renderer.setPaused}. */
+  readonly paused?: boolean;
 }
 
 export interface FocusOptions {
@@ -145,6 +153,12 @@ export interface Renderer {
   getStats(): FrameStats;
   /** Calls `listener` after every frame. Returns a function that removes it. */
   onFrame(listener: (stats: FrameStats) => void): () => void;
+  /**
+   * Pauses or resumes drawing. While paused no frame is drawn and the camera
+   * stands still; scene changes are kept and show in the first frame after.
+   */
+  setPaused(paused: boolean): void;
+  readonly paused: boolean;
   /** Stops rendering, removes the input listeners and frees the GPU resources. */
   dispose(): void;
 }
