@@ -1,22 +1,25 @@
 /** Wires the layers: rules core, renderer and UI. */
 
-import { createGame } from './core/game.ts';
 import type { GameState } from './core/game.ts';
-import { EMPTY_SCENE, createRenderer } from './render/api.ts';
-import type { CameraState, FrameStats, Renderer, RenderScene } from './render/api.ts';
+import { createRenderer } from './render/api.ts';
+import type { CameraState, FrameStats, Renderer } from './render/api.ts';
 import { attachFrameReadout, createDemoScene } from './render/demo.ts';
 import { loadMap } from './render/loadMap.ts';
-import { getLanguage } from './shared/i18n.ts';
+import { setLanguage, t } from './shared/i18n.ts';
 import type { RenderBackend } from './shared/types.ts';
-import { createHud } from './ui/hud.ts';
+import { createApp } from './ui/app.ts';
+import type { Board, StartOptions, UiSnapshot } from './ui/app.ts';
+import type { RunReport } from './ui/host.ts';
+import { loadLanguage } from './ui/language.ts';
 
 declare global {
   interface Window {
     /** Handle for automated checks. Set once the renderer has started. */
     __shanhe?: {
-      backend: RenderBackend;
-      state: GameState;
-      render: {
+      readonly backend: RenderBackend;
+      /** The current game state. Read it; the page never changes a state in place. */
+      readonly state: GameState;
+      readonly render: {
         /** The hex index under a point of the page, or `null`. */
         pickHex(clientX: number, clientY: number): number | null;
         /** The camera state being drawn. */
@@ -25,70 +28,90 @@ declare global {
         /** The whole renderer, for moving the camera and changing the scene. */
         readonly renderer: Renderer;
       };
+      /** What the interface shows: screen, open panel, main button. */
+      readonly ui: UiSnapshot;
+      /** Starts a new game; without a nation, or with `observe`, in observer mode. */
+      startGame(options?: StartOptions): Promise<void>;
+      /** Ends the current turn. Resolves to false if no game is running. */
+      endTurn(): Promise<boolean>;
+      /** Ends up to `turns` turns, stopping at a result; resolves when done. */
+      runTurns(turns: number): Promise<RunReport>;
     };
   }
 }
 
-const canvas = document.querySelector<HTMLCanvasElement>('#map');
-const hudRoot = document.querySelector<HTMLElement>('#hud');
-if (canvas === null || hudRoot === null) throw new Error('index.html is missing #map or #hud');
+const uiRoot = document.querySelector<HTMLElement>('#ui');
+if (document.querySelector('#map') === null || uiRoot === null) throw new Error('index.html is missing #map or #ui');
 
-const loaded = await loadMap();
-const state = createGame(loaded.map);
-const hud = createHud(hudRoot);
-hud.setTurn(state.turn);
+const query = new URLSearchParams(window.location.search);
 
-/** The board of a game: for now, a city on every city site. */
-function sceneOf(game: GameState): RenderScene {
-  const { map } = game;
-  const chinese = getLanguage() === 'zh';
-  return {
-    ...EMPTY_SCENE,
-    cities: map.zones
-      .filter((zone) => map.polities[zone.polity]?.kind !== 'wastelandRegion')
-      .map((zone) => ({
-        hex: zone.siteHex,
-        polity: zone.polity,
-        population: zone.capital ? 8 : 3,
-        name: chinese ? zone.cityNameZh : zone.cityNameEn,
-      })),
-  };
-}
-
-try {
+/** Loads a map and starts a renderer for it on a canvas of its own, which takes the place of the current one. */
+async function loadBoard(source: 'file' | 'fixture', previous?: Board): Promise<Board> {
+  const loaded = await loadMap(source);
+  previous?.renderer.dispose();
+  const old = document.querySelector<HTMLCanvasElement>('#map');
+  if (old === null) throw new Error('index.html is missing #map');
+  // a canvas keeps its graphics context for good, so a new renderer gets a new canvas
+  const canvas = previous === undefined ? old : document.createElement('canvas');
+  if (canvas !== old) {
+    canvas.id = 'map';
+    old.replaceWith(canvas);
+  }
   const renderer = await createRenderer(
     canvas,
-    state.map,
+    loaded.map,
     loaded.heightmap === undefined ? {} : { heightmap: loaded.heightmap },
   );
-  hud.setBackend(renderer.backend);
+  return { map: loaded.map, source: loaded.source, renderer, canvas };
+}
 
-  if (new URLSearchParams(window.location.search).get('demo') === 'render') {
-    renderer.setScene(createDemoScene(state.map));
-    attachFrameReadout(renderer);
-  } else {
-    renderer.setScene(sceneOf(state));
-    // the language switch lives in the HUD; city labels follow it
-    hudRoot.addEventListener('click', () => {
-      renderer.setScene(sceneOf(state));
-    });
-  }
-
-  window.__shanhe = {
-    backend: renderer.backend,
-    state,
-    render: {
-      pickHex: (clientX, clientY) => renderer.pickHex(clientX, clientY),
-      get camera() {
-        return renderer.getCamera();
-      },
-      get stats() {
-        return renderer.getStats();
-      },
-      renderer,
-    },
-  };
+let board: Board;
+try {
+  board = await loadBoard(query.get('map') === 'fixture' ? 'fixture' : 'file');
 } catch (error) {
-  hud.setRendererError(error instanceof Error ? error.message : String(error));
+  setLanguage(loadLanguage());
+  uiRoot.className = 'fatal';
+  uiRoot.textContent = t('error.renderer', { message: error instanceof Error ? error.message : String(error) });
   throw error;
 }
+const app = createApp({
+  root: uiRoot,
+  board,
+  loadBoard: (source) => loadBoard(source, board),
+  onBoard: (next) => {
+    board = next;
+  },
+});
+
+if (query.get('demo') === 'render') {
+  app.hide();
+  board.renderer.setScene(createDemoScene(board.map));
+  attachFrameReadout(board.renderer);
+}
+
+window.__shanhe = {
+  get backend() {
+    return board.renderer.backend;
+  },
+  get state() {
+    return app.state;
+  },
+  render: {
+    pickHex: (clientX, clientY) => board.renderer.pickHex(clientX, clientY),
+    get camera() {
+      return board.renderer.getCamera();
+    },
+    get stats() {
+      return board.renderer.getStats();
+    },
+    get renderer() {
+      return board.renderer;
+    },
+  },
+  get ui() {
+    return app.ui;
+  },
+  startGame: (options) => app.startGame(options),
+  endTurn: () => app.endTurn(),
+  runTurns: (turns) => app.runTurns(turns),
+};

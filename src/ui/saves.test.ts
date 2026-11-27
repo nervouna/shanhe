@@ -123,7 +123,7 @@ describe('exportSave and importSave', () => {
     const text = tampered(state, (data) => {
       data.onload = 'alert(1)';
       (data.units as Record<string, unknown>[])[0]!.extra = { nested: true };
-      (data.polities as Record<string, unknown>[])[0]!.constructor = 'x';
+      (data.polities as Record<string, unknown>[])[0]!.treasure = 'x';
     });
     const result = importSave(text, map);
     if (!result.ok) throw new Error(result.error);

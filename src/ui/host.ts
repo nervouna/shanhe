@@ -8,7 +8,7 @@
 import { applyAction, createGame, endTurn, NO_POLITY } from '../core/game.ts';
 import type { Action, ActionResult, GameEvent, GameResult, GameSetup, GameState, RejectReason } from '../core/game.ts';
 import type { MapData } from '../shared/mapData.ts';
-import { attackReach, findPath, previewAttack, stepsThisTurn } from './path.ts';
+import { attackReach, findPath, previewAttack } from './path.ts';
 import { pendingItems } from './pending.ts';
 import type { PendingItem } from './pending.ts';
 

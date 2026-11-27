@@ -56,8 +56,8 @@ The ones that constrain all work:
 | `src/shared/` | Types, hex maths (`hex.ts`), the `MapData` contract (`mapData.ts`), the fixture map (`fixtureMap.ts`), i18n (`i18n.ts`) |
 | `src/core/` | Rules. Pure functions on plain data; runs in Node |
 | `src/render/` | Three.js |
-| `src/ui/` | Plain DOM |
-| `src/main.ts` | Wires the layers and exposes `window.__shanhe = { backend, state, render }` for automated checks |
+| `src/ui/` | The game loop host (`host.ts`), the turn worker, and the interface in plain DOM (`app.ts`) |
+| `src/main.ts` | Wires the layers and exposes `window.__shanhe = { backend, state, render, ui, startGame({ nation, observe, seed, map }), endTurn(), runTurns(n) }` for automated checks |
 | `tools/` | Node scripts (`sim.ts`, `check-assets.ts`) and `tools/pipeline/`, the build-time map pipeline |
 | `public/data/` | Generated map files: `.json` and `.bin` only |
 
@@ -74,6 +74,8 @@ Conventions that keep this working:
 
 - Relative imports carry the `.ts` extension and there are no path aliases, so Node can run `tools/*.ts` directly and the lint patterns cannot be bypassed.
 - Only erasable TypeScript syntax: no `enum`, no namespaces, no parameter properties. Use `as const` objects for codes.
+- The UI never changes a `GameState`: it sends actions to the host in `src/ui/host.ts` and redraws from the state that comes back. The turn worker (`src/ui/turnWorker.ts`) imports `src/core` and `src/shared` only; lint enforces it.
+- The page opens on the real map; `?map=fixture` opens the fixture map and `?demo=render` the render demo.
 - Every user-facing string goes through `t()` in `src/shared/i18n.ts`, with a Chinese and an English entry. Only `src/ui` touches `localStorage`.
 - Tests sit next to the code as `*.test.ts`.
 
@@ -92,6 +94,6 @@ Conventions that keep this working:
 | `npm run sim -- --map <fixture\|synthetic\|path> --turns 150 --seed N` | Play an AI-only game headless and print a summary |
 | `npm run pipeline` | Rebuild `public/data` from public datasets (downloads into `data/raw/`; `-- --offline` uses the cache) |
 | `npm run pipeline:check` | Validate the committed map data |
-| `npm run e2e` | Build, serve and smoke-test the page in headless Chromium (Playwright) |
+| `npm run e2e` | Build, serve and test the page in headless Chromium (Playwright): the renderer, an observer game to its end, a player game |
 
 CI (`.github/workflows/ci.yml`) runs lint, typecheck, test, build, check:assets and e2e on pushes to `main` and on pull requests.

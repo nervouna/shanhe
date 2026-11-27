@@ -294,7 +294,8 @@ export function importSave(text: string, map: MapData): ImportResult {
   if (data.format !== 'shanhe-save') return { ok: false, error: 'notASave' };
   if (data.version !== STATE_VERSION) return { ok: false, error: 'badVersion' };
   const size = [map.width, map.height, map.zones.length, map.polities.length];
-  if (!Array.isArray(data.mapSize) || data.mapSize.length !== size.length || size.some((n, i) => data.mapSize[i] !== n)) {
+  const saved: unknown = data.mapSize;
+  if (!Array.isArray(saved) || saved.length !== size.length || size.some((n, i) => saved[i] !== n)) {
     return { ok: false, error: 'wrongMap' };
   }
   try {
