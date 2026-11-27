@@ -271,3 +271,37 @@ export function sortPolityRows(rows: readonly PolityRow[], key: PolitySort, desc
     return (descending ? y - x : x - y) || a.polity - b.polity;
   });
 }
+
+/**
+ * The pillage a unit can do where it stands, or null if there is nothing to
+ * pillage there now. A unit without moves gets none: the rules name the
+ * missing moves before they look at the hex.
+ */
+export function pillageAction(state: GameState, unitId: number): (Action & { type: 'pillage' }) | null {
+  const unit = state.units.find((candidate) => candidate.id === unitId);
+  if (unit === undefined) return null;
+  const action = { type: 'pillage', polity: unit.owner, unit: unit.id } as const;
+  return checkAction(state, action) === null ? action : null;
+}
+
+/**
+ * The demand for vassalage a unit can make at the gates of an enemy capital
+ * next to it: the one the rules accept, or else one they refuse only because
+ * the city has not fallen yet, which the panel shows disabled with that
+ * reason. Null away from an enemy capital, and for a unit without moves.
+ */
+export function demandAction(state: GameState, unitId: number): (Action & { type: 'demandVassalage' }) | null {
+  const unit = state.units.find((candidate) => candidate.id === unitId);
+  if (unit === undefined) return null;
+  const topo = topologyOf(state.map);
+  let later: (Action & { type: 'demandVassalage' }) | null = null;
+  for (let d = 0; d < 6; d++) {
+    const hex = topo.neighbors[unit.hex * 6 + d] as number;
+    if (hex < 0 || cityZoneAt(state, hex) < 0) continue;
+    const action = { type: 'demandVassalage', polity: unit.owner, unit: unit.id, target: hex } as const;
+    const refused = checkAction(state, action);
+    if (refused === null) return action;
+    if (refused === 'cityNotFallen') later ??= action;
+  }
+  return later;
+}

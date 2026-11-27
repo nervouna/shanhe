@@ -10,7 +10,6 @@ import type { Yields } from '../core/data.ts';
 import { NO_POLITY, currentEra, hexOwner, nextPolicyCost } from '../core/game.ts';
 import type { Action, GameEvent, GameState, Unit } from '../core/game.ts';
 import { airStrikeTargets, buyCostOf, hexDistance } from '../core/query.ts';
-import { topologyOf } from '../core/topology.ts';
 import type { HexHighlight, Renderer } from '../render/scene.ts';
 import { indexToOffset } from '../shared/hex.ts';
 import { getLanguage, setLanguage, t } from '../shared/i18n.ts';
@@ -52,7 +51,18 @@ import { attackReach, findPath, previewAttack, reachableHexes } from './path.ts'
 import { mainButton } from './pending.ts';
 import type { PendingItem, PendingKind } from './pending.ts';
 import { offerText, polityPanel as polityPanelNodes } from './polityPanel.ts';
-import { check, cityView, cityZoneAt, politySummary, ranking, relationView, researchView, upgradeView } from './rules.ts';
+import {
+  check,
+  cityView,
+  cityZoneAt,
+  demandAction,
+  pillageAction,
+  politySummary,
+  ranking,
+  relationView,
+  researchView,
+  upgradeView,
+} from './rules.ts';
 import type { BuildOption } from './rules.ts';
 import { MAX_SAVE_BYTES, exportSave, importSave } from './saves.ts';
 import { SCALE_SETTINGS, loadScaleSetting, saveScaleSetting, uiScale } from './scale.ts';
@@ -1051,34 +1061,11 @@ export function createApp(options: AppOptions): App {
       add('upgrade', t('action.upgrade', { gold: upgrade.gold }), { type: 'upgrade', polity: me, unit: unit.id });
     }
     if (unit.type === SETTLER) add('settle', t('action.settle'), { type: 'settle', polity: me, unit: unit.id });
-    if (def.strength > 0) {
-      const pillage: Action & { unit: number } = { type: 'pillage', polity: me, unit: unit.id };
-      const refused = check(state(), pillage);
-      // offered where there is something to pillage, even if the unit has no moves left for it
-      if (refused === null || refused === 'noMovesLeft') add('pillage', t('action.pillage'), pillage);
-      const gates = demandTarget(unit);
-      if (gates !== null) add('demandVassalage', t('action.demandVassalage'), gates);
-    }
+    const pillage = pillageAction(state(), unit.id);
+    if (pillage !== null) add('pillage', t('action.pillage'), pillage);
+    const gates = demandAction(state(), unit.id);
+    if (gates !== null) add('demandVassalage', t('action.demandVassalage'), gates);
     fill(selectionBox, piece, facts, actions);
-  };
-
-  /**
-   * The demand a unit can make at the gates of an enemy capital next to it:
-   * the one the rules accept, or else the one they refuse only for now (the
-   * city has not fallen, the unit has no moves left). Null away from a capital.
-   */
-  const demandTarget = (unit: Unit): (Action & { unit: number }) | null => {
-    const topo = topologyOf(map());
-    let later: (Action & { unit: number }) | null = null;
-    for (let d = 0; d < 6; d++) {
-      const hex = topo.neighbors[unit.hex * 6 + d] as number;
-      if (hex < 0 || cityZoneAt(state(), hex) < 0) continue;
-      const action = { type: 'demandVassalage', polity: unit.owner, unit: unit.id, target: hex } as const;
-      const refused = check(state(), action);
-      if (refused === null) return action;
-      if (refused === 'cityNotFallen' || refused === 'noMovesLeft') later ??= action;
-    }
-    return later;
   };
 
   const optionButton = (label: string, option: BuildOption, key: string, onClick: () => void, active = false): HTMLButtonElement => {
