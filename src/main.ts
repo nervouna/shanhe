@@ -44,6 +44,13 @@ const uiRoot = document.querySelector<HTMLElement>('#ui');
 if (document.querySelector('#map') === null || uiRoot === null) throw new Error('index.html is missing #map or #ui');
 
 const query = new URLSearchParams(window.location.search);
+/**
+ * A browser driven by automation renders in software on every core: the
+ * frame rate is capped there. `?render=off` draws nothing at all.
+ */
+const automated = navigator.webdriver;
+const AUTOMATION_FPS = 4;
+const renderOff = query.get('render') === 'off';
 
 /** Loads a map and starts a renderer for it on a canvas of its own, which takes the place of the current one. */
 async function loadBoard(source: 'file' | 'fixture', previous?: Board): Promise<Board> {
@@ -60,7 +67,11 @@ async function loadBoard(source: 'file' | 'fixture', previous?: Board): Promise<
   const renderer = await createRenderer(
     canvas,
     loaded.map,
-    loaded.heightmap === undefined ? {} : { heightmap: loaded.heightmap },
+    {
+      ...(loaded.heightmap === undefined ? {} : { heightmap: loaded.heightmap }),
+      ...(automated ? { maxFps: AUTOMATION_FPS } : {}),
+      paused: renderOff,
+    },
   );
   return { map: loaded.map, source: loaded.source, renderer, canvas };
 }
@@ -77,6 +88,7 @@ try {
 const app = createApp({
   root: uiRoot,
   board,
+  renderOff,
   loadBoard: (source) => loadBoard(source, board),
   onBoard: (next) => {
     board = next;

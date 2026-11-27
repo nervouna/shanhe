@@ -5,8 +5,8 @@
  * values, so nothing else in the file survives.
  */
 
-import { BUILDING_IDS, CITY, FOCUSES, IMPROVEMENT_IDS, UNITS, unitDef } from '../core/data.ts';
-import type { BuildingId, Focus, ImprovementId, Yields } from '../core/data.ts';
+import { BUILDING_IDS, CITY, ERAS, FOCUSES, IMPROVEMENT_IDS, PROJECT, TECH_IDS, UNITS, unitDef } from '../core/data.ts';
+import type { BuildingId, Focus, ImprovementId, TechId, Yields } from '../core/data.ts';
 import { STATE_VERSION, saveGame } from '../core/game.ts';
 import type {
   BuildItem,
@@ -116,6 +116,8 @@ function buildItem(value: unknown, bounds: Bounds): BuildItem {
       };
     case 'city':
       return { kind: 'city', zone: int(data.zone, 0, bounds.zones - 1, 'queued city zone') };
+    case 'project':
+      return { kind: 'project', project: oneOf(data.project, [PROJECT.id], 'queued project') };
     default:
       return fail('queue item kind');
   }
@@ -142,6 +144,7 @@ function city(value: unknown, zone: number, bounds: Bounds): City | null {
     unrest: int(data.unrest, 0, MAX_TURNS, 'city unrest'),
     morale: num(data.morale, 0, 100, 'city morale'),
     struck: bool(data.struck, 'city struck'),
+    airStruck: bool(data.airStruck, 'city air struck'),
     attackedOn: int(data.attackedOn, 0, MAX_TURNS, 'city attacked on'),
     worked: list(data.worked, 'worked hexes', bounds.hexes).map((hex) => int(hex, 0, bounds.hexes - 1, 'worked hex')),
     yields: yields(data.yields, 'city yields'),
@@ -167,12 +170,22 @@ function unit(value: unknown, bounds: Bounds): Unit {
 
 function polity(value: unknown, bounds: Bounds): PolityState {
   const data = record(value, 'polity');
+  const techs = list(data.techs, 'techs', TECH_IDS.length).map((tech) => oneOf<TechId>(tech, TECH_IDS, 'tech'));
+  if (new Set(techs).size !== techs.length) fail('tech listed twice');
   return {
     alive: bool(data.alive, 'polity alive'),
     gold: num(data.gold, -BIG, BIG, 'gold'),
     grossIncome: num(data.grossIncome, 0, BIG, 'gross income'),
     science: num(data.science, 0, BIG, 'science'),
     culture: num(data.culture, 0, BIG, 'culture'),
+    techs,
+    research: data.research === null ? null : oneOf<TechId>(data.research, TECH_IDS, 'research'),
+    researchProgress: num(data.researchProgress, 0, BIG, 'research progress'),
+    era: int(data.era, 0, ERAS.length - 1, 'polity era'),
+    projectStage: int(data.projectStage, 0, PROJECT.stages.length, 'project stage'),
+    tradeRoutes: int(data.tradeRoutes, 0, MAX_TURNS, 'trade routes'),
+    landPorts: bool(data.landPorts, 'land ports'),
+    seaExits: bool(data.seaExits, 'sea exits'),
     yields: yields(data.yields, 'polity yields'),
     upkeep: num(data.upkeep, 0, BIG, 'upkeep'),
     warWeariness: num(data.warWeariness, 0, 1000, 'war weariness'),
@@ -216,7 +229,7 @@ function result(value: unknown, bounds: Bounds): GameResult | null {
   if (value === null) return null;
   const data = record(value, 'result');
   return {
-    kind: oneOf(data.kind, ['conquest', 'economic'] as const, 'result kind'),
+    kind: oneOf(data.kind, ['conquest', 'science', 'economic'] as const, 'result kind'),
     winner: int(data.winner, 0, bounds.polities - 1, 'winner'),
     turn: int(data.turn, 1, MAX_TURNS, 'result turn'),
   };

@@ -56,7 +56,7 @@ Gold pays building and unit upkeep. Beyond that it can:
 - **Air power is simplified.** In the modern era it is a ranged strike launched from a city with an airfield. There are no air units.
 - Strength curve: about 20 in the ancient era and about 100 in the modern era, rising by roughly a third per era.
 - **Experience.** Units gain experience in combat and have three levels; each level adds 10% strength. There are no promotion trees.
-- **Upgrades.** Inside its own borders a unit can be upgraded with gold to the next era's unit of the same class.
+- **Upgrades.** Inside its own borders a unit can be upgraded with gold to the nearest later unit of the same class that its owner can build.
 - **Crossing water.** Land units embark automatically when they step off the coast: onto coastal water after Boats, onto ocean after Compass. An embarked unit fights at greatly reduced strength.
 - **Pillaging.** A unit can pillage an improvement, disabling it for a time and earning gold, or a trade route it stands on.
 - Roster: one generic unit per class per era, 30 in total, plus 50 unique units. The generic roster is in [04-tech-and-policies.md](04-tech-and-policies.md).

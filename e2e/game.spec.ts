@@ -41,8 +41,7 @@ async function capture(page: Page, name: string): Promise<void> {
 
 test('an observer game on the fixture map runs to its end', async ({ page }) => {
   const errors = collectErrors(page);
-  // the page starts on the real map: asking for the fixture swaps the board
-  await open(page, '/');
+  await open(page, '/?map=fixture');
   await expect(page.locator('#start')).toBeVisible();
   expect(await page.evaluate(() => window.__shanhe?.ui.screen)).toBe('start');
   await capture(page, 'start');
@@ -71,6 +70,8 @@ test('an observer game on the fixture map runs to its end', async ({ page }) => 
   expect(report.turns).toBeGreaterThan(0);
   // the turns were played off the page's thread
   expect(page.workers().length).toBeGreaterThan(0);
+  // and nothing was drawn meanwhile: the renderer is back on afterwards
+  expect(await page.evaluate(() => window.__shanhe?.render.renderer.paused)).toBe(false);
 
   const ended = await page.evaluate(() => {
     const shanhe = window.__shanhe;
@@ -115,7 +116,7 @@ test('a player game advances five turns on Enter and is autosaved', async ({ pag
       await expect(page.locator('#city-panel')).toBeVisible();
       await capture(page, 'city');
       await page.click('#city-panel [data-build="unit:warrior"]');
-      await page.click('#city-panel [data-build="building:granary"]');
+      await page.click('#city-panel [data-build="unit:warrior"]');
       await expect(page.locator('#city-queue li')).toHaveCount(2);
       // with a project in the queue nothing is pending any more
       expect(await main()).toBe('nextTurn');
@@ -176,11 +177,17 @@ test('a player game advances five turns on Enter and is autosaved', async ({ pag
   expect(errors).toEqual([]);
 });
 
+/**
+ * Acceptance check of issue #9, not part of the regular run: it is the only
+ * flow on the real map. `SHANHE_REAL_MAP=1` turns it on. The page draws
+ * nothing (`?render=off`), so the time is the game's own.
+ */
 test('an observer game on the real map ends within 150 turns', async ({ page }) => {
+  test.skip(process.env.SHANHE_REAL_MAP !== '1', 'set SHANHE_REAL_MAP=1 to run the real-map game');
   const errors = collectErrors(page);
-  await open(page, '/');
-  const source = await page.evaluate(() => window.__shanhe?.ui.map);
-  test.skip(source !== 'file', 'the real map is not in public/data');
+  await open(page, '/?render=off');
+  expect(await page.evaluate(() => window.__shanhe?.ui.map)).toBe('file');
+  expect(await page.evaluate(() => window.__shanhe?.render.renderer.paused)).toBe(true);
   await page.evaluate(() => window.__shanhe?.startGame({ observe: true, seed: 1 }));
   const report = await page.evaluate(() => window.__shanhe?.runTurns(150));
   if (report === undefined) throw new Error('runTurns returned nothing');
@@ -191,5 +198,6 @@ test('an observer game on the real map ends within 150 turns', async ({ page }) 
   expect(report.result).not.toBeNull();
   expect(report.turns).toBeLessThanOrEqual(150);
   await expect(page.locator('#end')).toBeVisible();
+  expect(await page.evaluate(() => window.__shanhe?.render.stats.frames)).toBe(0);
   expect(errors).toEqual([]);
 });

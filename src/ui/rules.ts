@@ -1,12 +1,13 @@
 /** Read-only questions the interface asks the rules. Nothing here changes a state. */
 
-import { validate } from '../core/actions.ts';
+import { upgradeCost, validate } from '../core/actions.ts';
 import { itemCost, maxCityHp } from '../core/cities.ts';
 import { createCtx } from '../core/context.ts';
 import type { Ctx } from '../core/context.ts';
-import { BUILDING_IDS, IMPROVEMENT_IDS, UNIT_IDS, WAR, noYields } from '../core/data.ts';
-import type { ImprovementId, Yields } from '../core/data.ts';
-import { NO_POLITY } from '../core/game.ts';
+import { BUILDING_IDS, IMPROVEMENT_IDS, PROJECT, UNIT_IDS, WAR, noYields } from '../core/data.ts';
+import type { ImprovementId, TechId, Yields } from '../core/data.ts';
+import { NO_POLITY, researchCost } from '../core/game.ts';
+import { upgradeTargetFor } from '../core/tech.ts';
 import type { Action, BuildItem, City, GameState, MutableGameState, RejectReason } from '../core/game.ts';
 import { topologyOf } from '../core/topology.ts';
 import { capitalsHeld, contenders } from '../core/turn.ts';
@@ -44,6 +45,8 @@ export interface CityView {
   readonly improvements: readonly (BuildOption & { readonly improvement: ImprovementId; readonly hexes: readonly number[] })[];
   /** The nation's own empty city sites. */
   readonly sites: readonly BuildOption[];
+  /** The next stage of the endgame project, where the city can build it. */
+  readonly projects: readonly BuildOption[];
 }
 
 /** Everything the city panel shows for the city of `zone`, or null if there is no city. */
@@ -72,11 +75,13 @@ export function cityView(state: GameState, zone: number): CityView | null {
     const item: BuildItem = { kind: 'city', zone: other };
     if (owner === polity && state.cities[other] === null && legal(item)) sites.push(option(item));
   });
+  const project: BuildItem = { kind: 'project', project: PROJECT.id };
+  const projects = legal(project) ? [option(project)] : [];
   const queue = city.queue.map((item, index): BuildOption => {
     const cost = itemCost(ctx, city, item);
     return { item, cost, turns: turnsFor(index === 0 ? Math.max(1, cost - city.progress) : cost, production) };
   });
-  return { city, maxHp: maxCityHp(city), queue, units, buildings, improvements, sites };
+  return { city, maxHp: maxCityHp(city), queue, units, buildings, improvements, sites, projects };
 }
 
 export interface PolitySummary {
@@ -162,4 +167,22 @@ export function ranking(state: GameState): RankingRow[] {
 export function cityZoneAt(state: GameState, hex: number): number {
   const zone = topologyOf(state.map).siteZone[hex];
   return zone !== undefined && zone >= 0 && state.cities[zone] !== null && state.cities[zone] !== undefined ? zone : -1;
+}
+
+/** What a unit would upgrade to and the gold it costs, or null if it has no upgrade now. */
+export function upgradeView(state: GameState, unitId: number): { readonly type: string; readonly gold: number } | null {
+  const ctx = contextOf(state);
+  const unit = ctx.unitById.get(unitId);
+  const target = unit === undefined ? null : upgradeTargetFor(ctx, unit);
+  return unit === undefined || target === null ? null : { type: target.id, gold: upgradeCost(unit, target) };
+}
+
+/** What a polity is researching and how long it still takes, or null if it researches nothing now. */
+export function researchView(state: GameState, polity: number): { readonly tech: TechId; readonly turns: number | null } | null {
+  const self = state.polities[polity];
+  if (self === undefined || self.research === null) return null;
+  const left = Math.max(0, researchCost(state, polity, self.research) - self.researchProgress);
+  let science = 0;
+  for (const city of state.cities) if (city !== null && city.owner === polity) science += city.yields.science;
+  return { tech: self.research, turns: science <= 0 ? null : Math.max(1, Math.ceil(left / science)) };
 }

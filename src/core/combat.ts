@@ -1,7 +1,7 @@
 /** Combat arithmetic, attacks, city capture and annexation. */
 
 import { hexDistance, indexToOffset } from '../shared/hex.ts';
-import { BUILDINGS, CITY, COMBAT, ERA_STRENGTH, WAR, unitDef } from './data.ts';
+import { AIR_STRIKE, BUILDINGS, CITY, COMBAT, ERA_STRENGTH, WAR, unitDef } from './data.ts';
 import { assignCitizens, hasBuilding, maxCityHp } from './cities.ts';
 import {
   at,
@@ -18,6 +18,7 @@ import {
   terrainAllows,
 } from './context.ts';
 import type { Ctx } from './context.ts';
+import { eraOf } from './tech.ts';
 import type { City, Unit } from './types.ts';
 
 // -------------------------------------------------------------- arithmetic
@@ -70,10 +71,10 @@ export function defenceStrength(ctx: Ctx, unit: Unit): number {
   return strength;
 }
 
-/** Combat strength of a city, used both when it defends and when its walls strike. */
+/** Combat strength of a city, used both when it defends and when its walls strike. It grows with its owner's era. */
 export function cityStrength(ctx: Ctx, city: City): number {
   let strength =
-    CITY.strengthBase + CITY.strengthPerEra * at(ERA_STRENGTH, ctx.era) + CITY.strengthPerPop * city.pop;
+    CITY.strengthBase + CITY.strengthPerEra * at(ERA_STRENGTH, eraOf(ctx, city.owner)) + CITY.strengthPerPop * city.pop;
   let percent = 0;
   for (const id of city.buildings) percent += BUILDINGS[id].cityStrengthPercent;
   strength *= 1 + percent / 100;
@@ -178,7 +179,7 @@ export function resolveAttack(ctx: Ctx, unit: Unit, target: number): void {
 /** After a melee kill the attacker takes the hex if it can stand there. */
 function advance(ctx: Ctx, unit: Unit, from: number, target: number): void {
   const def = unitDef(unit.type);
-  if (!terrainAllows(ctx, def, target) || !bordersOpen(ctx, unit.owner, target)) return;
+  if (!terrainAllows(ctx, def, target, unit.owner) || !bordersOpen(ctx, unit.owner, target)) return;
   if ((ctx.topo.water[target] === 1) !== (def.domain === 'sea')) return;
   if (ctx.unitAt.has(target) || cityAtHex(ctx, target) !== null) return;
   placeUnit(ctx, unit, target);
@@ -223,6 +224,39 @@ function attackCity(ctx: Ctx, unit: Unit, city: City, ranged: boolean, from: num
     unit.hp -= damage;
     if (unit.hp <= 0) killUnit(ctx, unit);
   }
+}
+
+// ------------------------------------------------------------- air strike
+
+/**
+ * The air strike of `city` on the enemy city or unit on `target`, already
+ * validated. Nothing strikes back, and a city is worn down but never taken.
+ */
+export function resolveAirStrike(ctx: Ctx, city: City, target: number): void {
+  city.airStruck = true;
+  const enemyCity = cityAtHex(ctx, target);
+  if (enemyCity !== null && enemyCity.owner !== city.owner) {
+    const damage = combatDamage(AIR_STRIKE.strength, cityStrength(ctx, enemyCity), rollFactor(ctx));
+    ctx.events.push({
+      type: 'airStrike', city: city.zone, owner: city.owner, target,
+      defenderUnit: -1, defenderCity: enemyCity.zone, damage,
+    });
+    enemyCity.hp = Math.max(0, enemyCity.hp - damage);
+    enemyCity.attackedOn = ctx.state.turn;
+    return;
+  }
+  const defender = ctx.unitAt.get(target);
+  if (defender === undefined) return;
+  const damage =
+    unitDef(defender.type).strength === 0
+      ? defender.hp
+      : combatDamage(AIR_STRIKE.strength, defenceStrength(ctx, defender), rollFactor(ctx));
+  ctx.events.push({
+    type: 'airStrike', city: city.zone, owner: city.owner, target,
+    defenderUnit: defender.id, defenderCity: -1, damage,
+  });
+  defender.hp -= damage;
+  if (defender.hp <= 0) killUnit(ctx, defender);
 }
 
 // ------------------------------------------------- capture and annexation

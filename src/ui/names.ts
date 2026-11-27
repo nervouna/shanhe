@@ -1,7 +1,7 @@
 /** Translated names of the rules' things. The template types make the compiler check that every code has a string. */
 
 import { ERAS } from '../core/data.ts';
-import type { BuildingId, Focus, ImprovementId, Yields } from '../core/data.ts';
+import type { BuildingId, Focus, ImprovementId, TechId, Yields } from '../core/data.ts';
 import { NO_POLITY } from '../core/game.ts';
 import type { BuildItem, RejectReason } from '../core/game.ts';
 import { dictionaries, getLanguage, t } from '../shared/i18n.ts';
@@ -26,6 +26,11 @@ export function buildingName(id: BuildingId): string {
 
 export function improvementName(id: ImprovementId): string {
   const key: TranslationKey = `improvement.${id}`;
+  return t(key);
+}
+
+export function techName(tech: TechId): string {
+  const key: TranslationKey = `tech.${tech}`;
   return t(key);
 }
 
@@ -79,6 +84,8 @@ export function itemName(map: MapData, item: BuildItem): string {
       return improvementName(item.improvement);
     case 'city':
       return t('city.found', { name: cityName(map, item.zone) });
+    case 'project':
+      return t('project.tiangong');
   }
 }
 

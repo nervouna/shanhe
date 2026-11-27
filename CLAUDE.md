@@ -40,6 +40,15 @@ The ones that constrain all work:
 - Numbers in the design docs are directions, not balanced values.
 - Audio has not been discussed. The procedural rule is assumed to cover it.
 
+## Machine load
+
+The development machine is shared with the owner's other work. On 2026-11-28 a headless-browser run made it unusable. Rules for every agent:
+
+- Run one heavy job at a time: never a headless browser, a full test run and a build side by side.
+- Headless Chromium renders in software on every core. Under automation (`navigator.webdriver`) the page must cap its frame rate at a few frames per second, and long game runs (many turns) must run with rendering paused. Playwright uses one worker.
+- Start heavy commands with `nice -n 10`. Vitest is limited to two workers in `vite.config.ts`.
+- Give every long command a timeout, and stop every process you started before you report.
+
 ## Technology
 
 ### Stack
@@ -75,7 +84,7 @@ Conventions that keep this working:
 - Relative imports carry the `.ts` extension and there are no path aliases, so Node can run `tools/*.ts` directly and the lint patterns cannot be bypassed.
 - Only erasable TypeScript syntax: no `enum`, no namespaces, no parameter properties. Use `as const` objects for codes.
 - The UI never changes a `GameState`: it sends actions to the host in `src/ui/host.ts` and redraws from the state that comes back. The turn worker (`src/ui/turnWorker.ts`) imports `src/core` and `src/shared` only; lint enforces it.
-- The page opens on the real map; `?map=fixture` opens the fixture map and `?demo=render` the render demo.
+- The page opens on the real map; `?map=fixture` opens the fixture map, `?demo=render` the render demo, and `?render=off` draws nothing. Under automation (`navigator.webdriver`) the renderer is capped at 4 frames per second, and `runTurns` pauses it while it runs.
 - Every user-facing string goes through `t()` in `src/shared/i18n.ts`, with a Chinese and an English entry. Only `src/ui` touches `localStorage`.
 - Tests sit next to the code as `*.test.ts`.
 
@@ -94,6 +103,6 @@ Conventions that keep this working:
 | `npm run sim -- --map <fixture\|synthetic\|path> --turns 150 --seed N` | Play an AI-only game headless and print a summary |
 | `npm run pipeline` | Rebuild `public/data` from public datasets (downloads into `data/raw/`; `-- --offline` uses the cache) |
 | `npm run pipeline:check` | Validate the committed map data |
-| `npm run e2e` | Build, serve and test the page in headless Chromium (Playwright): the renderer, an observer game to its end, a player game |
+| `npm run e2e` | Build, serve and test the page in headless Chromium (Playwright, one worker): the renderer, an observer game to its end and a player game on the fixture map. `SHANHE_REAL_MAP=1` adds a 150-turn observer game on the real map |
 
 CI (`.github/workflows/ci.yml`) runs lint, typecheck, test, build, check:assets and e2e on pushes to `main` and on pull requests.

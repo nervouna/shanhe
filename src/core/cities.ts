@@ -6,6 +6,7 @@ import {
   CITY_CENTRE_YIELD,
   FOCUS_WEIGHTS,
   IMPROVEMENTS,
+  PROJECT,
   SETTLER,
   SETTLER_COST_STEP_PERCENT,
   UNITS,
@@ -23,6 +24,7 @@ import {
   terrainAllows,
 } from './context.ts';
 import type { Ctx } from './context.ts';
+import { checkUnit, knows, researches } from './tech.ts';
 import type { BuildItem, City, RejectReason, Unit } from './types.ts';
 
 export function buildingDef(id: string): BuildingDef | undefined {
@@ -177,6 +179,8 @@ export function itemCost(ctx: Ctx, city: City, item: BuildItem): number {
       return improvementDef(item.improvement)?.cost ?? 0;
     case 'city':
       return CITY.foundCost;
+    case 'project':
+      return PROJECT.stages[polityOf(ctx, city.owner).projectStage]?.cost ?? 0;
   }
 }
 
@@ -184,16 +188,27 @@ function sameItem(a: BuildItem, b: BuildItem): boolean {
   if (a.kind === 'building' && b.kind === 'building') return a.building === b.building;
   if (a.kind === 'improvement' && b.kind === 'improvement') return a.hex === b.hex;
   if (a.kind === 'city' && b.kind === 'city') return a.zone === b.zone;
+  if (a.kind === 'project' && b.kind === 'project') return a.project === b.project;
   return false;
 }
 
-/** True if `improvement` may stand on `hex` as far as terrain goes. */
-export function improvementFits(ctx: Ctx, def: ImprovementDef, hex: number): boolean {
+/**
+ * True if `improvement` may stand on `hex` as far as terrain goes, for a
+ * polity that knows the tech which lets it stand on hills (`onHills`).
+ */
+export function improvementFits(ctx: Ctx, def: ImprovementDef, hex: number, onHills = false): boolean {
   const { map } = ctx;
   if (!def.terrains.includes(map.terrain[hex] as number)) return false;
   if (!def.features.includes(map.feature[hex] as number)) return false;
+  if (def.river === true && map.riverEdges[hex] === 0) return false;
   const hilly = map.hills[hex] === 1;
+  if (hilly && onHills && def.hillsTech !== undefined) return true;
   return def.hills === 'any' || (def.hills === 'yes') === hilly;
+}
+
+/** True if `polity` knows the tech that lets the improvement stand on hills. */
+export function improvesHills(ctx: Ctx, def: ImprovementDef, polity: number): boolean {
+  return def.hillsTech !== undefined && knows(ctx, polity, def.hillsTech);
 }
 
 /**
@@ -210,14 +225,15 @@ export function checkItem(ctx: Ctx, city: City, item: BuildItem, queued = false)
       const def = UNITS[item.unit];
       if (def === undefined || !def.buildable) return 'badItem';
       if (def.id === SETTLER && kind !== 'nation') return 'badItem';
-      if (def.era > ctx.era) return 'eraTooEarly';
+      const reason = checkUnit(ctx, city.owner, def);
+      if (reason !== null) return reason;
       if (def.domain === 'sea' && topo.coastal[city.zone] !== true) return 'needsCoast';
       return null;
     }
     case 'building': {
       const def = buildingDef(item.building);
       if (def === undefined) return 'badItem';
-      if (def.era > ctx.era) return 'eraTooEarly';
+      if (!knows(ctx, city.owner, def.tech)) return 'needsTech';
       if (city.buildings.includes(item.building)) return 'alreadyBuilt';
       if (def.coastal && topo.coastal[city.zone] !== true) return 'needsCoast';
       break;
@@ -227,7 +243,8 @@ export function checkItem(ctx: Ctx, city: City, item: BuildItem, queued = false)
       if (def === undefined) return 'badItem';
       if (!Number.isInteger(item.hex) || item.hex < 0 || item.hex >= topo.count) return 'badHex';
       if (topo.workZone[item.hex] !== city.zone) return 'badHex';
-      if (!improvementFits(ctx, def, item.hex)) return 'badHex';
+      if (!knows(ctx, city.owner, def.tech)) return 'needsTech';
+      if (!improvementFits(ctx, def, item.hex, improvesHills(ctx, def, city.owner))) return 'badHex';
       if (state.improvements[item.hex] !== undefined) return 'alreadyBuilt';
       break;
     }
@@ -244,6 +261,17 @@ export function checkItem(ctx: Ctx, city: City, item: BuildItem, queued = false)
         }
       }
       return null;
+    }
+    case 'project': {
+      if (item.project !== PROJECT.id) return 'badItem';
+      // Only those who can win build it: the major nations and the player.
+      if (kind !== 'nation' || !researches(state, city.owner)) return 'badItem';
+      const polity = polityOf(ctx, city.owner);
+      if (polity.capital !== city.zone) return 'notCapital';
+      const stage = PROJECT.stages[polity.projectStage];
+      if (stage === undefined) return 'alreadyBuilt';
+      if (!knows(ctx, city.owner, stage.tech)) return 'needsTech';
+      break;
     }
     default:
       return 'badItem';
@@ -272,6 +300,7 @@ export function foundCity(ctx: Ctx, zone: number, owner: number): City {
     unrest: 0,
     morale: 100,
     struck: false,
+    airStruck: false,
     attackedOn: 0,
     worked: [],
     yields: noYields(),
@@ -295,7 +324,7 @@ export function spawnHex(ctx: Ctx, city: City, def: UnitDef): number {
   if (def.domain === 'land' && !ctx.unitAt.has(site)) return site;
   for (let d = 0; d < 6; d++) {
     const hex = topo.neighbors[site * 6 + d] as number;
-    if (hex < 0 || ctx.unitAt.has(hex) || !terrainAllows(ctx, def, hex)) continue;
+    if (hex < 0 || ctx.unitAt.has(hex) || !terrainAllows(ctx, def, hex, city.owner)) continue;
     if ((topo.water[hex] === 1) !== (def.domain === 'sea')) continue;
     if (!bordersOpen(ctx, city.owner, hex) || cityAtHex(ctx, hex) !== null) continue;
     return hex;
@@ -330,6 +359,12 @@ function completeItem(ctx: Ctx, city: City, item: BuildItem): boolean {
       if (!siteFree(ctx, item.zone, city.owner)) return false;
       foundCity(ctx, item.zone, city.owner);
       return true;
+    case 'project': {
+      const polity = polityOf(ctx, city.owner);
+      polity.projectStage++;
+      ctx.events.push({ type: 'projectStageFinished', polity: city.owner, city: city.zone, stage: polity.projectStage });
+      return true;
+    }
   }
 }
 
@@ -374,5 +409,6 @@ export function processCity(ctx: Ctx, city: City): void {
   if (city.attackedOn < state.turn) city.hp = Math.min(maxHp, city.hp + CITY.heal);
   city.hp = Math.min(city.hp, maxHp);
   city.struck = false;
+  city.airStruck = false;
   if (city.unrest > 0) city.unrest--;
 }

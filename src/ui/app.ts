@@ -5,8 +5,7 @@
  * state that comes back.
  */
 
-import { upgradeCost } from '../core/actions.ts';
-import { FOCUSES, IMPROVEMENTS, SETTLER, unitDef, upgradeTarget } from '../core/data.ts';
+import { FOCUSES, IMPROVEMENTS, PROJECT, SETTLER, unitDef } from '../core/data.ts';
 import type { Yields } from '../core/data.ts';
 import { NO_POLITY, currentEra, hexOwner } from '../core/game.ts';
 import type { Action, GameEvent, GameState, Unit } from '../core/game.ts';
@@ -33,13 +32,14 @@ import {
   regionOf,
   rejectText,
   saveErrorText,
+  techName,
   unitName,
   yieldName,
 } from './names.ts';
 import { attackReach, findPath, previewAttack, reachableHexes } from './path.ts';
 import { mainButton } from './pending.ts';
 import type { PendingItem } from './pending.ts';
-import { check, cityView, cityZoneAt, politySummary, ranking, relationView } from './rules.ts';
+import { check, cityView, cityZoneAt, politySummary, ranking, relationView, researchView, upgradeView } from './rules.ts';
 import type { BuildOption } from './rules.ts';
 import { MAX_SAVE_BYTES, exportSave, importSave } from './saves.ts';
 import { clearAutosave, readAutosave, writeAutosave } from './storage.ts';
@@ -60,6 +60,8 @@ export interface AppOptions {
   readonly board: Board;
   /** Replaces the board by one for another map. The old renderer is disposed by the callee. */
   readonly loadBoard: (source: MapSource) => Promise<Board>;
+  /** True if the renderer is to stay paused for good (`?render=off`). */
+  readonly renderOff?: boolean;
   /** Called after the board was replaced. */
   readonly onBoard?: (board: Board) => void;
 }
@@ -302,6 +304,17 @@ export function createApp(options: AppOptions): App {
         case 'unitKilled':
           if (event.owner === me) addNote(() => t('note.lost', { unit: unitName(event.unitType) }), event.hex);
           break;
+        case 'researchFinished':
+          if (event.polity === me) addNote(() => t('note.research', { tech: techName(event.tech) }), -1);
+          break;
+        case 'projectStageFinished':
+          if (all || event.polity === me) {
+            addNote(
+              () => t('note.stage', { a: polityName(m, event.polity), name: t('project.tiangong'), stage: event.stage }),
+              siteOf(event.city),
+            );
+          }
+          break;
         case 'eraStarted':
           addNote(() => t('note.era', { era: eraName(event.era) }), -1);
           break;
@@ -518,10 +531,19 @@ export function createApp(options: AppOptions): App {
     fill(topbar, left, middle, menuButton);
   };
 
+  /** The player's current research: its name and the turns it still takes. The player does not choose it yet. */
+  const researchText = (): string => {
+    const research = observing() ? null : researchView(state(), player());
+    if (research === null) return '—';
+    return research.turns === null
+      ? techName(research.tech)
+      : t('hud.researching', { tech: techName(research.tech), turns: research.turns });
+  };
+
   const drawSlots = (): void => {
     fill(
       slots,
-      el('div', { class: 'panel slot', id: 'slot-research' }, el('span', { class: 'stat-label', text: t('hud.research') }), '—'),
+      el('div', { class: 'panel slot', id: 'slot-research' }, el('span', { class: 'stat-label', text: t('hud.research') }), researchText()),
       el('div', { class: 'panel slot', id: 'slot-policy' }, el('span', { class: 'stat-label', text: t('hud.policy') }), '—'),
     );
   };
@@ -611,8 +633,9 @@ export function createApp(options: AppOptions): App {
         refresh();
       }, { data: { action: 'skip' }, disabled: host.busy || unit.moves <= 0 }),
     );
-    if (upgradeTarget(unit.type) !== null) {
-      add('upgrade', t('action.upgrade', { gold: upgradeCost(unit) }), { type: 'upgrade', polity: me, unit: unit.id });
+    const upgrade = upgradeView(state(), unit.id);
+    if (upgrade !== null) {
+      add('upgrade', t('action.upgrade', { gold: upgrade.gold }), { type: 'upgrade', polity: me, unit: unit.id });
     }
     if (unit.type === SETTLER) add('settle', t('action.settle'), { type: 'settle', polity: me, unit: unit.id });
     fill(selectionBox, piece, facts, actions);
@@ -732,6 +755,14 @@ export function createApp(options: AppOptions): App {
           refresh();
         }, active);
       })),
+      group(t('city.project'), 'build-project', view.projects.map((option) =>
+        optionButton(
+          t('city.projectStage', { name: t('project.tiangong'), stage: (state().polities[me]?.projectStage ?? 0) + 1 }),
+          option,
+          `project:${PROJECT.id}`,
+          queue(option.item),
+        ),
+      )),
       group(t('city.sites'), 'build-sites', view.sites.map((option) =>
         optionButton(itemName(map(), option.item), option, `city:${option.item.kind === 'city' ? option.item.zone : ''}`, queue(option.item)),
       )),
@@ -1047,7 +1078,7 @@ export function createApp(options: AppOptions): App {
     const m = map();
     const me = player();
     const title = me === NO_POLITY ? t('end.over') : result.winner === me ? t('end.victory') : t('end.defeat');
-    const line = t(result.kind === 'conquest' ? 'end.conquest' : 'end.economic', {
+    const line = t(result.kind === 'conquest' ? 'end.conquest' : result.kind === 'science' ? 'end.science' : 'end.economic', {
       name: polityName(m, result.winner),
       turn: result.turn,
     });
@@ -1330,12 +1361,15 @@ export function createApp(options: AppOptions): App {
     async runTurns(turns) {
       automated = true;
       scheduleObserver();
+      // nothing is drawn while the turns run; the board is drawn once at the end
+      board.renderer.setPaused(true);
       try {
         await idle();
         refresh();
         return await host.runTurns(turns);
       } finally {
         automated = false;
+        board.renderer.setPaused(options.renderOff === true);
         refresh();
         scheduleObserver();
       }

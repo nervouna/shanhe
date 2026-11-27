@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createGame, endTurn } from '../core/game.ts';
-import { apply, edit } from '../core/testUtil.ts';
+import { apply, edit, put } from '../core/testUtil.ts';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
-import { check, cityView, cityZoneAt, politySummary, ranking, relationView } from './rules.ts';
+import { check, cityView, cityZoneAt, politySummary, ranking, relationView, researchView, upgradeView } from './rules.ts';
 
 const map = createFixtureMap();
 const JIA = 0;
@@ -22,9 +22,13 @@ describe('cityView', () => {
     const warrior = view.units.find((option) => option.item.kind === 'unit' && option.item.unit === 'warrior')!;
     expect(warrior.cost).toBe(24);
     expect(warrior.turns).toBe(Math.ceil(24 / view.city.yields.production));
-    expect(view.buildings.map((option) => (option.item.kind === 'building' ? option.item.building : ''))).toEqual(
-      expect.arrayContaining(['granary', 'walls', 'temple']),
-    );
+    // buildings wait for their techs
+    expect(view.buildings).toEqual([]);
+    expect(view.projects).toEqual([]);
+    const learned = edit(state, (draft) => {
+      draft.polities[JIA]!.techs.push('farming');
+    });
+    expect(cityView(learned, capital)!.buildings.map((option) => (option.item.kind === 'building' ? option.item.building : ''))).toEqual(['granary']);
     // Jia has two more sites of its own to found cities on
     expect(view.sites).toHaveLength(2);
     for (const entry of view.improvements) {
@@ -86,6 +90,30 @@ describe('summaries', () => {
     expect(rows.map((row) => row.polity).sort()).toEqual([...state.majors].sort());
     const rest = rows.slice(1).filter((row) => row.alive);
     for (let i = 1; i < rest.length; i++) expect(rest[i - 1]!.income).toBeGreaterThanOrEqual(rest[i]!.income);
+  });
+
+  it('shows the research under way with the turns it still takes', () => {
+    const start = createGame(map, { player: 'jia' });
+    expect(researchView(start, JIA)).toBeNull();
+    // the rules pick a tech for a player who has chosen none
+    const state = endTurn(start).state;
+    const view = researchView(state, JIA)!;
+    expect(view.tech).toBe(state.polities[JIA]!.research);
+    expect(view.turns).toBeGreaterThanOrEqual(1);
+    expect(researchView(state, 5)).toBeNull();
+  });
+
+  it('offers an upgrade only once its tech is known', () => {
+    let id = 0;
+    const state = edit(createGame(map, { player: 'jia' }), (draft) => {
+      id = put(draft, 'archer', JIA, map.zones[capital]!.siteHex + 1).id;
+    });
+    expect(upgradeView(state, id)).toBeNull();
+    const learned = edit(state, (draft) => {
+      draft.polities[JIA]!.techs.push('crossbow');
+    });
+    expect(upgradeView(learned, id)).toEqual({ type: 'crossbowman', gold: 24 });
+    expect(upgradeView(state, 99999)).toBeNull();
   });
 
   it('finds the city on a hex', () => {

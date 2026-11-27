@@ -4,10 +4,10 @@ import {
   BUILDINGS,
   COMBAT,
   FREE_UNITS_PER_CITY,
+  PROJECT,
   UNIT_UPKEEP,
   WAR,
   conquestTarget,
-  eraOfTurn,
   noYields,
   unitDef,
 } from './data.ts';
@@ -15,6 +15,7 @@ import type { Yields } from './data.ts';
 import { YIELD_KEYS, processCity } from './cities.ts';
 import { at, ownerOf, polityOf, removeUnit, warCount } from './context.ts';
 import type { Ctx } from './context.ts';
+import { followWorld, processResearch, worldEra } from './tech.ts';
 import { NO_POLITY } from './types.ts';
 import type { GameResult } from './types.ts';
 
@@ -49,6 +50,11 @@ function findResult(ctx: Ctx): GameResult | null {
   for (const polity of candidates) {
     if (capitalsHeld(ctx, polity) >= needed) return { kind: 'conquest', winner: polity, turn: state.turn };
   }
+  for (const polity of candidates) {
+    if (polityOf(ctx, polity).projectStage >= PROJECT.stages.length) {
+      return { kind: 'science', winner: polity, turn: state.turn };
+    }
+  }
   if (state.turn < state.lastTurn) return null;
   let winner = -1;
   for (const polity of candidates) {
@@ -60,6 +66,7 @@ function findResult(ctx: Ctx): GameResult | null {
 /** Ends the current turn for everybody and, unless the game is over, starts the next one. */
 export function endRound(ctx: Ctx): void {
   const { state } = ctx;
+  const eraBefore = worldEra(state);
 
   // War weariness first, so that this turn's morale reflects it.
   state.polities.forEach((polity, index) => {
@@ -113,6 +120,10 @@ export function endRound(ctx: Ctx): void {
     }
   });
 
+  // Research, then the polities that follow it.
+  processResearch(ctx);
+  followWorld(ctx);
+
   // Units: rest heals, and everybody gets their movement back.
   for (const unit of state.units) {
     if (!unit.acted && unit.hp < COMBAT.maxHp) {
@@ -130,10 +141,7 @@ export function endRound(ctx: Ctx): void {
     return;
   }
   state.turn++;
-  const era = eraOfTurn(state.turn);
-  if (era !== ctx.era) {
-    ctx.era = era;
-    ctx.events.push({ type: 'eraStarted', era });
-  }
+  const era = worldEra(state);
+  if (era > eraBefore) ctx.events.push({ type: 'eraStarted', era });
   ctx.events.push({ type: 'turnStarted', turn: state.turn });
 }

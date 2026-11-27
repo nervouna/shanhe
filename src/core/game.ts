@@ -13,6 +13,7 @@ import { execute, legalActions, validate } from './actions.ts';
 import { assignCitizens, foundCity } from './cities.ts';
 import { addUnit, at, cloneState, createCtx, random } from './context.ts';
 import type { Ctx } from './context.ts';
+import type { TechId } from './data.ts';
 import {
   DEFAULT_MAJOR_NAMES_ZH,
   GAME_TURNS,
@@ -20,10 +21,10 @@ import {
   MAJOR_COUNT,
   ROSTER,
   TRIBE,
-  eraOfTurn,
   noYields,
   unitDef,
 } from './data.ts';
+import { hasResource, techCost, visibleResource, worldEra } from './tech.ts';
 import { topologyOf } from './topology.ts';
 import { endRound } from './turn.ts';
 import { NO_POLITY } from './types.ts';
@@ -41,7 +42,7 @@ export type * from './types.ts';
 export { NO_POLITY } from './types.ts';
 
 /** Version of the state format. `loadGame` rejects any other. */
-export const STATE_VERSION = 1;
+export const STATE_VERSION = 2;
 
 function polityIndex(map: MapData, id: string): number {
   const index = map.polities.findIndex((polity) => polity.id === id);
@@ -79,6 +80,14 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
     grossIncome: 0,
     science: 0,
     culture: 0,
+    techs: [],
+    research: null,
+    researchProgress: 0,
+    era: 0,
+    projectStage: 0,
+    tradeRoutes: 0,
+    landPorts: false,
+    seaExits: false,
     yields: noYields(),
     upkeep: 0,
     warWeariness: 0,
@@ -145,9 +154,35 @@ export function hexOwner(state: GameState, hex: number): number {
   return zone === undefined || zone < 0 ? NO_POLITY : at(state.zoneOwner, zone);
 }
 
-/** The index into `ERAS` of the era the game is in. */
+/**
+ * The index into `ERAS` of the era the game is in: the player's era, or that
+ * of the most advanced living major nation when nobody plays.
+ */
 export function currentEra(state: GameState): number {
-  return eraOfTurn(state.turn);
+  return worldEra(state);
+}
+
+/** The index into `ERAS` of the era `polity` has reached with its research. */
+export function polityEra(state: GameState, polity: number): number {
+  return state.polities[polity]?.era ?? 0;
+}
+
+/** Science `polity` needs for `tech`, the catch-up discount included. */
+export function researchCost(state: GameState, polity: number, tech: TechId): number {
+  return techCost(state, polity, tech);
+}
+
+/**
+ * The resource `polity` sees on a hex, as an index into `map.resources`, or
+ * `NO_RESOURCE`: a strategic resource is hidden until its tech is known.
+ */
+export function resourceOnHex(state: GameState, polity: number, hex: number): number {
+  return visibleResource(state, polity, hex);
+}
+
+/** True if `polity` has a source of the strategic resource (`MapResource.id`) in its territory and can see it. */
+export function polityHasResource(state: GameState, polity: number, resource: string): boolean {
+  return hasResource(createCtx(state as MutableGameState), polity, resource);
 }
 
 // ------------------------------------------------------------ save and load
