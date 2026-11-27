@@ -4,7 +4,7 @@ Repository: `nervouna/shanhe` (the local folder is still named `china-civ`). A b
 
 ## Status
 
-Design is locked; there is no code yet. Progress is tracked in the repository's milestones and its tracking issue.
+Design is locked and the code is under construction. Progress is tracked in the repository's milestones and the tracking issue (#2); what only the owner can verify is in #1.
 
 ## How this project is developed
 
