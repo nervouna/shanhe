@@ -31,6 +31,33 @@ function withUnit(type: string, hex: number, moves?: number): { state: GameState
   return { state, id };
 }
 
+describe('paths along a road', () => {
+  it('count half a movement point per step, so a unit reaches twice as far', () => {
+    // A straight line of open ground east of a hex in Jia's land.
+    const line = (() => {
+      for (let hex = 0; hex < map.width * map.height; hex++) {
+        const hexes = [hex, hex + 1, hex + 2, hex + 3, hex + 4];
+        const sameRow = Math.floor((hex + 4) / map.width) === Math.floor(hex / map.width);
+        const dry = hexes.every((h, i) => map.owner[h] === JIA && isPlainGround(map, h) && (i === 0 || (map.riverEdges[hexes[i - 1]!]! & 1) === 0));
+        if (sameRow && dry) return hexes;
+      }
+      throw new Error('no straight line of open ground on the fixture');
+    })();
+    const { state, id } = withUnit('warrior', line[0]!);
+    expect(reachableHexes(state, id)).not.toContain(line[4]!);
+    const paved = edit(state, (draft) => {
+      for (const hex of line) draft.roads[hex] = 1;
+    });
+    expect(reachableHexes(paved, id)).toContain(line[4]!);
+    expect(stepsThisTurn(paved, id, line[4]!)).toEqual(line.slice(1));
+    // The rules agree step by step, down to the last half point.
+    let walked = paved;
+    for (const to of line.slice(1)) walked = apply(walked, { type: 'move', polity: JIA, unit: id, to });
+    expect(walked.units.find((unit) => unit.id === id)!.moves).toBe(0);
+    expect(walked.units.find((unit) => unit.id === id)!.hex).toBe(line[4]);
+  });
+});
+
 /** What `endTurn` does to movement: everybody gets their points back. */
 function newTurn(state: GameState): GameState {
   return edit(state, (draft) => {

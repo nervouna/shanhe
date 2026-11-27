@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createGame, endTurn, hashState, saveGame } from '../core/game.ts';
 import type { GameState } from '../core/game.ts';
-import { apply } from '../core/testUtil.ts';
+import { apply, edit } from '../core/testUtil.ts';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
 import { createSyntheticMap } from '../shared/syntheticMap.ts';
 import { MAX_SAVE_BYTES, exportSave, importSave } from './saves.ts';
@@ -116,6 +116,169 @@ describe('exportSave and importSave', () => {
     for (const [name, change] of Object.entries(cases)) {
       expect(importSave(tampered(state, change), map), name).toEqual({ ok: false, error: 'corrupt' });
     }
+  });
+
+  /**
+   * Ding plays among three major nations for 30 turns, so there are policy
+   * cards, agreements, trade routes and roads; a deal, an offer to the
+   * player, a pillaged farm and a unit half-way down a road are added by hand.
+   */
+  function diplomatic(): GameState {
+    let state = createGame(map, { seed: 2, player: 'ding', majors: ['jia', 'yi', 'bing'] });
+    for (let i = 0; i < 30; i++) state = endTurn(state).state;
+    return edit(state, (draft) => {
+      draft.deals.push({
+        id: draft.nextId++, seller: 0, buyer: 3, resource: 'horses', goldPerTurn: 4, since: draft.turn, until: draft.turn + 19,
+      });
+      draft.offers.push({ id: draft.nextId++, type: 'agreement', from: 1, to: 3, turn: draft.turn, agreement: 'openBorders' });
+      draft.offers.push({
+        id: draft.nextId++, type: 'deal', from: 2, to: 3, turn: draft.turn, seller: 2, resource: 'horses', goldPerTurn: 5,
+      });
+      draft.pillaged[40] = draft.turn + 3;
+      draft.polities[4]!.influence[0] = 75;
+      draft.polities[4]!.suzerain = 0;
+      draft.units.find((unit) => unit.owner === 3)!.moves = 0.25;
+    });
+  }
+
+  it('round-trips policies, agreements, offers, deals, routes, roads and influence', () => {
+    const state = diplomatic();
+    expect(state.polities.some((polity) => polity.policies.length > 0 && polity.slots.some((card) => card !== null))).toBe(true);
+    expect(state.agreements.length).toBeGreaterThan(0);
+    expect(Object.keys(state.favour).length).toBeGreaterThan(0);
+    expect(state.routes.length).toBeGreaterThan(0);
+    expect(Object.keys(state.roads).length).toBeGreaterThan(0);
+    expect(Object.keys(state.roadLinks).length).toBeGreaterThan(0);
+    const result = importSave(exportSave(state), map);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.state).toEqual(state);
+    expect(exportSave(result.state)).toBe(exportSave(state));
+    expect(hashState(endTurn(result.state).state)).toBe(hashState(endTurn(state).state));
+  });
+
+  it('round-trips a vassalage', () => {
+    const state = edit(played(5), (draft) => {
+      draft.polities[1]!.overlord = 0;
+      draft.agreements.push({ kind: 'vassalage', a: 0, b: 1, since: 2, until: 0 });
+      draft.agreements.push({ kind: 'alliance', a: 2, b: 3, since: 3, until: 0 });
+    });
+    const result = importSave(exportSave(state), map);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.state).toEqual(state);
+  });
+
+  it('rejects malformed policies, agreements, offers, deals, routes, roads and influence', () => {
+    const state = diplomatic();
+    type Rows = Record<string, unknown>[];
+    const polities = (data: Record<string, unknown>): Rows => data.polities as Rows;
+    const first = (data: Record<string, unknown>, field: string): Record<string, unknown> => (data[field] as Rows)[0]!;
+    const carded = state.polities.findIndex((polity) => polity.slots.some((card) => card !== null));
+    const cases: Record<string, (data: Record<string, unknown>) => void> = {
+      'policies missing': (data) => delete polities(data)[0]!.policies,
+      'unknown policy': (data) => (polities(data)[carded]!.policies as string[]).push('divineRight'),
+      'policy listed twice': (data) => {
+        const list = polities(data)[carded]!.policies as string[];
+        list.push(list[0]!);
+      },
+      'slotted card that is not unlocked': (data) => (polities(data)[carded]!.policies = []),
+      'too many slots': (data) => (polities(data)[carded]!.slots as unknown[]).push(null, null, null, null, null, null),
+      'too few slots': (data) => (polities(data)[carded]!.slots = []),
+      'policies of a city-state': (data) => (polities(data)[4]!.policies = ['clanLaw']),
+      'culture progress negative': (data) => (polities(data)[0]!.cultureProgress = -1),
+      'free swaps not a whole number': (data) => (polities(data)[0]!.freeSwaps = 1.5),
+      'overlord that does not exist': (data) => (polities(data)[0]!.overlord = 99),
+      'own overlord': (data) => (polities(data)[0]!.overlord = 0),
+      'vassal without a vassalage': (data) => (polities(data)[1]!.overlord = 0),
+      'city-state type of a nation': (data) => (polities(data)[0]!.cityStateType = 'finance'),
+      'city-state without a type': (data) => (polities(data)[4]!.cityStateType = null),
+      'unknown city-state type': (data) => (polities(data)[4]!.cityStateType = 'piracy'),
+      'influence beyond the maximum': (data) => (polities(data)[4]!.influence = { '0': 5000 }),
+      'influence of a polity that does not exist': (data) => (polities(data)[4]!.influence = { '77': 10 }),
+      'influence under a key that is no index': (data) => (polities(data)[4]!.influence = { __proto__x: 10 }),
+      'influence with a nation': (data) => (polities(data)[0]!.influence = { '1': 10 }),
+      'suzerain of a nation': (data) => (polities(data)[0]!.suzerain = 1),
+      'route income as text': (data) => (polities(data)[0]!.routeIncome = '9'),
+      'favour missing': (data) => delete data.favour,
+      'favour out of range': (data) => (data.favour = { '0:1': 500 }),
+      'favour under a reversed key': (data) => (data.favour = { '1:0': 5 }),
+      'favour with a city-state': (data) => (data.favour = { '0:4': 5 }),
+      'favour with itself': (data) => (data.favour = { '1:1': 5 }),
+      'agreements not a list': (data) => (data.agreements = {}),
+      'agreement of an unknown kind': (data) => (first(data, 'agreements').kind = 'marriage'),
+      'agreement with a polity that does not exist': (data) => (first(data, 'agreements').b = 64),
+      'agreement with a city-state': (data) => (data.agreements = [{ kind: 'tradePact', a: 0, b: 4, since: 1, until: 0 }]),
+      'agreement with itself': (data) => (data.agreements = [{ kind: 'tradePact', a: 2, b: 2, since: 1, until: 0 }]),
+      'agreement in the wrong order': (data) => (data.agreements = [{ kind: 'tradePact', a: 2, b: 1, since: 1, until: 0 }]),
+      'agreement listed twice': (data) =>
+        (data.agreements = [
+          { kind: 'alliance', a: 0, b: 1, since: 1, until: 0 },
+          { kind: 'alliance', a: 0, b: 1, since: 2, until: 0 },
+        ]),
+      'agreement from the future': (data) => (first(data, 'agreements').since = 9999),
+      'agreement that ends before it starts': (data) => (data.agreements = [{ kind: 'tradePact', a: 0, b: 1, since: 20, until: 3 }]),
+      'vassalage the vassal does not know of': (data) => (data.agreements = [{ kind: 'vassalage', a: 0, b: 1, since: 1, until: 0 }]),
+      'deal for an unknown resource': (data) => (first(data, 'deals').resource = 'unobtainium'),
+      'deal with a price of zero': (data) => (first(data, 'deals').goldPerTurn = 0),
+      'deal with an absurd price': (data) => (first(data, 'deals').goldPerTurn = 1e9),
+      'deal with a buyer that does not exist': (data) => (first(data, 'deals').buyer = -1),
+      'deal of a nation with itself': (data) => (first(data, 'deals').buyer = first(data, 'deals').seller),
+      'deal id at or above the next id': (data) => (first(data, 'deals').id = data.nextId),
+      'offer to an AI': (data) => (first(data, 'offers').to = 0),
+      'offer of an unknown type': (data) => (first(data, 'offers').type = 'bribe'),
+      'offer of an unknown agreement': (data) =>
+        ((data.offers as Rows).find((offer) => offer.type === 'agreement')!.agreement = 'marriage'),
+      'deal offer with a third seller': (data) => ((data.offers as Rows).find((offer) => offer.type === 'deal')!.seller = 0),
+      'offer and deal with one id': (data) => (first(data, 'offers').id = first(data, 'deals').id),
+      'route from a zone that does not exist': (data) => (first(data, 'routes').from = 500),
+      'route from a zone without a city': (data) =>
+        (first(data, 'routes').from = state.cities.findIndex((entry) => entry === null)),
+      'route to nowhere': (data) => {
+        first(data, 'routes').toCity = -1;
+        first(data, 'routes').toPort = -1;
+      },
+      'route to a city and a port': (data) => {
+        first(data, 'routes').toCity = 3;
+        first(data, 'routes').toPort = 0;
+      },
+      'route to a port that does not exist': (data) => {
+        first(data, 'routes').toCity = -1;
+        first(data, 'routes').toPort = 9;
+      },
+      'route over a hex outside the map': (data) => (first(data, 'routes').path as number[]).push(map.width * map.height),
+      'route without a path': (data) => (first(data, 'routes').path = []),
+      'route path not a list': (data) => (first(data, 'routes').path = '1,2,3'),
+      'route of a polity that does not exist': (data) => (first(data, 'routes').owner = 64),
+      'route sea flag as a number': (data) => (first(data, 'routes').sea = 1),
+      'next id missing': (data) => delete data.nextId,
+      'next id below a used id': (data) => (data.nextId = 1),
+      'road of an unknown level': (data) => (data.roads = { '40': 3 }),
+      'road on a hex outside the map': (data) => (data.roads = { '99999': 1 }),
+      'road under a key that is no hex': (data) => (data.roads = { 'constructor': 1 }),
+      'road under a padded key': (data) => (data.roads = { '040': 1 }),
+      'roads as a list': (data) => (data.roads = [1, 1]),
+      'road link between a zone and itself': (data) => (data.roadLinks = { '1:1': 1 }),
+      'road link in the wrong order': (data) => (data.roadLinks = { '2:1': 1 }),
+      'road link to a zone that does not exist': (data) => (data.roadLinks = { '1:500': 1 }),
+      'road link with an unknown value': (data) => (data.roadLinks = { '0:1': 7 }),
+      'pillaged hex outside the map': (data) => (data.pillaged = { '-1': 5 }),
+      'pillaged until a fraction of a turn': (data) => (data.pillaged = { '40': 2.5 }),
+      'unit with more movement than its type has': (data) => ((data.units as Rows)[0]!.moves = 99),
+      'unit with negative movement': (data) => ((data.units as Rows)[0]!.moves = -0.5),
+      'stats without the new counters': (data) => delete (data.stats as Record<string, unknown>).vassalsMade,
+    };
+    for (const [name, change] of Object.entries(cases)) {
+      expect(importSave(tampered(state, change), map), name).toEqual({ ok: false, error: 'corrupt' });
+    }
+  });
+
+  it('keeps only the fields of the new records too', () => {
+    const state = diplomatic();
+    const text = tampered(state, (data) => {
+      for (const field of ['agreements', 'deals', 'offers', 'routes']) (data[field] as Record<string, unknown>[])[0]!.extra = 'x';
+    });
+    const result = importSave(text, map);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.state).toEqual(state);
   });
 
   it('keeps only the fields of the format', () => {
