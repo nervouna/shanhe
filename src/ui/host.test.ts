@@ -40,7 +40,7 @@ describe('createHost', () => {
     host.start({ player: 'jia', seed: 4 });
     expect(host.playing).toBe(true);
     expect(host.state.player).toBe(JIA);
-    expect(host.pending()).toEqual([{ kind: 'city', city: capitalZone, hex: jiaCapital }]);
+    expect(host.pending()).toEqual([{ kind: 'city', city: capitalZone, hex: jiaCapital }, { kind: 'research' }]);
   });
 
   it('applies the player\'s actions and reports rejections without changing the state', () => {
@@ -59,7 +59,7 @@ describe('createHost', () => {
     expect(host.state.cities[capitalZone]!.queue).toHaveLength(1);
     expect(before.cities[capitalZone]!.queue).toHaveLength(0);
     expect(changes.map((change) => change.kind)).toEqual(['action']);
-    expect(host.pending()).toEqual([]);
+    expect(host.pending()).toEqual([{ kind: 'research' }]);
   });
 
   it('ends a turn through the runner exactly as the rules do', async () => {

@@ -2,7 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { createGame, endTurn } from '../core/game.ts';
 import { apply, edit, put } from '../core/testUtil.ts';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
-import { check, cityView, cityZoneAt, politySummary, ranking, relationView, researchView, upgradeView } from './rules.ts';
+import {
+  check,
+  cityView,
+  cityZoneAt,
+  polityRows,
+  politySummary,
+  ranking,
+  relationView,
+  researchView,
+  sortPolityRows,
+  upgradeView,
+  victoryView,
+} from './rules.ts';
 
 const map = createFixtureMap();
 const JIA = 0;
@@ -123,3 +135,72 @@ describe('summaries', () => {
     expect(cityZoneAt(state, 0)).toBe(-1);
   });
 });
+
+describe('victoryView', () => {
+  it('names the leader of each victory and where the player stands', () => {
+    const start = createGame(map, { seed: 3, player: 'jia' });
+    const state = edit(start, (draft) => {
+      draft.polities[1]!.projectStage = 2;
+      draft.polities[2]!.grossIncome = 900;
+      draft.polities[0]!.grossIncome = 300;
+    });
+    const view = victoryView(state);
+    expect(view.turnsLeft).toBe(state.lastTurn - state.turn);
+    expect(view.lines.map((line) => line.kind)).toEqual(['conquest', 'science', 'economic']);
+    const [conquest, science, economic] = view.lines;
+    // everybody holds its own capital: the tie goes to the first
+    expect(conquest).toMatchObject({ leaderValue: 1, playerValue: 1 });
+    expect(conquest!.needed).toBeGreaterThan(1);
+    expect(science).toMatchObject({ leader: 1, leaderValue: 2, playerValue: 0, needed: 3 });
+    expect(economic).toMatchObject({ leader: 2, leaderValue: 900, playerValue: 300, needed: null });
+  });
+
+  it('has no player value in observer mode', () => {
+    const view = victoryView(createGame(map, { seed: 3 }));
+    expect(view.lines.every((line) => line.playerValue === null)).toBe(true);
+    expect(view.lines.every((line) => line.leader >= 0)).toBe(true);
+  });
+});
+
+describe('polityRows', () => {
+  const state = edit(createGame(map, { seed: 3, player: 'jia' }), (draft) => {
+    draft.favour['0:1'] = 40;
+    draft.favour['0:2'] = -25;
+  });
+  const rows = polityRows(state, 0);
+
+  it('lists every living polity but the viewer', () => {
+    const alive = state.polities.flatMap((polity, index) => (polity.alive && index !== 0 ? [index] : []));
+    expect(rows.map((row) => row.polity)).toEqual(alive);
+    expect(rows.find((row) => row.polity === 1)).toMatchObject({ favour: 40 });
+    const cityState = map.polities.findIndex((polity) => polity.kind === 'cityState');
+    expect(rows.find((row) => row.polity === cityState)!.favour).toBeNull();
+    for (const row of rows) {
+      expect(row.strength).toBeGreaterThan(0);
+      expect(row.distance).toBeGreaterThan(0);
+    }
+  });
+
+  it('sorts by favour, strength and distance, both ways, with missing values last', () => {
+    const byFavour = sortPolityRows(rows, 'favour', true);
+    expect(byFavour[0]!.polity).toBe(1);
+    const numbered = byFavour.filter((row) => row.favour !== null);
+    expect(numbered.at(-1)!.polity).toBe(2);
+    expect(byFavour.slice(numbered.length).every((row) => row.favour === null)).toBe(true);
+    const ascending = sortPolityRows(rows, 'favour', false);
+    expect(ascending[0]!.polity).toBe(2);
+    expect(ascending.slice(numbered.length).every((row) => row.favour === null)).toBe(true);
+
+    const near = sortPolityRows(rows, 'distance', false);
+    for (let i = 1; i < near.length; i++) expect(near[i - 1]!.distance!).toBeLessThanOrEqual(near[i]!.distance!);
+    const strong = sortPolityRows(rows, 'strength', true);
+    for (let i = 1; i < strong.length; i++) expect(strong[i - 1]!.strength).toBeGreaterThanOrEqual(strong[i]!.strength);
+    expect(sortPolityRows(rows, 'strength', true)).toEqual(strong);
+  });
+
+  it('has neither favour nor distance in observer mode', () => {
+    const watched = polityRows(createGame(map, { seed: 3 }), -1);
+    expect(watched.every((row) => row.favour === null && row.distance === null)).toBe(true);
+  });
+});
+

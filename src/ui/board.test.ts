@@ -5,7 +5,7 @@ import { edit, put } from '../core/testUtil.ts';
 import { topologyOf } from '../core/topology.ts';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
 import { OWNER_UNOWNED } from '../shared/mapData.ts';
-import { UNIT_CHARACTERS, sceneOf } from './board.ts';
+import { UNIT_CHARACTERS, sceneOf, wholeMapView } from './board.ts';
 
 const map = createFixtureMap();
 
@@ -60,5 +60,37 @@ describe('sceneOf', () => {
     }
     expect(scene.ownerOverrides.size).toBe(topo.zoneHexes[zone]!.length + topo.zoneHexes[wasteland]!.length);
     expect(scene.cities.find((city) => city.hex === map.zones[zone]!.siteHex)!.polity).toBe(0);
+  });
+
+  it('passes on the roads with their level and the trade routes with their path', () => {
+    const base = createGame(map, { seed: 3 });
+    expect(sceneOf(base, 'zh').roads.size).toBe(0);
+    expect(sceneOf(base, 'zh').routes).toEqual([]);
+    const state = edit(base, (draft) => {
+      draft.roads[12] = 1;
+      draft.roads[40] = 2;
+      draft.routes.push({
+        id: 1, owner: 2, from: 0, toCity: 1, toPort: -1, sea: true, path: [5, 6, 7], income: 3, pillagedUntil: 0,
+      });
+    });
+    const scene = sceneOf(state, 'zh');
+    expect([...scene.roads]).toEqual([[12, 1], [40, 2]]);
+    expect(scene.routes).toEqual([{ path: [5, 6, 7], polity: 2, sea: true }]);
+  });
+});
+
+describe('wholeMapView', () => {
+  it('looks at the middle of the map from a distance that grows with the map', () => {
+    const view = wholeMapView(map);
+    const { size, originX, originZ } = map.projection.hexLayout;
+    expect(view.x).toBeGreaterThan(originX);
+    expect(view.x).toBeLessThan(originX + Math.sqrt(3) * size * map.width);
+    expect(view.z).toBeGreaterThan(originZ);
+    expect(view.z).toBeLessThan(originZ + 1.5 * size * map.height);
+    // far enough to see the taller side through the lens
+    expect(view.distance).toBeGreaterThan(1.5 * size * map.height);
+    const wider = wholeMapView({ ...map, width: map.width * 4 });
+    expect(wider.distance).toBeGreaterThan(view.distance);
+    expect(wider.x).toBeGreaterThan(view.x);
   });
 });

@@ -5,7 +5,17 @@ import { BUILDING_IDS, IMPROVEMENT_IDS, PROJECT, UNIT_IDS, WAR, noYields } from 
 import type { ImprovementId, TechId, Yields } from '../core/data.ts';
 import { NO_POLITY, researchCost } from '../core/game.ts';
 import type { Action, BuildItem, City, GameState, RejectReason } from '../core/game.ts';
-import { buildCost, capitalsHeldBy, checkAction, unitUpgrade, victoryContenders } from '../core/query.ts';
+import {
+  buildCost,
+  capitalDistance,
+  capitalsHeldBy,
+  checkAction,
+  favourStanding,
+  strengthOf,
+  unitUpgrade,
+  victoryContenders,
+  victoryStandings,
+} from '../core/query.ts';
 import { topologyOf } from '../core/topology.ts';
 
 /** Why the rules would refuse the action, or null if they would accept it. */
@@ -173,4 +183,91 @@ export function researchView(state: GameState, polity: number): { readonly tech:
   let science = 0;
   for (const city of state.cities) if (city !== null && city.owner === polity) science += city.yields.science;
   return { tech: self.research, turns: science <= 0 ? null : Math.max(1, Math.ceil(left / science)) };
+}
+
+export type VictoryKind = 'conquest' | 'science' | 'economic';
+
+export interface VictoryLine {
+  readonly kind: VictoryKind;
+  /** The polity that is ahead, or `NO_POLITY` if nobody can win. Ties go to the lower index, as in the rules. */
+  readonly leader: number;
+  /** Capitals held, project stages done, or cumulative income. */
+  readonly leaderValue: number;
+  /** The player's value, or null in observer mode. */
+  readonly playerValue: number | null;
+  /** What the victory takes: capitals or stages. Null for the Economic victory, which the last turn decides. */
+  readonly needed: number | null;
+}
+
+export interface VictoryView {
+  readonly lines: readonly VictoryLine[];
+  /** Turns until the Economic victory is decided. */
+  readonly turnsLeft: number;
+}
+
+/** For each of the three victories: who leads, and where the player stands. */
+export function victoryView(state: GameState): VictoryView {
+  const standings = victoryStandings(state);
+  const mine = standings.rows.find((row) => row.polity === state.player);
+  const line = (kind: VictoryKind, key: 'capitals' | 'stages' | 'income', needed: number | null): VictoryLine => {
+    let leader = NO_POLITY;
+    let best = -1;
+    for (const row of standings.rows) {
+      if (row[key] > best) {
+        best = row[key];
+        leader = row.polity;
+      }
+    }
+    return { kind, leader, leaderValue: Math.max(0, best), playerValue: mine === undefined ? null : mine[key], needed };
+  };
+  return {
+    lines: [
+      line('conquest', 'capitals', standings.capitalsNeeded),
+      line('science', 'stages', standings.stagesNeeded),
+      line('economic', 'income', null),
+    ],
+    turnsLeft: standings.turnsLeft,
+  };
+}
+
+export interface PolityRow {
+  readonly polity: number;
+  /** Favour with the viewer, or null where there is none: a city-state, or observer mode. */
+  readonly favour: number | null;
+  readonly strength: number;
+  /** Hexes between the capitals, or null in observer mode. */
+  readonly distance: number | null;
+}
+
+export const POLITY_SORTS = ['favour', 'strength', 'distance'] as const;
+export type PolitySort = (typeof POLITY_SORTS)[number];
+
+/** Every living nation and city-state but the viewer, in the order of the map. */
+export function polityRows(state: GameState, viewer: number): PolityRow[] {
+  const rows: PolityRow[] = [];
+  state.polities.forEach((polity, index) => {
+    if (!polity.alive || index === viewer) return;
+    rows.push({
+      polity: index,
+      favour: viewer === NO_POLITY ? null : (favourStanding(state, viewer, index)?.favour ?? null),
+      strength: Math.round(strengthOf(state, index)),
+      distance: viewer === NO_POLITY ? null : capitalDistance(state, viewer, index),
+    });
+  });
+  return rows;
+}
+
+/**
+ * Sorts the list of polities. Rows without a value come last whichever way
+ * the list is sorted; equal rows keep the order of the map.
+ *
+ * @param descending the highest value first.
+ */
+export function sortPolityRows(rows: readonly PolityRow[], key: PolitySort, descending: boolean): PolityRow[] {
+  return [...rows].sort((a, b) => {
+    const x = a[key];
+    const y = b[key];
+    if (x === null || y === null) return Number(x === null) - Number(y === null) || a.polity - b.polity;
+    return (descending ? y - x : x - y) || a.polity - b.polity;
+  });
 }
