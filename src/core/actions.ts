@@ -12,24 +12,27 @@ import {
   FAVOUR,
   FOCUSES,
   IMPROVEMENT_IDS,
+  MOVE_COST,
   PROJECT,
+  ROUGH_FEATURES,
   SETTLER,
   TRADE,
+  UNIQUE_UNIT_IDS,
   UNIT_IDS,
   UPGRADE_GOLD_PER_COST,
   WAR,
   unitDef,
+  unitFor,
 } from './data.ts';
 import type { UnitDef } from './data.ts';
 import {
   assignCitizens,
+  canImprove,
   checkItem,
   deliverItem,
   foundCity,
   hasBuilding,
-  improvementFits,
-  improvementDef,
-  improvesHills,
+  improvableHexes,
   itemCost,
   spawnHex,
 } from './cities.ts';
@@ -63,7 +66,7 @@ import {
   beginWar,
   checkAgreement,
   checkDeal,
-  dealPrice,
+  dealPriceFrom,
   endAgreement,
   endDeal,
   endWar,
@@ -74,6 +77,7 @@ import {
   signAgreement,
   signDeal,
 } from './diplomacy.ts';
+import { inHomeWaters, nationOf, percentOf, unitMatches, unitMods } from './modifiers.ts';
 import { checkSlot, checkUnlock, openPolicies, slotPolicy, unlockPolicy } from './policies.ts';
 import { addFavour, findAgreement, hasAgreement, isCityState } from './relations.ts';
 import { checkResearch, openTechs, ownsResource, upgradeTargetFor } from './tech.ts';
@@ -132,15 +136,38 @@ export function stepCost(ctx: Ctx, unit: Unit, to: number): number {
   if (fromWater && toWater) return 1;
   // Embarking, landing and fording a river take the rest of the turn.
   if (fromWater !== toWater) return unit.moves;
-  // A road carries a unit over rivers and rough ground alike.
-  const road = roadStepCost(ctx, unit.hex, to);
-  if (road !== null) return road;
-  for (let d = 0; d < 6; d++) {
-    if (topo.neighbors[unit.hex * 6 + d] === to && ((map.riverEdges[unit.hex] as number) & (1 << d)) !== 0) {
-      return unit.moves;
+  // What the unit's owner and its type change about moving.
+  let fordRivers = false;
+  let ignoreHills = false;
+  let ignoreRough = false;
+  let ownRoad = Infinity;
+  if (unit.owner !== NO_POLITY) {
+    const def = unitDef(unit.type);
+    for (const modifier of unitMods(ctx, unit.owner, def, 'movement')) {
+      if (!unitMatches(modifier.unit, def)) continue;
+      fordRivers ||= modifier.fordRivers === true;
+      ignoreHills ||= modifier.ignoreHills === true;
+      ignoreRough ||= modifier.ignoreRough === true;
+      if (modifier.roadCost !== undefined) ownRoad = Math.min(ownRoad, modifier.roadCost);
     }
   }
-  return topo.moveCost[to] as number;
+  // A road carries a unit over rivers and rough ground alike.
+  const road = roadStepCost(ctx, unit.hex, to);
+  if (road !== null) {
+    const home = ownerOf(ctx, unit.hex) === unit.owner && ownerOf(ctx, to) === unit.owner;
+    return home ? Math.min(road, ownRoad) : road;
+  }
+  if (!fordRivers) {
+    for (let d = 0; d < 6; d++) {
+      if (topo.neighbors[unit.hex * 6 + d] === to && ((map.riverEdges[unit.hex] as number) & (1 << d)) !== 0) {
+        return unit.moves;
+      }
+    }
+  }
+  let cost = topo.moveCost[to] as number;
+  if (ignoreHills && map.hills[to] === 1) cost -= MOVE_COST.hills;
+  if (ignoreRough && ROUGH_FEATURES.includes(map.feature[to] as number)) cost -= MOVE_COST.roughFeature;
+  return cost;
 }
 
 /** Why `unit` cannot step onto `to`, or null. Movement points are not checked. */
@@ -156,18 +183,18 @@ export function checkStep(ctx: Ctx, unit: Unit, to: number): RejectReason | null
 
 /** True if the unit counts as inside its owner's borders: on its land, or afloat next to it. */
 function inOwnBorders(ctx: Ctx, unit: Unit): boolean {
-  if (ownerOf(ctx, unit.hex) === unit.owner) return true;
-  if (ctx.topo.water[unit.hex] !== 1) return false;
-  for (let d = 0; d < 6; d++) {
-    const hex = ctx.topo.neighbors[unit.hex * 6 + d] as number;
-    if (hex >= 0 && ownerOf(ctx, hex) === unit.owner) return true;
-  }
-  return false;
+  return inHomeWaters(ctx, unit.owner, unit.hex);
 }
 
-/** Gold it costs to upgrade `unit` to `target`. */
+/** Gold it costs to upgrade `unit` to `target`, before what its owner's modifiers change. */
 export function upgradeCost(unit: Unit, target: UnitDef): number {
   return Math.max(0, target.cost - unitDef(unit.type).cost) * UPGRADE_GOLD_PER_COST;
+}
+
+/** Gold it costs its owner to upgrade `unit` to `target`. */
+export function upgradePrice(ctx: Ctx, unit: Unit, target: UnitDef): number {
+  const percent = percentOf(ctx, unit.owner, 'upgradeCost');
+  return Math.max(0, Math.floor((upgradeCost(unit, target) * (100 + percent)) / 100));
 }
 
 /** Why the city cannot make its air strike on `target`, or null. */
@@ -224,7 +251,9 @@ function checkAttack(ctx: Ctx, unit: Unit, target: unknown): RejectReason | null
   const def = unitDef(unit.type);
   if (!isHex(ctx, target)) return 'badHex';
   if (unit.moves <= 0) return 'noMovesLeft';
-  if (def.strength <= 0 || isEmbarked(ctx, unit)) return 'cannotAttack';
+  if (def.strength <= 0) return 'cannotAttack';
+  // From the water a land unit can only storm the shore: a melee onto the land next to it.
+  if (isEmbarked(ctx, unit) && def.range > 0) return 'cannotAttack';
   const city = cityAtHex(ctx, target);
   const enemyCity = city !== null && city.owner !== unit.owner ? city : null;
   const defender = ctx.unitAt.get(target);
@@ -276,7 +305,7 @@ export function validate(ctx: Ctx, action: Action): RejectReason | null {
       if (target === null) return 'noUpgrade';
       if (unit.moves <= 0) return 'noMovesLeft';
       if (!inOwnBorders(ctx, unit)) return 'notInOwnBorders';
-      return polityOf(ctx, polity).gold >= upgradeCost(unit, target) ? null : 'notEnoughGold';
+      return polityOf(ctx, polity).gold >= upgradePrice(ctx, unit, target) ? null : 'notEnoughGold';
     }
     case 'settle': {
       const unit = ownUnit(ctx, polity, action.unit);
@@ -446,7 +475,7 @@ export function execute(ctx: Ctx, action: Action): void {
       const unit = ctx.unitById.get(action.unit) as Unit;
       const target = upgradeTargetFor(ctx, unit);
       if (target === null) return;
-      polityOf(ctx, action.polity).gold -= upgradeCost(unit, target);
+      polityOf(ctx, action.polity).gold -= upgradePrice(ctx, unit, target);
       ctx.events.push({ type: 'unitUpgraded', unit: unit.id, from: unit.type, to: target.id });
       unit.type = target.id;
       unit.moves = 0;
@@ -465,9 +494,15 @@ export function execute(ctx: Ctx, action: Action): void {
       assignCitizens(ctx, city);
       return;
     }
-    case 'queueBuild':
-      (state.cities[action.city] as City).queue.push({ ...action.item });
+    case 'queueBuild': {
+      // A generic unit a nation replaces is queued as its unique unit.
+      const item =
+        action.item.kind === 'unit'
+          ? { ...action.item, unit: unitFor(nationOf(ctx, action.polity), action.item.unit) }
+          : { ...action.item };
+      (state.cities[action.city] as City).queue.push(item);
       return;
+    }
     case 'unqueueBuild': {
       const city = state.cities[action.city] as City;
       city.queue.splice(action.index, 1);
@@ -647,13 +682,11 @@ export function legalActions(ctx: Ctx, polity: number): Action[] {
     }
     const items: BuildItem[] = [];
     for (const unit of UNIT_IDS) items.push({ kind: 'unit', unit });
+    for (const unit of UNIQUE_UNIT_IDS) items.push({ kind: 'unit', unit });
     for (const building of BUILDING_IDS) items.push({ kind: 'building', building });
     for (const improvement of IMPROVEMENT_IDS) {
-      const def = improvementDef(improvement);
-      if (def === undefined) continue;
-      const onHills = improvesHills(ctx, def, polity);
-      for (const hex of at(topo.workHexes, city.zone)) {
-        if (improvementFits(ctx, def, hex, onHills)) items.push({ kind: 'improvement', improvement, hex });
+      for (const hex of improvableHexes(ctx, city)) {
+        if (canImprove(ctx, polity, improvement, hex)) items.push({ kind: 'improvement', improvement, hex });
       }
     }
     items.push({ kind: 'project', project: PROJECT.id });
@@ -699,7 +732,8 @@ export function legalActions(ctx: Ctx, polity: number): Action[] {
       for (const seller of [polity, target]) {
         if (!ownsResource(ctx, seller, resource.id)) continue;
         offer({
-          type: 'proposeDeal', polity, target, seller, resource: resource.id, goldPerTurn: dealPrice(resource.id),
+          type: 'proposeDeal', polity, target, seller, resource: resource.id,
+          goldPerTurn: dealPriceFrom(ctx, seller, resource.id),
         });
       }
     }

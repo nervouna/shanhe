@@ -16,7 +16,6 @@ import {
   FAVOUR,
   FOCUSES,
   IMPROVEMENT_IDS,
-  POLICY,
   POLICY_IDS,
   PROJECT,
   TECH_IDS,
@@ -34,6 +33,7 @@ import type {
   Yields,
 } from '../core/data.ts';
 import { STATE_VERSION, saveGame } from '../core/game.ts';
+import { policySlotsFor } from '../core/policies.ts';
 import type {
   Agreement,
   BuildItem,
@@ -215,7 +215,7 @@ function indexed<T>(value: unknown, max: number, what: string, entry: (value: un
   return out;
 }
 
-function polity(value: unknown, index: number, kind: PolityKind, bounds: Bounds): PolityState {
+function polity(value: unknown, index: number, kind: PolityKind, id: string, bounds: Bounds): PolityState {
   const data = record(value, 'polity');
   const techs = list(data.techs, 'techs', TECH_IDS.length).map((tech) => oneOf<TechId>(tech, TECH_IDS, 'tech'));
   if (new Set(techs).size !== techs.length) fail('tech listed twice');
@@ -229,7 +229,8 @@ function polity(value: unknown, index: number, kind: PolityKind, bounds: Bounds)
   );
   if (new Set(policies).size !== policies.length) fail('policy listed twice');
   if (!nation && policies.length > 0) fail('policies of a polity that has none');
-  const slotCount = nation ? (POLICY.slotsByEra[era] as number) : 0;
+  // A nation has the slots of its era, and those its kit adds.
+  const slotCount = nation ? policySlotsFor(id, era) : 0;
   const slots = list(data.slots, 'policy slots', slotCount).map((id) =>
     id === null ? null : oneOf<PolicyId>(id, policies, 'slotted policy'),
   );
@@ -282,6 +283,7 @@ function polity(value: unknown, index: number, kind: PolityKind, bounds: Bounds)
     settlersBuilt: int(data.settlersBuilt, 0, MAX_TURNS, 'settlers built'),
     capital: int(data.capital, -1, bounds.zones - 1, 'capital'),
     aiTarget: int(data.aiTarget, -1, bounds.zones - 1, 'ai target'),
+    cityLostOn: int(data.cityLostOn, 0, MAX_TURNS, 'city lost on'),
   };
 }
 
@@ -335,6 +337,8 @@ function stats(value: unknown): GameStats {
     alliancesFormed: int(data.alliancesFormed, 0, BIG, 'stats'),
     vassalsMade: int(data.vassalsMade, 0, BIG, 'stats'),
     routesEstablished: int(data.routesEstablished, 0, BIG, 'stats'),
+    seaInvasions: int(data.seaInvasions, 0, BIG, 'stats'),
+    navalBattles: int(data.navalBattles, 0, BIG, 'stats'),
   };
 }
 
@@ -507,7 +511,10 @@ function rebuild(data: Json, map: MapData): GameState {
 
   const saved = list(data.polities, 'polities', bounds.polities);
   if (saved.length !== bounds.polities) fail('polity count');
-  const polities = saved.map((entry, index) => polity(entry, index, (map.polities[index] as MapData['polities'][number]).kind, bounds));
+  const polities = saved.map((entry, index) => {
+    const listed = map.polities[index] as MapData['polities'][number];
+    return polity(entry, index, listed.kind, listed.id, bounds);
+  });
   const zoneOwner = list(data.zoneOwner, 'zone owners', bounds.zones).map((entry) =>
     int(entry, -1, bounds.polities - 1, 'zone owner'),
   );

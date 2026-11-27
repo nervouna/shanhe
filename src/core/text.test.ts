@@ -93,8 +93,10 @@ describe('text keys of the rules', () => {
   it('are appended in one block at the end of each dictionary, in the same order', () => {
     const zh = Object.keys(dictionaries.zh);
     const en = Object.keys(dictionaries.en);
+    // The block of these rules ends where the block of the nation kits (`kits.test.ts`) begins.
     const first = zh.indexOf('policy.wellField');
+    const next = zh.indexOf('trait.yan');
     expect(zh.slice(first)).toEqual(en.slice(en.indexOf('policy.wellField')));
-    expect([...zh.slice(first)].sort()).toEqual([...keys].sort());
+    expect([...zh.slice(first, next)].sort()).toEqual([...keys].sort());
   });
 });

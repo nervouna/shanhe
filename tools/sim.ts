@@ -8,9 +8,12 @@
  * 64 polities, and a path loads a map written by the pipeline (the `.bin`
  * files are read from the same folder). `--seeds` takes a range (`1-10`) or a
  * list (`1,4,9`). Prints the map, one line per game, then a summary: how many
- * games ended in each kind of victory, when the first major nation entered
- * each era, and how much diplomacy and trade there was (alliances formed,
- * vassals made, trade routes at the end, policies unlocked by the winner).
+ * games ended in each kind of victory, who won each game, when the first
+ * major nation entered each era, how much diplomacy and trade there was
+ * (alliances formed, vassals made, trade routes at the end, policies unlocked
+ * by the winner), and how much of the fighting crossed the sea (sea
+ * invasions: cities taken on a landmass where the captor held none; naval
+ * battles: fights with a ship on either side).
  */
 
 import { readFileSync } from 'node:fs';
@@ -87,6 +90,13 @@ interface Outcome {
   routes: number;
   /** Policy cards the winner had unlocked. */
   policies: number;
+  seed: number;
+  /** The winner's English and Chinese names. */
+  winner: string;
+  /** Cities taken on a landmass where the captor held none. */
+  seaInvasions: number;
+  /** Fights with a ship on either side. */
+  navalBattles: number;
 }
 
 function playGame(seed: number, announce: boolean): Outcome {
@@ -129,6 +139,7 @@ function playGame(seed: number, announce: boolean): Outcome {
       `on turn ${result.turn}, cities captured: ${state.stats.citiesCaptured}, ` +
       `wars declared: ${state.stats.warsDeclared}, polities annexed: ${state.stats.politiesAnnexed}, ` +
       `alliances formed: ${state.stats.alliancesFormed}, vassals made: ${state.stats.vassalsMade}, ` +
+      `sea invasions: ${state.stats.seaInvasions}, naval battles: ${state.stats.navalBattles}, ` +
       `trade routes at the end: ${state.routes.length}, policies unlocked by the leader: ${policies}, ` +
       `first major enters: ${eras.join(', ')}, ` +
       `techs of the living majors: ${techs[0] ?? 0} to ${techs[techs.length - 1] ?? 0}, ` +
@@ -142,6 +153,10 @@ function playGame(seed: number, announce: boolean): Outcome {
     vassals: state.stats.vassalsMade,
     routes: state.routes.length,
     policies,
+    seed,
+    winner: winner === undefined ? '?' : `${winner.nameEn} ${winner.nameZh}`,
+    seaInvasions: state.stats.seaInvasions,
+    navalBattles: state.stats.navalBattles,
   };
 }
 
@@ -151,6 +166,7 @@ console.log(
   `victories in ${outcomes.length} game(s): ` +
     VICTORIES.map((kind) => `${kind} ${outcomes.filter((outcome) => outcome.kind === kind).length}`).join(', '),
 );
+console.log(`winners: ${outcomes.map((outcome) => `seed ${outcome.seed} ${outcome.winner} (${outcome.kind})`).join('; ')}`);
 const spans: string[] = [];
 for (let era = 1; era < ERAS.length; era++) {
   const reached = outcomes.map((outcome) => outcome.eraTurns[era] ?? 0).filter((turn) => turn > 0).sort((a, b) => a - b);
@@ -173,6 +189,11 @@ console.log(
     `vassals made: ${range(outcomes.map((outcome) => outcome.vassals))}; ` +
     `trade routes at the end: ${range(outcomes.map((outcome) => outcome.routes))}; ` +
     `policies unlocked by the leader: ${range(outcomes.map((outcome) => outcome.policies))}`,
+);
+const invaded = outcomes.filter((outcome) => outcome.seaInvasions > 0).length;
+console.log(
+  `sea invasions: ${range(outcomes.map((outcome) => outcome.seaInvasions))}, in ${invaded} of ${outcomes.length} game(s); ` +
+    `naval battles: ${range(outcomes.map((outcome) => outcome.navalBattles))}`,
 );
 const lively = outcomes.filter((outcome) => outcome.alliances > 0 && outcome.vassals > 0 && outcome.routes > 0).length;
 console.log(`games with alliances, vassals and trade routes all above zero: ${lively} of ${outcomes.length}`);

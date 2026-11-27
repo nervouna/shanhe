@@ -5,23 +5,25 @@ import { Terrain } from '../shared/mapData.ts';
 import {
   BUILDINGS,
   CITY_STATE,
-  EXCLUSIVE_PORTS,
   IMPROVEMENTS,
   PILLAGE,
   ROADS,
   TECHS,
   TRADE,
+  baseBuilding,
   unitDef,
 } from './data.ts';
+import { KIT, portOwner } from './kits.ts';
 import { assignCitizens } from './cities.ts';
 import { addInfluence, suzerainCount } from './cityStates.ts';
 import { hexesApart } from './combat.ts';
 import { at, atWar, isEmbarked, ownerOf, polityOf } from './context.ts';
 import type { Ctx } from './context.ts';
-import { policySum } from './policies.ts';
+import { cityMods, modsOf, percentOf, routeMatches, unitMatches } from './modifiers.ts';
 import { hasAgreement, isCityState } from './relations.ts';
 import { isStrategic } from './tech.ts';
 import { NO_POLITY } from './types.ts';
+import type { ModifierOf } from './mods.ts';
 import type { City, EndReason, RejectReason, RouteTarget, TradeRoute, Unit } from './types.ts';
 
 // ------------------------------------------------------------------ slots
@@ -33,20 +35,28 @@ import type { City, EndReason, RejectReason, RouteTarget, TradeRoute, Unit } fro
 export function routeSlots(ctx: Ctx, polity: number): number {
   const self = polityOf(ctx, polity);
   let slots = TRADE.baseRoutes + self.tradeRoutes;
-  const counted = new Set<string>();
+  // One building of each kind counts: the one that adds most, where a replacement stands beside the plain one.
+  const counted = new Map<string, number>();
   for (const city of ctx.state.cities) {
     if (city === null || city.owner !== polity) continue;
     for (const id of city.buildings) {
-      if (counted.has(id)) continue;
-      counted.add(id);
-      slots += BUILDINGS[id].tradeRoutes;
+      const routes = BUILDINGS[id].tradeRoutes;
+      if (routes === 0) continue;
+      const kind = baseBuilding(id);
+      counted.set(kind, Math.max(counted.get(kind) ?? 0, routes));
     }
   }
+  for (const routes of counted.values()) slots += routes;
   return slots + CITY_STATE.commerceRoutes * suzerainCount(ctx, polity, 'commerce');
 }
 
 export function routesOf(ctx: Ctx, polity: number): TradeRoute[] {
   return ctx.state.routes.filter((route) => route.owner === polity);
+}
+
+/** Longest land path of a route of `owner`, in hexes. */
+export function landRange(ctx: Ctx, owner: number): number {
+  return Math.floor((TRADE.landRange * (100 + percentOf(ctx, owner, 'routeRange'))) / 100);
 }
 
 // ------------------------------------------------------------------ paths
@@ -75,7 +85,8 @@ function trace(previous: Map<number, number>, end: number): number[] {
  */
 function landPath(ctx: Ctx, owner: number, start: number, goals: ReadonlySet<number>): number[] | null {
   const { topo, state } = ctx;
-  const limit = TRADE.landRange * TRADE.offRoadFactor;
+  const range = landRange(ctx, owner);
+  const limit = range * TRADE.offRoadFactor;
   const cost = new Map<number, number>([[start, 0]]);
   const previous = new Map<number, number>([[start, -1]]);
   const buckets: number[][] = [[start]];
@@ -86,7 +97,7 @@ function landPath(ctx: Ctx, owner: number, start: number, goals: ReadonlySet<num
       if (cost.get(hex) !== here) continue;
       if (goals.has(hex) && hex !== start) {
         const path = trace(previous, hex);
-        return path.length - 1 <= TRADE.landRange ? path : null;
+        return path.length - 1 <= range ? path : null;
       }
       for (let d = 0; d < 6; d++) {
         const next = topo.neighbors[hex * 6 + d] as number;
@@ -163,7 +174,7 @@ export function findRoutePath(ctx: Ctx, owner: number, from: number, to: RouteTa
   if (to.kind === 'port') {
     const port = ctx.map.offMapPorts[to.port];
     if (port === undefined) return null;
-    if (hexesApart(ctx, start, port.hex) > Math.max(TRADE.landRange, TRADE.seaRange) + 1) return null;
+    if (hexesApart(ctx, start, port.hex) > Math.max(landRange(ctx, owner), TRADE.seaRange) + 1) return null;
     if (port.kind === 'land') {
       const goals = around(ctx, port.hex, false);
       if (goals.has(start)) return { path: [start], sea: false };
@@ -176,7 +187,7 @@ export function findRoutePath(ctx: Ctx, owner: number, from: number, to: RouteTa
   const end = ctx.map.zones[to.zone]?.siteHex;
   if (end === undefined) return null;
   const apart = hexesApart(ctx, start, end);
-  if (apart <= TRADE.landRange) {
+  if (apart <= landRange(ctx, owner)) {
     const path = landPath(ctx, owner, start, new Set([end]));
     if (path !== null) return { path, sea: false };
   }
@@ -215,19 +226,45 @@ export function routeIncome(ctx: Ctx, route: TradeRoute): number {
     const here = zoneSpecialties(ctx, from.zone);
     const there = zoneSpecialties(ctx, to.zone);
     const different = here.filter((id) => !there.includes(id)).length + there.filter((id) => !here.includes(id)).length;
-    gold += TRADE.specialtyGold * different;
+    gold += Math.floor((TRADE.specialtyGold * different * (100 + percentOf(ctx, route.owner, 'specialtySale'))) / 100);
     if (to.owner === route.owner) {
       gold = Math.floor((gold * TRADE.domesticPercent) / 100);
-    } else {
-      if (hasAgreement(ctx, 'tradePact', route.owner, to.owner)) {
-        gold = Math.floor((gold * (100 + TRADE.pactPercent)) / 100);
-      }
-      const multiplier = policySum(ctx, route.owner, 'allyRouteMultiplier');
-      if (multiplier > 0 && hasAgreement(ctx, 'alliance', route.owner, to.owner)) gold *= multiplier;
+    } else if (hasAgreement(ctx, 'tradePact', route.owner, to.owner)) {
+      gold = Math.floor((gold * (100 + TRADE.pactPercent)) / 100);
     }
   }
-  if (route.sea) gold += policySum(ctx, route.owner, 'seaRouteGold');
-  return gold;
+  // Modifiers of the owner and of the buildings of the city it starts from: multipliers, then percentages, then flat gold.
+  const modifiers = from.owner === route.owner ? cityMods(ctx, from, 'routeGold') : modsOf(ctx, route.owner, 'routeGold');
+  let percent = 0;
+  let flat = 0;
+  for (const modifier of modifiers) {
+    if (!routeMatches(ctx, modifier.route, route)) continue;
+    if (modifier.multiplier !== undefined) gold *= modifier.multiplier;
+    percent += modifier.percent ?? 0;
+    if (modifier.gold === undefined) continue;
+    if (modifier.perRiverHexes === undefined) {
+      flat += modifier.gold;
+    } else {
+      let rivers = 0;
+      for (const hex of route.path) if (ctx.map.riverEdges[hex] !== 0) rivers++;
+      flat += modifier.gold * Math.min(KIT.maxRiverGold, Math.floor(rivers / modifier.perRiverHexes));
+    }
+  }
+  if (percent !== 0) gold = Math.floor((gold * (100 + percent)) / 100);
+  return gold + flat;
+}
+
+/** Percentage modifiers add to what `unit` gets for pillaging a route or an improvement. */
+function pillagePercent(ctx: Ctx, unit: Unit, what: 'route' | 'improvement'): number {
+  const def = unitDef(unit.type);
+  let percent = 0;
+  for (const modifier of modsOf(ctx, unit.owner, 'pillage')) {
+    if ((modifier.what === undefined || modifier.what === what) && unitMatches(modifier.unit, def)) percent += modifier.percent;
+  }
+  for (const ability of def.abilities) {
+    if (ability.type === 'pillage' && (ability.what === undefined || ability.what === what)) percent += ability.percent;
+  }
+  return percent;
 }
 
 // ------------------------------------------------------- establish and end
@@ -251,8 +288,9 @@ export function checkRouteTarget(ctx: Ctx, polity: number, from: number, to: unk
     if (port === undefined) return 'badTarget';
     const self = polityOf(ctx, polity);
     if (port.kind === 'land' ? !self.landPorts : !self.seaExits) return 'portClosed';
-    const reserved = EXCLUSIVE_PORTS[port.nameEn];
-    return reserved !== undefined && reserved !== at(ctx.map.polities, polity).id ? 'portClosed' : null;
+    // A port a nation's trait keeps to itself (`EXCLUSIVE_PORTS` lists the same ports).
+    const reserved = portOwner(port.nameEn);
+    return reserved !== null && reserved !== at(ctx.map.polities, polity).id ? 'portClosed' : null;
   }
   return 'badTarget';
 }
@@ -306,6 +344,16 @@ export function routesAfterCapture(ctx: Ctx, city: City): void {
   }
 }
 
+/** True if the route's path comes within `range` hexes of a city of `polity`. */
+function passesNear(ctx: Ctx, route: TradeRoute, polity: number, range: number): boolean {
+  for (const city of ctx.state.cities) {
+    if (city === null || city.owner !== polity) continue;
+    const site = at(ctx.map.zones, city.zone).siteHex;
+    for (const hex of route.path) if (hexesApart(ctx, hex, site) <= range) return true;
+  }
+  return false;
+}
+
 /**
  * One turn of trade: routes that lost a city or a slot end, the others pay
  * their owner and add to its influence with the city-state they reach.
@@ -315,6 +363,10 @@ export function processRoutes(ctx: Ctx): number[] {
   const { state } = ctx;
   const income: number[] = state.polities.map(() => 0);
   const kept: number[] = state.polities.map(() => 0);
+  const tolls: [number, ModifierOf<'routeToll'>][] = [];
+  state.polities.forEach((polity, index) => {
+    if (polity.alive) for (const modifier of modsOf(ctx, index, 'routeToll')) tolls.push([index, modifier]);
+  });
   for (const route of [...state.routes]) {
     const from = state.cities[route.from];
     const to = route.toCity < 0 ? null : state.cities[route.toCity];
@@ -329,6 +381,15 @@ export function processRoutes(ctx: Ctx): number[] {
     } else {
       kept[route.owner] = at(kept, route.owner) + 1;
       route.income = routeIncome(ctx, route);
+      // Tolls: polities that tax what passes their cities take their share first.
+      for (const [collector, toll] of tolls) {
+        if (collector === route.owner || atWar(ctx, collector, route.owner)) continue;
+        if (toll.sea === true && !route.sea) continue;
+        if (!passesNear(ctx, route, collector, toll.range)) continue;
+        const share = Math.floor((route.income * toll.percent) / 100);
+        route.income -= share;
+        income[collector] = at(income, collector) + share;
+      }
       income[route.owner] = at(income, route.owner) + route.income;
       if (to !== null && to.owner !== route.owner && isCityState(ctx, to.owner)) {
         addInfluence(ctx, to.owner, route.owner, CITY_STATE.influencePerRoute);
@@ -385,7 +446,11 @@ export function pillage(ctx: Ctx, unit: Unit): void {
   unit.status = 'ready';
   const improvement = state.improvements[hex];
   if (improvement !== undefined && pillageableImprovement(ctx, unit.owner, hex)) {
-    const gold = Math.floor((IMPROVEMENTS[improvement].cost * PILLAGE.goldPercentOfCost) / 100);
+    const gold = Math.floor(
+      (Math.floor((IMPROVEMENTS[improvement].cost * PILLAGE.goldPercentOfCost) / 100) *
+        (100 + pillagePercent(ctx, unit, 'improvement'))) /
+        100,
+    );
     state.pillaged[hex] = state.turn + PILLAGE.turns - 1;
     self.gold += gold;
     self.grossIncome += gold;
@@ -397,7 +462,9 @@ export function pillage(ctx: Ctx, unit: Unit): void {
     return;
   }
   for (const route of pillageableRoutes(ctx, unit.owner, hex)) {
-    const gold = routeIncome(ctx, route) * TRADE.pillageIncomeTurns;
+    const gold = Math.floor(
+      (routeIncome(ctx, route) * TRADE.pillageIncomeTurns * (100 + pillagePercent(ctx, unit, 'route'))) / 100,
+    );
     route.pillagedUntil = state.turn + TRADE.pillageTurns - 1;
     route.income = 0;
     self.gold += gold;

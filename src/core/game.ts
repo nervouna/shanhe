@@ -6,6 +6,7 @@
  * No function here modifies a state it is given: each returns a new one.
  */
 
+import { hexRange, indexToOffset } from '../shared/hex.ts';
 import { NO_ZONE } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
 import { runAi } from './ai.ts';
@@ -19,15 +20,18 @@ import {
   CITY_STATE_TYPE_BY_ID,
   DEFAULT_MAJOR_NAMES_ZH,
   GAME_TURNS,
-  POLICY,
   HEXES_PER_TRIBE,
   MAJOR_COUNT,
   ROSTER,
+  unitFor,
   TRIBE,
   noYields,
   policyCost,
   unitDef,
 } from './data.ts';
+import { KIT } from './kits.ts';
+import { visionRange } from './modifiers.ts';
+import { policySlotsFor } from './policies.ts';
 import { hasResource, specialtiesOf, techCost, visibleResource, worldEra } from './tech.ts';
 import { findRoutePath, routeSlots } from './trade.ts';
 import type { RoutePath } from './trade.ts';
@@ -46,13 +50,14 @@ import type {
   MutableGameState,
   PolityState,
   RouteTarget,
+  Unit,
 } from './types.ts';
 
 export type * from './types.ts';
 export { NO_POLITY } from './types.ts';
 
 /** Version of the state format. `loadGame` rejects any other. */
-export const STATE_VERSION = 3;
+export const STATE_VERSION = 4;
 
 function polityIndex(map: MapData, id: string): number {
   const index = map.polities.findIndex((polity) => polity.id === id);
@@ -93,7 +98,7 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
     culture: 0,
     cultureProgress: 0,
     policies: [],
-    slots: polity.kind === 'nation' ? Array.from({ length: at(POLICY.slotsByEra, 0) }, () => null) : [],
+    slots: polity.kind === 'nation' ? Array.from({ length: policySlotsFor(polity.id, 0) }, () => null) : [],
     freeSwaps: 0,
     swapReadyOn: 0,
     overlord: NO_POLITY,
@@ -121,6 +126,7 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
     settlersBuilt: 0,
     capital: -1,
     aiTarget: -1,
+    cityLostOn: 0,
   }));
   const state: MutableGameState = {
     map,
@@ -157,6 +163,8 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
       alliancesFormed: 0,
       vassalsMade: 0,
       routesEstablished: 0,
+      seaInvasions: 0,
+      navalBattles: 0,
     },
     result: null,
   };
@@ -167,7 +175,7 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
     if (polity.kind === 'wastelandRegion' || polity.capitalZone === NO_ZONE) return;
     const city = foundCity(ctx, polity.capitalZone, index);
     if (polity.kind === 'cityState') city.buildings.push('walls');
-    const garrison = addUnit(ctx, at(ROSTER.infantry, 0), index, at(map.zones, polity.capitalZone).siteHex);
+    const garrison = addUnit(ctx, unitFor(polity.id, at(ROSTER.infantry, 0)), index, at(map.zones, polity.capitalZone).siteHex);
     garrison.status = 'fortified';
     assignCitizens(ctx, city);
   });
@@ -269,6 +277,35 @@ export function buyPrice(state: GameState, zone: number, item: BuildItem): numbe
 /** The different specialties (`MapResource.id`) `polity` has, on its own land or bought. */
 export function politySpecialties(state: GameState, polity: number): string[] {
   return specialtiesOf(createCtx(state as MutableGameState), polity);
+}
+
+/**
+ * The hexes `polity` sees: 1 where one of its units or cities is within
+ * sight, 0 elsewhere. The rules hide nothing by it; it is there for a fog of
+ * war to draw.
+ */
+export function visibleHexes(state: GameState, polity: number): Uint8Array {
+  const ctx = createCtx(state as MutableGameState);
+  const { map } = state;
+  const seen = new Uint8Array(map.width * map.height);
+  const reveal = (hex: number, range: number): void => {
+    for (const offset of hexRange(indexToOffset(hex, map.width), range)) {
+      if (offset.col < 0 || offset.col >= map.width || offset.row < 0 || offset.row >= map.height) continue;
+      seen[offset.row * map.width + offset.col] = 1;
+    }
+  };
+  for (const unit of state.units) if (unit.owner === polity) reveal(unit.hex, visionRange(ctx, unit as Unit));
+  for (const city of state.cities) {
+    if (city !== null && city.owner === polity) reveal(at(map.zones, city.zone).siteHex, KIT.cityVision);
+  }
+  return seen;
+}
+
+/** How many hexes away the unit with the id sees, or 0 if there is no such unit. */
+export function unitVision(state: GameState, unit: number): number {
+  const ctx = createCtx(state as MutableGameState);
+  const found = ctx.unitById.get(unit);
+  return found === undefined ? 0 : visionRange(ctx, found);
 }
 
 // ------------------------------------------------------------ save and load
