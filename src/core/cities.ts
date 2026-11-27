@@ -4,15 +4,22 @@ import {
   BUILDINGS,
   CITY,
   CITY_CENTRE_YIELD,
+  CITY_STATE,
+  COMBAT,
   FOCUS_WEIGHTS,
   IMPROVEMENTS,
+  MODERN_LAND_ERA,
   PROJECT,
   SETTLER,
   SETTLER_COST_STEP_PERCENT,
+  SPECIALTY,
   UNITS,
   noYields,
   unitDef,
 } from './data.ts';
+import { suzerainCount } from './cityStates.ts';
+import { policySum, slotted } from './policies.ts';
+import { partnersIn } from './relations.ts';
 import type { BuildingDef, Focus, ImprovementDef, UnitDef, Yields } from './data.ts';
 import {
   addUnit,
@@ -24,7 +31,7 @@ import {
   terrainAllows,
 } from './context.ts';
 import type { Ctx } from './context.ts';
-import { checkUnit, knows, researches } from './tech.ts';
+import { checkUnit, knows, researches, specialtiesOf } from './tech.ts';
 import type { BuildItem, City, RejectReason, Unit } from './types.ts';
 
 export function buildingDef(id: string): BuildingDef | undefined {
@@ -59,6 +66,7 @@ interface HexScore {
 function scoreHexes(ctx: Ctx, city: City, focus: Focus): HexScore[] {
   const { topo, state } = ctx;
   const weights = FOCUS_WEIGHTS[focus];
+  const cards = slotted(ctx, city.owner);
   let waterFood = 0;
   let waterProduction = 0;
   let waterGold = 0;
@@ -74,11 +82,19 @@ function scoreHexes(ctx: Ctx, city: City, focus: Focus): HexScore[] {
     let production = topo.baseProduction[hex] as number;
     let gold = topo.baseGold[hex] as number;
     const improvement = state.improvements[hex];
-    if (improvement !== undefined) {
+    // A pillaged improvement yields nothing until it is repaired.
+    if (improvement !== undefined && (state.pillaged[hex] ?? 0) < state.turn) {
       const bonus = IMPROVEMENTS[improvement].yields;
       food += bonus.food;
       production += bonus.production;
       gold += bonus.gold;
+      for (const card of cards) {
+        const extra = card.improvementYields?.[improvement];
+        if (extra === undefined) continue;
+        food += extra.food ?? 0;
+        production += extra.production ?? 0;
+        gold += extra.gold ?? 0;
+      }
     }
     if (topo.water[hex] === 1) {
       food += waterFood;
@@ -148,6 +164,30 @@ export function assignCitizens(ctx: Ctx, city: City): void {
       percent[key] += def.percent[key] ?? 0;
     }
   }
+
+  // Policy cards.
+  const owner = city.owner;
+  const capital = polityOf(ctx, owner).capital === city.zone;
+  for (const card of slotted(ctx, owner)) {
+    if (card.popPerScience !== undefined) yields.science += Math.floor(city.pop / card.popPerScience);
+    for (const key of YIELD_KEYS) {
+      if (capital) yields[key] += card.capitalYields?.[key] ?? 0;
+      else percent[key] += card.nonCapitalPercent?.[key] ?? 0;
+      percent[key] += card.cityPercent?.[key] ?? 0;
+      for (const id of city.buildings) {
+        yields[key] += card.buildingYields?.[id]?.[key] ?? 0;
+        percent[key] += card.buildingPercent?.[id]?.[key] ?? 0;
+      }
+    }
+  }
+  // Specialties, trade pacts and the city-states the owner is suzerain of.
+  yields.gold += SPECIALTY.goldPerCity * Math.min(SPECIALTY.max, specialtiesOf(ctx, owner).length);
+  percent.gold += tradePactGoldPercent(ctx, owner);
+  percent.gold += CITY_STATE.financeGoldPercent * suzerainCount(ctx, owner, 'finance');
+  if (capital) {
+    yields.culture += CITY_STATE.cultureInCapital * suzerainCount(ctx, owner, 'culture');
+    percent.production += CITY_STATE.industryCapitalProductionPercent * suzerainCount(ctx, owner, 'industry');
+  }
   for (const key of YIELD_KEYS) yields[key] = Math.floor((yields[key] * (100 + percent[key])) / 100);
 
   city.morale = cityMorale(ctx, city);
@@ -160,6 +200,34 @@ export function assignCitizens(ctx: Ctx, city: City): void {
 }
 
 export const YIELD_KEYS = ['food', 'production', 'gold', 'science', 'culture'] as const;
+
+/**
+ * Percentage of city gold the polity gets from the Treaty ports card: its
+ * own card when it has a trade pact, or that of a trade-pact partner. The
+ * bonus counts once however many pacts carry it.
+ */
+export function tradePactGoldPercent(ctx: Ctx, polity: number): number {
+  const partners = partnersIn(ctx, 'tradePact', polity);
+  if (partners.length === 0) return 0;
+  let percent = policySum(ctx, polity, 'tradePactGoldPercent');
+  for (const partner of partners) percent = Math.max(percent, policySum(ctx, partner, 'tradePactGoldPercent'));
+  return percent;
+}
+
+/** Production the city puts into `item` this turn: its production, plus what its owner's cards add for the kind of item. */
+export function productionTowards(ctx: Ctx, city: City, item: BuildItem): number {
+  let percent = 0;
+  if (item.kind === 'unit') {
+    const def = UNITS[item.unit];
+    percent += policySum(ctx, city.owner, 'unitProductionPercent');
+    if (def !== undefined && def.domain === 'land' && def.strength > 0 && def.era >= MODERN_LAND_ERA) {
+      percent += policySum(ctx, city.owner, 'modernLandUnitProductionPercent');
+    }
+  } else if (item.kind === 'building') {
+    percent += policySum(ctx, city.owner, 'buildingProductionPercent');
+  }
+  return Math.floor((city.yields.production * (100 + percent)) / 100);
+}
 
 // ----------------------------------------------------------- build items
 
@@ -338,15 +406,23 @@ function siteFree(ctx: Ctx, zone: number, owner: number): boolean {
   return unit === undefined || unit.owner === owner;
 }
 
-/** Finishes the item. Returns false if it has to wait (no room for the unit, site occupied). */
-function completeItem(ctx: Ctx, city: City, item: BuildItem): boolean {
+/**
+ * Finishes the item, built or bought. Returns false if it has to wait (no
+ * room for the unit, site occupied).
+ */
+export function deliverItem(ctx: Ctx, city: City, item: BuildItem): boolean {
   switch (item.kind) {
     case 'unit': {
       const def = unitDef(item.unit);
       const hex = spawnHex(ctx, city, def);
       if (hex < 0) return false;
-      addUnit(ctx, def.id, city.owner, hex);
+      const unit = addUnit(ctx, def.id, city.owner, hex);
       if (def.id === SETTLER) polityOf(ctx, city.owner).settlersBuilt++;
+      if (def.domain === 'sea') {
+        // Ships of the suzerain of a naval city-state start with experience.
+        unit.xp = CITY_STATE.navalXp * suzerainCount(ctx, city.owner, 'naval');
+        while (unit.level < COMBAT.levelXp.length && unit.xp >= at(COMBAT.levelXp, unit.level)) unit.level++;
+      }
       return true;
     }
     case 'building':
@@ -395,9 +471,9 @@ export function processCity(ctx: Ctx, city: City): void {
   while (city.queue.length > 0 && checkItem(ctx, city, at(city.queue, 0), true) !== null) city.queue.shift();
   const item = city.queue[0];
   if (item !== undefined) {
-    city.progress += city.yields.production;
+    city.progress += productionTowards(ctx, city, item);
     const cost = itemCost(ctx, city, item);
-    if (city.progress >= cost && completeItem(ctx, city, item)) {
+    if (city.progress >= cost && deliverItem(ctx, city, item)) {
       city.progress -= cost;
       city.queue.shift();
       ctx.events.push({ type: 'cityBuilt', city: city.zone, item });

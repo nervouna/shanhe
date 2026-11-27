@@ -79,7 +79,7 @@ const TURN_KEY = 64;
 
 interface Search {
   /** Per hex: the best key found, or -1. */
-  readonly key: Int32Array;
+  readonly key: Float64Array;
   /** Per hex: the hex it was reached from. */
   readonly from: Int32Array;
   /** The hex the search stopped on, or -1. */
@@ -96,7 +96,8 @@ interface Search {
  */
 function search(ctx: Ctx, unit: Unit, done: (hex: number) => boolean, maxTurn: number): Search {
   const count = ctx.topo.count;
-  const key = new Int32Array(count).fill(-1);
+  // Movement points come in fractions on roads and railways, so the keys are not whole numbers.
+  const key = new Float64Array(count).fill(-1);
   const from = new Int32Array(count).fill(-1);
   const full = unitDef(unit.type).moves;
   const probe: Unit = { ...unit };

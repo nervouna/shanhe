@@ -21,6 +21,7 @@ import {
 import type { TechId, UnitDef } from './data.ts';
 import { at, atWar, polityOf, seaLevelOf } from './context.ts';
 import type { Ctx } from './context.ts';
+import { growSlots } from './policies.ts';
 import { NO_POLITY } from './types.ts';
 import type { GameState, RejectReason, Unit } from './types.ts';
 
@@ -111,14 +112,50 @@ export function learnTech(ctx: Ctx, polity: number, tech: TechId): void {
     const known = self.techs.filter((id) => TECHS[id].era === self.era).length;
     if (known < RESEARCH.techsToAdvance) break;
     self.era++;
+    growSlots(self, at(ctx.map.polities, polity).kind === 'nation');
     ctx.events.push({ type: 'eraEntered', polity, era: self.era });
   }
 }
 
 // -------------------------------------------------------------- resources
 
-/** True if a source of the resource lies in the polity's territory and the polity can see it. */
+/**
+ * True if the polity can draw on the resource: a source it owns (see
+ * {@link ownsResource}), or a deal in force that buys it from somebody.
+ */
 export function hasResource(ctx: Ctx, polity: number, resource: string): boolean {
+  if (polity === NO_POLITY) return false;
+  if (ownsResource(ctx, polity, resource)) return true;
+  return ctx.state.deals.some((deal) => deal.buyer === polity && deal.resource === resource);
+}
+
+/** True for one of the five strategic resources; every other resource is a specialty. */
+export function isStrategic(resource: string): boolean {
+  return Object.hasOwn(STRATEGIC_RESOURCES, resource);
+}
+
+/**
+ * The different specialties (`MapResource.id`) the polity has: those on its
+ * land, ascending by index into `map.resources`, then those it buys.
+ */
+export function specialtiesOf(ctx: Ctx, polity: number): string[] {
+  const found = new Set<number>();
+  ctx.state.zoneOwner.forEach((owner, zone) => {
+    if (owner !== polity) return;
+    for (const resource of at(ctx.topo.zoneResources, zone)) found.add(resource);
+  });
+  const list = [...found]
+    .sort((a, b) => a - b)
+    .map((index) => at(ctx.map.resources, index).id)
+    .filter((id) => !isStrategic(id));
+  for (const deal of ctx.state.deals) {
+    if (deal.buyer === polity && !isStrategic(deal.resource) && !list.includes(deal.resource)) list.push(deal.resource);
+  }
+  return list;
+}
+
+/** True if a source of the resource lies in the polity's territory and the polity can see it. */
+export function ownsResource(ctx: Ctx, polity: number, resource: string): boolean {
   if (polity === NO_POLITY) return false;
   const reveal = STRATEGIC_RESOURCES[resource];
   if (reveal !== undefined && !knows(ctx, polity, reveal)) return false;

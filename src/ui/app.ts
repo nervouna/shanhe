@@ -315,6 +315,54 @@ export function createApp(options: AppOptions): App {
             );
           }
           break;
+        case 'warJoined':
+          if (all || event.polity === me || event.against === me) {
+            addNote(
+              () =>
+                t('event.warJoined', {
+                  polity: polityName(m, event.polity),
+                  with: polityName(m, event.with),
+                  against: polityName(m, event.against),
+                }),
+              capitalHex(event.polity === me ? event.against : event.polity),
+            );
+          }
+          break;
+        case 'vassalized':
+          if (all || event.vassal === me || event.overlord === me) {
+            addNote(
+              () => t('event.vassalized', { vassal: polityName(m, event.vassal), overlord: polityName(m, event.overlord) }),
+              capitalHex(event.vassal),
+            );
+          }
+          break;
+        case 'agreementSigned':
+          if (event.agreement !== 'vassalage' && (event.a === me || event.b === me)) {
+            addNote(
+              () =>
+                t('event.agreementSigned', {
+                  a: polityName(m, event.a),
+                  b: polityName(m, event.b),
+                  agreement: t(`agreement.${event.agreement}`),
+                }),
+              capitalHex(event.a === me ? event.b : event.a),
+            );
+          }
+          break;
+        case 'agreementEnded':
+          if (event.a === me || event.b === me) {
+            addNote(
+              () =>
+                t('event.agreementEnded', {
+                  a: polityName(m, event.a),
+                  b: polityName(m, event.b),
+                  agreement: t(`agreement.${event.agreement}`),
+                  reason: t(`endReason.${event.reason}`),
+                }),
+              capitalHex(event.a === me ? event.b : event.a),
+            );
+          }
+          break;
         case 'eraStarted':
           addNote(() => t('note.era', { era: eraName(event.era) }), -1);
           break;

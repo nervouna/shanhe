@@ -9,40 +9,50 @@
 import { NO_ZONE } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
 import { runAi } from './ai.ts';
-import { execute, legalActions, validate } from './actions.ts';
+import { buyCost, execute, legalActions, validate } from './actions.ts';
 import { assignCitizens, foundCity } from './cities.ts';
 import { addUnit, at, cloneState, createCtx, random } from './context.ts';
 import type { Ctx } from './context.ts';
 import type { TechId } from './data.ts';
 import {
+  CITY_STATE_TYPES,
+  CITY_STATE_TYPE_BY_ID,
   DEFAULT_MAJOR_NAMES_ZH,
   GAME_TURNS,
+  POLICY,
   HEXES_PER_TRIBE,
   MAJOR_COUNT,
   ROSTER,
   TRIBE,
   noYields,
+  policyCost,
   unitDef,
 } from './data.ts';
-import { hasResource, techCost, visibleResource, worldEra } from './tech.ts';
+import { hasResource, specialtiesOf, techCost, visibleResource, worldEra } from './tech.ts';
+import { findRoutePath, routeSlots } from './trade.ts';
+import type { RoutePath } from './trade.ts';
 import { topologyOf } from './topology.ts';
 import { endRound } from './turn.ts';
 import { NO_POLITY } from './types.ts';
 import type {
   Action,
   ActionResult,
+  Agreement,
+  BuildItem,
+  City,
   GameEvent,
   GameSetup,
   GameState,
   MutableGameState,
   PolityState,
+  RouteTarget,
 } from './types.ts';
 
 export type * from './types.ts';
 export { NO_POLITY } from './types.ts';
 
 /** Version of the state format. `loadGame` rejects any other. */
-export const STATE_VERSION = 2;
+export const STATE_VERSION = 3;
 
 function polityIndex(map: MapData, id: string): number {
   const index = map.polities.findIndex((polity) => polity.id === id);
@@ -74,12 +84,29 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
   const majors =
     setup.majors === undefined ? defaultMajors(map) : [...new Set(setup.majors.map(nation))].sort((a, b) => a - b);
 
+  let cityStates = 0;
   const polities: PolityState[] = map.polities.map((polity) => ({
     alive: polity.kind !== 'wastelandRegion',
     gold: 0,
     grossIncome: 0,
     science: 0,
     culture: 0,
+    cultureProgress: 0,
+    policies: [],
+    slots: polity.kind === 'nation' ? Array.from({ length: at(POLICY.slotsByEra, 0) }, () => null) : [],
+    freeSwaps: 0,
+    swapReadyOn: 0,
+    overlord: NO_POLITY,
+    cityStateType:
+      polity.kind === 'cityState'
+        ? (CITY_STATE_TYPE_BY_ID[polity.id] ?? at(CITY_STATE_TYPES, cityStates++ % CITY_STATE_TYPES.length))
+        : null,
+    influence: {},
+    suzerain: NO_POLITY,
+    routeIncome: 0,
+    tributeReceived: 0,
+    tributePaid: 0,
+    dealIncome: 0,
     techs: [],
     research: null,
     researchProgress: 0,
@@ -113,7 +140,24 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
     nextUnitId: 1,
     improvements: {},
     relations: {},
-    stats: { citiesCaptured: 0, citiesFounded: 0, warsDeclared: 0, politiesAnnexed: 0 },
+    favour: {},
+    agreements: [],
+    deals: [],
+    offers: [],
+    routes: [],
+    nextId: 1,
+    roads: {},
+    roadLinks: {},
+    pillaged: {},
+    stats: {
+      citiesCaptured: 0,
+      citiesFounded: 0,
+      warsDeclared: 0,
+      politiesAnnexed: 0,
+      alliancesFormed: 0,
+      vassalsMade: 0,
+      routesEstablished: 0,
+    },
     result: null,
   };
   const ctx = createCtx(state);
@@ -183,6 +227,48 @@ export function resourceOnHex(state: GameState, polity: number, hex: number): nu
 /** True if `polity` has a source of the strategic resource (`MapResource.id`) in its territory and can see it. */
 export function polityHasResource(state: GameState, polity: number, resource: string): boolean {
   return hasResource(createCtx(state as MutableGameState), polity, resource);
+}
+
+// ------------------------------------------------- reading the new systems
+
+/** Favour between two nations, from -100 to 100. */
+export function favourBetween(state: GameState, a: number, b: number): number {
+  return state.favour[a < b ? `${a}:${b}` : `${b}:${a}`] ?? 0;
+}
+
+/** The agreements `polity` is a party to. In a vassalage `a` is the overlord and `b` the vassal. */
+export function agreementsOf(state: GameState, polity: number): Agreement[] {
+  return state.agreements.filter((agreement) => agreement.a === polity || agreement.b === polity);
+}
+
+/** Culture `polity` needs in `PolityState.cultureProgress` to unlock its next policy card. */
+export function nextPolicyCost(state: GameState, polity: number): number {
+  return policyCost(state.polities[polity]?.policies.length ?? 0);
+}
+
+/** Trade route slots of `polity`: the base, its techs, its buildings and the commerce city-states it is suzerain of. */
+export function tradeRouteSlots(state: GameState, polity: number): number {
+  return routeSlots(createCtx(state as MutableGameState), polity);
+}
+
+/**
+ * The path a trade route of `polity` from its city in zone `from` to the
+ * target would take, or null when there is none in range.
+ */
+export function tradeRoutePath(state: GameState, polity: number, from: number, to: RouteTarget): RoutePath | null {
+  return findRoutePath(createCtx(state as MutableGameState), polity, from, to);
+}
+
+/** Gold it costs the city in `zone` to buy the item outright (see the `buy` action). */
+export function buyPrice(state: GameState, zone: number, item: BuildItem): number {
+  const city = state.cities[zone];
+  if (city === undefined || city === null) return 0;
+  return buyCost(createCtx(state as MutableGameState), city as City, item);
+}
+
+/** The different specialties (`MapResource.id`) `polity` has, on its own land or bought. */
+export function politySpecialties(state: GameState, polity: number): string[] {
+  return specialtiesOf(createCtx(state as MutableGameState), polity);
 }
 
 // ------------------------------------------------------------ save and load

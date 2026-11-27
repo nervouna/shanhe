@@ -1,10 +1,12 @@
 /** Combat arithmetic, attacks, city capture and annexation. */
 
 import { hexDistance, indexToOffset } from '../shared/hex.ts';
-import { AIR_STRIKE, BUILDINGS, CITY, COMBAT, ERA_STRENGTH, WAR, unitDef } from './data.ts';
+import { AIR_STRIKE, BUILDINGS, CITY, COMBAT, ERA_STRENGTH, FIREARM_UNITS, WAR, unitDef } from './data.ts';
 import { assignCitizens, hasBuilding, maxCityHp } from './cities.ts';
 import {
   at,
+  atWar,
+  ownerOf,
   bordersOpen,
   cityAtHex,
   enforceBorders,
@@ -18,8 +20,13 @@ import {
   terrainAllows,
 } from './context.ts';
 import type { Ctx } from './context.ts';
+import { makeVassal, polityGone, releaseVassals } from './diplomacy.ts';
+import { policySum, slotted } from './policies.ts';
+import { alliesOf, isNation } from './relations.ts';
 import { eraOf } from './tech.ts';
-import type { City, Unit } from './types.ts';
+import { routesAfterCapture } from './trade.ts';
+import { NO_POLITY } from './types.ts';
+import type { City, RejectReason, Unit } from './types.ts';
 
 // -------------------------------------------------------------- arithmetic
 
@@ -91,6 +98,41 @@ export function unitPower(unit: Unit): number {
   return (Math.max(def.strength, def.rangedStrength) * unit.hp) / COMBAT.maxHp;
 }
 
+/** Military strength of a polity: the sum of its units' power. */
+export function militaryStrength(ctx: Ctx, polity: number): number {
+  let total = 0;
+  for (const unit of ctx.state.units) if (unit.owner === polity) total += unitPower(unit);
+  return total;
+}
+
+/**
+ * What the owner's policy cards multiply a unit's strength by when it fights
+ * `enemy`, attacking or defending: firearm units (Firearms corps), units on
+ * their owner's land (Total defence), and any unit that fights an enemy one
+ * of its owner's allies is also at war with (Vertical and horizontal
+ * alliances).
+ */
+export function combatFactor(ctx: Ctx, unit: Unit, enemy: number): number {
+  if (unit.owner === NO_POLITY) return 1;
+  let percent = 0;
+  for (const card of slotted(ctx, unit.owner)) {
+    if (card.firearmStrengthPercent !== undefined && FIREARM_UNITS.includes(unit.type)) {
+      percent += card.firearmStrengthPercent;
+    }
+    if (card.homeStrengthPercent !== undefined && ownerOf(ctx, unit.hex) === unit.owner) {
+      percent += card.homeStrengthPercent;
+    }
+    if (
+      card.allyStrengthPercent !== undefined &&
+      enemy !== NO_POLITY &&
+      alliesOf(ctx, unit.owner).some((ally) => atWar(ctx, ally, enemy))
+    ) {
+      percent += card.allyStrengthPercent;
+    }
+  }
+  return 1 + percent / 100;
+}
+
 // ------------------------------------------------------------- experience
 
 function gainXp(ctx: Ctx, unit: Unit, xp: number): void {
@@ -101,9 +143,22 @@ function gainXp(ctx: Ctx, unit: Unit, xp: number): void {
   }
 }
 
-function killUnit(ctx: Ctx, unit: Unit): void {
+/**
+ * Removes a unit that was destroyed.
+ *
+ * @param by the polity whose unit destroyed it, or `NO_POLITY` when no unit did (a city's strike, a capture).
+ */
+function killUnit(ctx: Ctx, unit: Unit, by = NO_POLITY): void {
   removeUnit(ctx, unit);
   ctx.events.push({ type: 'unitKilled', unit: unit.id, owner: unit.owner, hex: unit.hex, unitType: unit.type });
+  if (by === NO_POLITY) return;
+  // Merit ranks: culture for the victor.
+  const culture = policySum(ctx, by, 'cultureOnKill');
+  if (culture > 0) {
+    const victor = polityOf(ctx, by);
+    victor.culture += culture;
+    victor.cultureProgress += culture;
+  }
 }
 
 // ----------------------------------------------------------------- attack
@@ -143,13 +198,14 @@ export function resolveAttack(ctx: Ctx, unit: Unit, target: number): void {
       type: 'combat', unit: unit.id, owner: unit.owner, from, target, ranged,
       defenderUnit: defender.id, defenderCity: -1, damageToDefender: defender.hp, damageToAttacker: 0,
     });
-    killUnit(ctx, defender);
+    killUnit(ctx, defender, unit.owner);
     if (!ranged) advance(ctx, unit, from, target);
     return;
   }
 
-  const attack = attackStrength(unit, ranged, false, riverBetween(ctx, from, target));
-  const defence = defenceStrength(ctx, defender);
+  const attack =
+    attackStrength(unit, ranged, false, riverBetween(ctx, from, target)) * combatFactor(ctx, unit, defender.owner);
+  const defence = defenceStrength(ctx, defender) * combatFactor(ctx, defender, unit.owner);
   const damageToDefender = combatDamage(attack, defence, rollFactor(ctx));
   const damageToAttacker = ranged ? 0 : combatDamage(defence, attack, rollFactor(ctx));
   ctx.events.push({
@@ -161,7 +217,7 @@ export function resolveAttack(ctx: Ctx, unit: Unit, target: number): void {
   if (defender.hp <= 0) {
     // The winner of a melee survives it.
     unit.hp = Math.max(1, unit.hp - damageToAttacker);
-    killUnit(ctx, defender);
+    killUnit(ctx, defender, unit.owner);
     gainXp(ctx, unit, COMBAT.xpAttack + COMBAT.xpKill);
     if (!ranged) advance(ctx, unit, from, target);
     return;
@@ -169,7 +225,7 @@ export function resolveAttack(ctx: Ctx, unit: Unit, target: number): void {
   gainXp(ctx, defender, COMBAT.xpDefend);
   unit.hp -= damageToAttacker;
   if (unit.hp <= 0) {
-    killUnit(ctx, unit);
+    killUnit(ctx, unit, defender.owner);
     gainXp(ctx, defender, COMBAT.xpKill);
     return;
   }
@@ -193,11 +249,12 @@ function attackCity(ctx: Ctx, unit: Unit, city: City, ranged: boolean, from: num
     return;
   }
   const strength = cityStrength(ctx, city);
-  const attack = attackStrength(unit, ranged, true, riverBetween(ctx, from, target));
+  const factor = combatFactor(ctx, unit, city.owner);
+  const attack = attackStrength(unit, ranged, true, riverBetween(ctx, from, target)) * factor;
   const damageToDefender = combatDamage(attack, strength, rollFactor(ctx));
   const damageToAttacker = ranged
     ? 0
-    : combatDamage(strength, attackStrength(unit, false, false, false), rollFactor(ctx));
+    : combatDamage(strength, attackStrength(unit, false, false, false) * factor, rollFactor(ctx));
   ctx.events.push({
     type: 'combat', unit: unit.id, owner: unit.owner, from, target, ranged,
     defenderUnit: -1, defenderCity: city.zone, damageToDefender, damageToAttacker,
@@ -219,7 +276,7 @@ function attackCity(ctx: Ctx, unit: Unit, city: City, ranged: boolean, from: num
     hexesApart(ctx, unit.hex, target) <= CITY.strikeRange
   ) {
     city.struck = true;
-    const damage = combatDamage(strength, defenceStrength(ctx, unit), rollFactor(ctx));
+    const damage = combatDamage(strength, defenceStrength(ctx, unit) * factor, rollFactor(ctx));
     ctx.events.push({ type: 'cityStrike', city: city.zone, unit: unit.id, damage });
     unit.hp -= damage;
     if (unit.hp <= 0) killUnit(ctx, unit);
@@ -250,7 +307,11 @@ export function resolveAirStrike(ctx: Ctx, city: City, target: number): void {
   const damage =
     unitDef(defender.type).strength === 0
       ? defender.hp
-      : combatDamage(AIR_STRIKE.strength, defenceStrength(ctx, defender), rollFactor(ctx));
+      : combatDamage(
+          AIR_STRIKE.strength,
+          defenceStrength(ctx, defender) * combatFactor(ctx, defender, city.owner),
+          rollFactor(ctx),
+        );
   ctx.events.push({
     type: 'airStrike', city: city.zone, owner: city.owner, target,
     defenderUnit: defender.id, defenderCity: -1, damage,
@@ -287,14 +348,52 @@ export function captureCity(ctx: Ctx, city: City, unit: Unit): void {
 
   const loser = polityOf(ctx, from);
   loser.warWeariness = Math.min(WAR.wearinessMax, loser.warWeariness + WAR.wearinessPerCityLost);
+  routesAfterCapture(ctx, city);
   const remaining = state.cities.filter((other): other is City => other !== null && other.owner === from);
   if (remaining.length === 0) {
     annex(ctx, from, to);
   } else {
-    if (loser.capital === city.zone) loser.capital = at(remaining, 0).zone;
+    if (loser.capital === city.zone) {
+      // An overlord that loses its own capital loses its vassals.
+      releaseVassals(ctx, from, 'capitalLost');
+      loser.capital = at(remaining, 0).zone;
+    }
     enforceBorders(ctx);
   }
   assignCitizens(ctx, city);
+}
+
+/** Why `unit` cannot demand vassalage of the owner of the city on `target`, or null. */
+export function checkDemandVassalage(ctx: Ctx, unit: Unit, target: number): RejectReason | null {
+  const def = unitDef(unit.type);
+  if (unit.moves <= 0) return 'noMovesLeft';
+  if (def.strength <= 0 || def.range > 0 || def.domain !== 'land' || isEmbarked(ctx, unit)) return 'cannotAttack';
+  const city = cityAtHex(ctx, target);
+  if (city === null || city.owner === unit.owner) return 'noTarget';
+  if (!atWar(ctx, unit.owner, city.owner)) return 'atPeace';
+  if (hexesApart(ctx, unit.hex, target) !== 1) return 'notAdjacent';
+  if (!isNation(ctx, unit.owner) || !isNation(ctx, city.owner)) return 'badTarget';
+  if (polityOf(ctx, city.owner).capital !== city.zone) return 'notACapital';
+  if (city.hp > 0) return 'cityNotFallen';
+  if (polityOf(ctx, unit.owner).overlord !== NO_POLITY || polityOf(ctx, city.owner).overlord !== NO_POLITY) {
+    return 'vassal';
+  }
+  return null;
+}
+
+/**
+ * At the gates of a fallen capital the attacker takes its owner as a vassal
+ * and leaves it the city. The war between the two ends.
+ */
+export function demandVassalage(ctx: Ctx, unit: Unit, target: number): void {
+  const city = cityAtHex(ctx, target);
+  if (city === null) return;
+  unit.moves = 0;
+  unit.acted = true;
+  unit.status = 'ready';
+  city.hp = Math.floor(maxCityHp(city) * CITY.captureHpFraction);
+  city.attackedOn = ctx.state.turn;
+  makeVassal(ctx, city.owner, unit.owner, true);
 }
 
 /** `by` takes everything `polity` still has: its zones without a city. Its units are removed and its wars end. */
@@ -320,6 +419,7 @@ function annex(ctx: Ctx, polity: number, by: number): void {
   annexed.alive = false;
   annexed.capital = -1;
   annexed.aiTarget = -1;
+  polityGone(ctx, polity);
   state.stats.politiesAnnexed++;
   ctx.events.push({ type: 'polityAnnexed', polity, by });
   enforceBorders(ctx);

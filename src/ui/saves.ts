@@ -5,21 +5,51 @@
  * values, so nothing else in the file survives.
  */
 
-import { BUILDING_IDS, CITY, ERAS, FOCUSES, IMPROVEMENT_IDS, PROJECT, TECH_IDS, UNITS, unitDef } from '../core/data.ts';
-import type { BuildingId, Focus, ImprovementId, TechId, Yields } from '../core/data.ts';
+import {
+  AGREEMENT_KINDS,
+  BUILDING_IDS,
+  CITY,
+  CITY_STATE,
+  CITY_STATE_TYPES,
+  DEAL,
+  ERAS,
+  FAVOUR,
+  FOCUSES,
+  IMPROVEMENT_IDS,
+  POLICY,
+  POLICY_IDS,
+  PROJECT,
+  TECH_IDS,
+  UNITS,
+  unitDef,
+} from '../core/data.ts';
+import type {
+  AgreementKind,
+  BuildingId,
+  CityStateType,
+  Focus,
+  ImprovementId,
+  PolicyId,
+  TechId,
+  Yields,
+} from '../core/data.ts';
 import { STATE_VERSION, saveGame } from '../core/game.ts';
 import type {
+  Agreement,
   BuildItem,
   City,
+  Deal,
   GameResult,
   GameState,
   GameStats,
+  Offer,
   PolityState,
   Relation,
+  TradeRoute,
   Unit,
   UnitStatus,
 } from '../core/game.ts';
-import type { MapData } from '../shared/mapData.ts';
+import type { MapData, PolityKind } from '../shared/mapData.ts';
 
 /** Longest save text that is read, in characters. A real save is well under a megabyte. */
 export const MAX_SAVE_BYTES = 8 * 1024 * 1024;
@@ -66,6 +96,11 @@ function num(value: unknown, min: number, max: number, what: string): number {
 function bool(value: unknown, what: string): boolean {
   if (typeof value !== 'boolean') fail(what);
   return value;
+}
+
+function isNull(value: unknown, what: string): null {
+  if (value !== null) fail(what);
+  return null;
 }
 
 function oneOf<T extends string>(value: unknown, options: readonly T[], what: string): T {
@@ -168,20 +203,75 @@ function unit(value: unknown, bounds: Bounds): Unit {
   };
 }
 
-function polity(value: unknown, bounds: Bounds): PolityState {
+/** A record keyed by whole numbers from 0 to `max`, written the way the rules write them. */
+function indexed<T>(value: unknown, max: number, what: string, entry: (value: unknown) => T): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const [key, item] of Object.entries(record(value, what))) {
+    const index = Number(key);
+    if (String(index) !== key) fail(`${what} key`);
+    int(index, 0, max, `${what} key`);
+    out[key] = entry(item);
+  }
+  return out;
+}
+
+function polity(value: unknown, index: number, kind: PolityKind, bounds: Bounds): PolityState {
   const data = record(value, 'polity');
   const techs = list(data.techs, 'techs', TECH_IDS.length).map((tech) => oneOf<TechId>(tech, TECH_IDS, 'tech'));
   if (new Set(techs).size !== techs.length) fail('tech listed twice');
+  const era = int(data.era, 0, ERAS.length - 1, 'polity era');
+  const nation = kind === 'nation';
+  const cityState = kind === 'cityState';
+
+  // Policy cards: only nations have them, each card once, and a slot holds only an unlocked card.
+  const policies = list(data.policies, 'policies', POLICY_IDS.length).map((id) =>
+    oneOf<PolicyId>(id, POLICY_IDS, 'policy'),
+  );
+  if (new Set(policies).size !== policies.length) fail('policy listed twice');
+  if (!nation && policies.length > 0) fail('policies of a polity that has none');
+  const slotCount = nation ? (POLICY.slotsByEra[era] as number) : 0;
+  const slots = list(data.slots, 'policy slots', slotCount).map((id) =>
+    id === null ? null : oneOf<PolicyId>(id, policies, 'slotted policy'),
+  );
+  if (slots.length !== slotCount) fail('policy slot count');
+  const held = slots.filter((id) => id !== null);
+  if (new Set(held).size !== held.length) fail('policy slotted twice');
+
+  const overlord = int(data.overlord, -1, bounds.polities - 1, 'overlord');
+  if (overlord === index || (overlord >= 0 && !nation)) fail('overlord');
+  const suzerain = int(data.suzerain, -1, bounds.polities - 1, 'suzerain');
+  if (suzerain === index || (suzerain >= 0 && !cityState)) fail('suzerain');
+  const influence = indexed(data.influence, bounds.polities - 1, 'influence', (entry) =>
+    num(entry, 0, CITY_STATE.maxInfluence, 'influence'),
+  );
+  if (!cityState && Object.keys(influence).length > 0) fail('influence with a polity that is no city-state');
+  if (Object.hasOwn(influence, String(index))) fail('influence with itself');
+
   return {
     alive: bool(data.alive, 'polity alive'),
     gold: num(data.gold, -BIG, BIG, 'gold'),
     grossIncome: num(data.grossIncome, 0, BIG, 'gross income'),
     science: num(data.science, 0, BIG, 'science'),
     culture: num(data.culture, 0, BIG, 'culture'),
+    cultureProgress: num(data.cultureProgress, 0, BIG, 'culture progress'),
+    policies,
+    slots,
+    freeSwaps: int(data.freeSwaps, 0, POLICY_IDS.length, 'free swaps'),
+    swapReadyOn: int(data.swapReadyOn, 0, MAX_TURNS, 'swap ready on'),
+    overlord,
+    cityStateType: cityState
+      ? oneOf<CityStateType>(data.cityStateType, CITY_STATE_TYPES, 'city-state type')
+      : isNull(data.cityStateType, 'city-state type'),
+    influence,
+    suzerain,
+    routeIncome: num(data.routeIncome, 0, BIG, 'route income'),
+    tributeReceived: num(data.tributeReceived, 0, BIG, 'tribute received'),
+    tributePaid: num(data.tributePaid, 0, BIG, 'tribute paid'),
+    dealIncome: num(data.dealIncome, -BIG, BIG, 'deal income'),
     techs,
     research: data.research === null ? null : oneOf<TechId>(data.research, TECH_IDS, 'research'),
     researchProgress: num(data.researchProgress, 0, BIG, 'research progress'),
-    era: int(data.era, 0, ERAS.length - 1, 'polity era'),
+    era,
     projectStage: int(data.projectStage, 0, PROJECT.stages.length, 'project stage'),
     tradeRoutes: int(data.tradeRoutes, 0, MAX_TURNS, 'trade routes'),
     landPorts: bool(data.landPorts, 'land ports'),
@@ -242,7 +332,169 @@ function stats(value: unknown): GameStats {
     citiesFounded: int(data.citiesFounded, 0, BIG, 'stats'),
     warsDeclared: int(data.warsDeclared, 0, BIG, 'stats'),
     politiesAnnexed: int(data.politiesAnnexed, 0, BIG, 'stats'),
+    alliancesFormed: int(data.alliancesFormed, 0, BIG, 'stats'),
+    vassalsMade: int(data.vassalsMade, 0, BIG, 'stats'),
+    routesEstablished: int(data.routesEstablished, 0, BIG, 'stats'),
   };
+}
+
+/** What the diplomacy and trade checks need to know about the rest of the save. */
+interface World extends Bounds {
+  readonly map: MapData;
+  readonly player: number;
+  readonly turn: number;
+  /** The next id for an offer, a deal or a route: every id in the save is below it. */
+  readonly nextId: number;
+  /** Per polity: true for a nation. */
+  readonly nation: readonly boolean[];
+  /** Per polity: the overlord its own state names. */
+  readonly overlord: readonly number[];
+  /** Per zone: true if a city stands there. */
+  readonly hasCity: readonly boolean[];
+}
+
+/** Two different nations, as indices. */
+function nationPair(x: unknown, y: unknown, world: World, what: string): [number, number] {
+  const a = int(x, 0, world.polities - 1, what);
+  const b = int(y, 0, world.polities - 1, what);
+  if (a === b || world.nation[a] !== true || world.nation[b] !== true) fail(what);
+  return [a, b];
+}
+
+function resourceId(value: unknown, world: World, what: string): string {
+  if (typeof value !== 'string' || !world.map.resources.some((entry) => entry.id === value)) fail(what);
+  return value;
+}
+
+function favour(value: unknown, world: World): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(record(value, 'favour'))) {
+    const parts = key.split(':');
+    if (parts.length !== 2) fail('favour key');
+    const [a, b] = nationPair(Number(parts[0]), Number(parts[1]), world, 'favour pair');
+    if (a >= b || key !== `${a}:${b}`) fail('favour key');
+    out[key] = int(entry, -FAVOUR.max, FAVOUR.max, 'favour');
+  }
+  return out;
+}
+
+function agreements(value: unknown, world: World): Agreement[] {
+  const seen = new Set<string>();
+  const out = list(value, 'agreements', 10_000).map((entry): Agreement => {
+    const data = record(entry, 'agreement');
+    const kind = oneOf<AgreementKind>(data.kind, AGREEMENT_KINDS, 'agreement kind');
+    const [a, b] = nationPair(data.a, data.b, world, 'agreement parties');
+    // The overlord comes first in a vassalage; in every other agreement the lower index does.
+    if (kind === 'vassalage' ? world.overlord[b] !== a : a > b) fail('agreement order');
+    const key = `${kind}:${Math.min(a, b)}:${Math.max(a, b)}`;
+    if (seen.has(key)) fail('agreement listed twice');
+    seen.add(key);
+    const since = int(data.since, 1, world.turn, 'agreement since');
+    const until = int(data.until, 0, MAX_TURNS, 'agreement until');
+    if (until !== 0 && until < since) fail('agreement term');
+    return { kind, a, b, since, until };
+  });
+  // Every vassal the polities name has its vassalage.
+  world.overlord.forEach((overlord, vassal) => {
+    if (overlord >= 0 && !seen.has(`vassalage:${Math.min(overlord, vassal)}:${Math.max(overlord, vassal)}`)) {
+      fail('vassal without a vassalage');
+    }
+  });
+  return out;
+}
+
+/** Collects ids that must be unique and below the next id. */
+function idCheck(world: World): (value: unknown, what: string) => number {
+  const used = new Set<number>();
+  return (value, what) => {
+    const id = int(value, 1, world.nextId - 1, what);
+    if (used.has(id)) fail(`${what} used twice`);
+    used.add(id);
+    return id;
+  };
+}
+
+function deals(value: unknown, world: World, id: (value: unknown, what: string) => number): Deal[] {
+  return list(value, 'deals', 10_000).map((entry): Deal => {
+    const data = record(entry, 'deal');
+    const [seller, buyer] = nationPair(data.seller, data.buyer, world, 'deal parties');
+    const since = int(data.since, 1, world.turn, 'deal since');
+    return {
+      id: id(data.id, 'deal id'),
+      seller,
+      buyer,
+      resource: resourceId(data.resource, world, 'deal resource'),
+      goldPerTurn: int(data.goldPerTurn, 1, DEAL.maxGoldPerTurn, 'deal gold'),
+      since,
+      until: int(data.until, since, MAX_TURNS, 'deal until'),
+    };
+  });
+}
+
+function offers(value: unknown, world: World, id: (value: unknown, what: string) => number): Offer[] {
+  return list(value, 'offers', 10_000).map((entry): Offer => {
+    const data = record(entry, 'offer');
+    const [from, to] = nationPair(data.from, data.to, world, 'offer parties');
+    // Only the human player has offers waiting.
+    if (to !== world.player) fail('offer to an AI');
+    const offerId = id(data.id, 'offer id');
+    const turn = int(data.turn, 1, world.turn, 'offer turn');
+    if (data.type === 'agreement') {
+      const agreement = oneOf<AgreementKind>(data.agreement, AGREEMENT_KINDS, 'offered agreement');
+      return { id: offerId, type: 'agreement', from, to, turn, agreement };
+    }
+    if (data.type !== 'deal') fail('offer type');
+    const seller = int(data.seller, 0, world.polities - 1, 'offer seller');
+    if (seller !== from && seller !== to) fail('offer seller');
+    return {
+      id: offerId,
+      type: 'deal',
+      from,
+      to,
+      turn,
+      seller,
+      resource: resourceId(data.resource, world, 'offered resource'),
+      goldPerTurn: int(data.goldPerTurn, 1, DEAL.maxGoldPerTurn, 'offered gold'),
+    };
+  });
+}
+
+function routes(value: unknown, world: World, id: (value: unknown, what: string) => number): TradeRoute[] {
+  return list(value, 'routes', 10_000).map((entry): TradeRoute => {
+    const data = record(entry, 'route');
+    const from = int(data.from, 0, world.zones - 1, 'route origin');
+    const toCity = int(data.toCity, -1, world.zones - 1, 'route city');
+    const toPort = int(data.toPort, -1, world.map.offMapPorts.length - 1, 'route port');
+    // A route goes to a city or to a port, never both and never to where it starts.
+    if ((toCity < 0) === (toPort < 0) || toCity === from) fail('route destination');
+    if (world.hasCity[from] !== true || (toCity >= 0 && world.hasCity[toCity] !== true)) fail('route without its city');
+    const path = list(data.path, 'route path', world.hexes).map((hex) => int(hex, 0, world.hexes - 1, 'route hex'));
+    if (path.length === 0) fail('route path empty');
+    return {
+      id: id(data.id, 'route id'),
+      owner: int(data.owner, 0, world.polities - 1, 'route owner'),
+      from,
+      toCity,
+      toPort,
+      sea: bool(data.sea, 'route sea'),
+      path,
+      income: num(data.income, 0, BIG, 'route income'),
+      pillagedUntil: int(data.pillagedUntil, 0, MAX_TURNS, 'route pillaged until'),
+    };
+  });
+}
+
+function roadLinks(value: unknown, bounds: Bounds): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(record(value, 'road links'))) {
+    const parts = key.split(':');
+    if (parts.length !== 2) fail('road link key');
+    const b = int(Number(parts[1]), 1, bounds.zones - 1, 'road link zone');
+    const a = int(Number(parts[0]), 0, b - 1, 'road link zone');
+    if (key !== `${a}:${b}`) fail('road link key');
+    out[key] = int(entry, 0, 1, 'road link');
+  }
+  return out;
 }
 
 /** The state in `data`, rebuilt field by field in the rules' own field order. */
@@ -253,8 +505,9 @@ function rebuild(data: Json, map: MapData): GameState {
   const majors = list(data.majors, 'majors', bounds.polities).map((entry) => int(entry, 0, bounds.polities - 1, 'major'));
   if (majors.some((major, i) => i > 0 && major <= (majors[i - 1] as number))) fail('majors order');
 
-  const polities = list(data.polities, 'polities', bounds.polities).map((entry) => polity(entry, bounds));
-  if (polities.length !== bounds.polities) fail('polity count');
+  const saved = list(data.polities, 'polities', bounds.polities);
+  if (saved.length !== bounds.polities) fail('polity count');
+  const polities = saved.map((entry, index) => polity(entry, index, (map.polities[index] as MapData['polities'][number]).kind, bounds));
   const zoneOwner = list(data.zoneOwner, 'zone owners', bounds.zones).map((entry) =>
     int(entry, -1, bounds.polities - 1, 'zone owner'),
   );
@@ -268,14 +521,28 @@ function rebuild(data: Json, map: MapData): GameState {
   if (new Set(units.map((entry) => entry.hex)).size !== units.length) fail('two units on one hex');
   if (units.some((entry) => entry.id >= nextUnitId)) fail('next unit id');
 
+  const turn = int(data.turn, 1, lastTurn, 'turn');
+  const player = int(data.player, -1, bounds.polities - 1, 'player');
+  const world: World = {
+    ...bounds,
+    map,
+    player,
+    turn,
+    nextId: int(data.nextId, 1, Number.MAX_SAFE_INTEGER, 'next id'),
+    nation: map.polities.map((entry) => entry.kind === 'nation'),
+    overlord: polities.map((entry) => entry.overlord),
+    hasCity: cities.map((entry) => entry !== null),
+  };
+  const id = idCheck(world);
+
   return {
     map,
     version: STATE_VERSION,
-    turn: int(data.turn, 1, lastTurn, 'turn'),
+    turn,
     lastTurn,
     seed: int(data.seed, 0, UINT32, 'seed'),
     rng: int(data.rng, 0, UINT32, 'rng'),
-    player: int(data.player, -1, bounds.polities - 1, 'player'),
+    player,
     majors,
     polities,
     zoneOwner,
@@ -284,6 +551,15 @@ function rebuild(data: Json, map: MapData): GameState {
     nextUnitId,
     improvements: improvements(data.improvements, bounds),
     relations: relations(data.relations, bounds),
+    favour: favour(data.favour, world),
+    agreements: agreements(data.agreements, world),
+    deals: deals(data.deals, world, id),
+    offers: offers(data.offers, world, id),
+    routes: routes(data.routes, world, id),
+    nextId: world.nextId,
+    roads: indexed(data.roads, bounds.hexes - 1, 'roads', (level) => int(level, 1, 2, 'road level')),
+    roadLinks: roadLinks(data.roadLinks, bounds),
+    pillaged: indexed(data.pillaged, bounds.hexes - 1, 'pillaged', (until) => int(until, 1, MAX_TURNS, 'pillaged until')),
     stats: stats(data.stats),
     result: result(data.result, bounds),
   };
