@@ -48,24 +48,33 @@ export function createPostFx(renderer: WebGPURenderer, scene: Scene, labelScene:
   let state: PostEffectState = NO_EFFECTS;
   let pipeline: RenderPipeline | null = null;
   let built = false;
+  /** The passes of the pipeline in use, to free with it. */
+  let passes: { dispose(): void }[] = [];
+  const free = (): void => {
+    for (const node of passes) node.dispose();
+    passes = [];
+    pipeline?.dispose();
+    pipeline = null;
+  };
 
   const needsPipeline = (s: PostEffectState): boolean =>
     s.ambientOcclusion || s.tiltShift || s.bloom || s.antialiasing;
 
   const build = (): void => {
-    pipeline?.dispose();
-    pipeline = null;
+    free();
     renderer.toneMapping = state.toneMapping ? ACESFilmicToneMapping : NoToneMapping;
     if (!needsPipeline(state)) return;
 
     // the scene is drawn once, without multisampling: the last pass smooths the edges
     const scenePass = pass(scene, camera, { samples: 0 });
+    passes.push(scenePass);
     const sceneColor = scenePass.getTextureNode('output');
     let lit: Vec3 = sceneColor.rgb;
 
     if (state.ambientOcclusion) {
       // normals are rebuilt from the depth, so that the scene needs no second target
       const ao = new GTAONode(scenePass.getTextureNode('depth'), null as never, camera);
+      passes.push(ao);
       ao.resolutionScale = 0.5;
       ao.radius.value = 0.3;
       ao.thickness.value = 1.2;
@@ -76,23 +85,31 @@ export function createPostFx(renderer: WebGPURenderer, scene: Scene, labelScene:
     if (state.tiltShift) {
       // a model photographed from close by: sharp only around the distance in focus
       const blurred = gaussianBlur(sceneColor, null, 3, { resolutionScale: 0.25 });
+      passes.push(blurred);
       const distance = scenePass.getViewZNode().negate();
       const off = abs(distance.sub(focus)).div(focus);
       const circle = saturate(smoothstep(0.1, 0.75, off).mul(strength));
       lit = vec3(mix(lit, blurred.rgb, circle));
     }
     if (state.bloom) {
-      lit = vec3(lit.add(bloom(sceneColor, 0.14, 0.35, 1.05).rgb));
+      const glow = bloom(sceneColor, 0.14, 0.35, 1.05);
+      passes.push(glow);
+      lit = vec3(lit.add(glow.rgb));
     }
     let output: Node = renderOutput(
       vec4(lit, 1),
       state.toneMapping ? ACESFilmicToneMapping : NoToneMapping,
       SRGBColorSpace,
     );
-    if (state.antialiasing) output = fxaa(output);
+    if (state.antialiasing) {
+      const smoothed = fxaa(output);
+      passes.push(smoothed);
+      output = smoothed;
+    }
 
     // the labels, drawn on their own and laid over the finished picture
     const labelPass = pass(labelScene, camera, { samples: 0 });
+    passes.push(labelPass);
     const label = labelPass.getTextureNode('output');
     const labelColor = renderOutput(vec4(label.rgb.div(max(label.a, 0.0001)), 1), NoToneMapping, SRGBColorSpace);
     output = vec4(mix((output as Node<'vec4'>).rgb, labelColor.rgb, saturate(label.a)), 1);
@@ -123,8 +140,7 @@ export function createPostFx(renderer: WebGPURenderer, scene: Scene, labelScene:
       pipeline?.render();
     },
     dispose() {
-      pipeline?.dispose();
-      pipeline = null;
+      free();
     },
   };
 }

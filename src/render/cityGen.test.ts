@@ -7,6 +7,7 @@ import {
   PART_SHAPE_COUNT,
   PartShape,
   cityRadius,
+  familyOfPolity,
   generateCity,
   houseCount,
   partsHeight,
@@ -156,6 +157,20 @@ describe('generateCity', () => {
       }
     }
     expect(FAMILIES).toHaveLength(CITY_FAMILY_COUNT);
+  });
+
+  it('knows the family of every polity, and falls back to the Central Plains', () => {
+    expect(familyOfPolity('yan')).toBe(CityFamily.CentralPlains);
+    expect(familyOfPolity('wu')).toBe(CityFamily.Jiangnan);
+    expect(familyOfPolity('tubo')).toBe(CityFamily.Tibetan);
+    expect(familyOfPolity('mobei')).toBe(CityFamily.Steppe);
+    expect(familyOfPolity('yamato')).toBe(CityFamily.Japanese);
+    expect(familyOfPolity('siam')).toBe(CityFamily.SoutheastAsian);
+    expect(familyOfPolity('beihai')).toBe(CityFamily.Siberian);
+    expect(familyOfPolity('nowhere')).toBe(CityFamily.CentralPlains);
+    expect(familyOfPolity('constructor')).toBe(CityFamily.CentralPlains);
+    // every family has its nations
+    expect(new Set(LANDMARK_IDS.map(familyOfPolity)).size).toBe(CITY_FAMILY_COUNT);
   });
 
   it('copes with nonsense', () => {

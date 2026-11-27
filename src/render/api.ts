@@ -279,6 +279,8 @@ export async function createRenderer(
   let shownLabels = 0;
   let terrainBuilds = 0;
   let shownTrees = 0;
+  let treeBuilds = 0;
+  let treesChanged = false;
   let cloudLayer = 0;
   const applyCamera = (state: CameraState, firstFrame: boolean): void => {
     const pose = poseOf(state);
@@ -308,7 +310,13 @@ export async function createRenderer(
     terrainBuilds = update.builds;
     const grown = vegetation.update(camera.position, firstFrame ? 64 : undefined);
     shownTrees = grown.trees;
-    if (grown.changed) shadowDirty = true;
+    treeBuilds = grown.builds;
+    if (grown.changed) treesChanged = true;
+    // forests come in a few chunks per frame: their shadows follow in steps, not every frame
+    if (treesChanged && (firstFrame || grown.builds === 0 || stats.frames % 12 === 0)) {
+      treesChanged = false;
+      shadowDirty = true;
+    }
     lighting.update(
       target,
       state.distance,
@@ -401,7 +409,7 @@ export async function createRenderer(
 
     // the adaptive scale follows the time between frames. A capped frame
     // rate says nothing about the load, and building terrain is a passing cost.
-    if (settings.scale === null && options.maxFps === undefined && stats.frames > 2 && terrainBuilds === 0) {
+    if (settings.scale === null && options.maxFps === undefined && stats.frames > 2 && terrainBuilds === 0 && treeBuilds === 0) {
       const next = scaleController.sample(elapsed);
       if (next !== renderScale) {
         renderScale = next;

@@ -61,6 +61,32 @@ export const CityFamily = {
 export type CityFamilyId = (typeof CityFamily)[keyof typeof CityFamily];
 export const CITY_FAMILY_COUNT = 7;
 
+const F = CityFamily;
+/** The family each polity builds in, by the id of the polity. */
+const FAMILY_OF: Readonly<Record<string, CityFamilyId>> = {
+  wu: F.Jiangnan, yue: F.Jiangnan, min: F.Jiangnan, dongning: F.Jiangnan, lingnan: F.Jiangnan,
+  luoyue: F.Jiangnan, qiongya: F.Jiangnan, yuzhang: F.Jiangnan, huainan: F.Jiangnan,
+  xiangjiang: F.Jiangnan, haojing: F.Jiangnan, shen: F.Jiangnan,
+  tubo: F.Tibetan, qingtang: F.Tibetan,
+  mobei: F.Steppe, monan: F.Steppe, xiyu: F.Steppe,
+  togoku: F.Japanese, yamato: F.Japanese, tsukushi: F.Japanese, ryukyu: F.Japanese, tsushima: F.Japanese,
+  jiaozhi: F.SoutheastAsian, champa: F.SoutheastAsian, lanxang: F.SoutheastAsian, chenla: F.SoutheastAsian,
+  siam: F.SoutheastAsian, pagan: F.SoutheastAsian, malacca: F.SoutheastAsian, srivijaya: F.SoutheastAsian,
+  shepo: F.SoutheastAsian, boni: F.SoutheastAsian, luzon: F.SoutheastAsian, sulu: F.SoutheastAsian,
+  maluku: F.SoutheastAsian, temasek: F.SoutheastAsian, wenlai: F.SoutheastAsian, dimen: F.SoutheastAsian,
+  heishui: F.Siberian, beihai: F.Siberian, shuaibin: F.Siberian, ezo: F.Siberian, jiankun: F.Siberian, jibei: F.Siberian, liugui: F.Siberian,
+};
+
+/**
+ * The architectural family of a polity's cities, for `RenderCity.family`.
+ *
+ * @param id the polity's id in the map's polity list (`yan`, `wu`, ...).
+ * @returns its family; Central Plains for an id that is not in the table.
+ */
+export function familyOfPolity(id: string): CityFamilyId {
+  return (Object.hasOwn(FAMILY_OF, id) ? FAMILY_OF[id] : undefined) ?? CityFamily.CentralPlains;
+}
+
 export interface CitySpec {
   /** Any integer; cities with different seeds differ in their layout. */
   readonly seed: number;

@@ -53,6 +53,8 @@ Procedural trees in a few families — conifer, broadleaf, bamboo, palm, rainfor
 - **Improvements** are visible on the ground: field furrows, terraces, mines, pastures, fisheries.
 - **Roads** run through the hex centres as trodden earth, **railways** as ballast with sleepers and rails. **Trade routes** are faint dotted lines in their owner's colour that creep along the route, over the water at sea; they are not shown on the political map.
 
+The renderer's `familyOfPolity` gives the family of a polity; whoever builds the scene passes it with each city.
+
 | Family | Nations |
 |---|---|
 | Central Plains | 燕, 晋, 齐, 中州, 秦, 陇右, 西夏, 蜀, 巴, 滇, 夜郎, 楚, 潇湘, 辽东, 扶余, 高丽; city-states 津门, 耽罗, 沙州 |

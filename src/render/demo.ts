@@ -12,7 +12,7 @@ import type { TranslationKey } from '../shared/i18n.ts';
 import { Terrain, isWaterTerrain } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
 import { createDemoGallery } from './demoGallery.ts';
-import { FogState, POST_EFFECTS, PieceEra, QUALITY_TIERS } from './scene.ts';
+import { FogState, POST_EFFECTS, PieceEra, QUALITY_TIERS, familyOfPolity } from './scene.ts';
 import type { PieceEraId, Renderer, RenderCity, RenderScene, RenderUnit, VisualEvent } from './scene.ts';
 
 const DEMO_UNITS = 60;
@@ -53,6 +53,7 @@ export function createDemoScene(map: MapData): RenderScene {
     polity: zone.polity,
     population: zone.capital ? 9 + (i % 3) * 4 : 2 + (i % 4) * 2,
     name: zone.cityNameZh,
+    family: familyOfPolity(map.polities[zone.polity]?.id ?? ''),
   }));
   const cityHexes = new Set(cities.map((city) => city.hex));
 

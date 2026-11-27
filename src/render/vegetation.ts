@@ -24,9 +24,15 @@ export interface Vegetation {
   /**
    * Shows the chunks in range of the camera and builds the ones that are new.
    *
-   * @returns whether a mesh appeared, disappeared or changed, and the number of trees now drawn.
+   * @returns `changed`: whether trees that stand tall enough to cast a shadow
+   *   appeared or disappeared (a chunk at the edge of the range, whose trees
+   *   are still sunk into the ground, does not count, nor does a change of
+   *   detail); `builds`: the meshes built in this call; `trees`: the trees now drawn.
    */
-  update(cameraPosition: Vector3, maxBuilds?: number): { readonly changed: boolean; readonly trees: number };
+  update(
+    cameraPosition: Vector3,
+    maxBuilds?: number,
+  ): { readonly changed: boolean; readonly builds: number; readonly trees: number };
   dispose(): void;
 }
 
@@ -206,9 +212,11 @@ export function createVegetation(surface: Surface, u: MapUniforms): Vegetation {
         const flat = Math.hypot(chunk.x - cameraPosition.x, chunk.z - cameraPosition.z);
         // the camera's height counts: from high up nothing is in range
         const distance = Math.hypot(Math.max(flat - chunk.radius, 0), cameraPosition.y);
+        // inside this distance the trees stand: what happens farther out casts no shadow
+        const standing = distance < range * 0.7;
         if (distance > range) {
-          if (show(chunk.detailed, false)) changed = true;
-          if (show(chunk.coarse, false)) changed = true;
+          show(chunk.detailed, false);
+          show(chunk.coarse, false);
           if (distance > range * KEEP_RANGE && (chunk.detailed !== null || chunk.coarse !== null)) {
             free(chunk.detailed);
             free(chunk.coarse);
@@ -228,14 +236,15 @@ export function createVegetation(surface: Surface, u: MapUniforms): Vegetation {
         // until the wanted version is built, the other one stays
         const other = wantDetailed ? chunk.coarse : chunk.detailed;
         if (wanted !== null) {
-          if (show(wanted, true)) changed = true;
-          if (show(other, false)) changed = true;
+          const wasShown = other?.visible === true;
+          if (show(wanted, true) && standing && !wasShown) changed = true;
+          show(other, false);
           trees += wantDetailed ? chunk.detailedTrees : chunk.coarseTrees;
         } else if (other?.visible === true) {
           trees += wantDetailed ? chunk.coarseTrees : chunk.detailedTrees;
         }
       }
-      return { changed, trees };
+      return { changed, builds, trees };
     },
     dispose() {
       for (const chunk of chunks) {

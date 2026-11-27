@@ -11,7 +11,7 @@ import type { CityFamilyId } from './cityGen.ts';
 import type { PostEffect, PostEffectState } from './postEffects.ts';
 import type { Quality } from './renderScale.ts';
 
-export { CityFamily } from './cityGen.ts';
+export { CityFamily, familyOfPolity } from './cityGen.ts';
 export type { CityFamilyId } from './cityGen.ts';
 export { LANDMARK_IDS } from './landmarks.ts';
 export { POST_EFFECTS } from './postEffects.ts';
@@ -67,9 +67,8 @@ export interface RenderCity {
    */
   readonly capital?: boolean;
   /**
-   * The architectural family the city is built in. If omitted, the family
-   * of the owner: by the id of the polity, Central Plains for an id the
-   * renderer does not know.
+   * The architectural family the city is built in; {@link familyOfPolity}
+   * gives the family of a polity. Central Plains if omitted.
    */
   readonly family?: CityFamilyId;
   /**
