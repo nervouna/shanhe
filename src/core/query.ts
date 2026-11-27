@@ -1,0 +1,414 @@
+/**
+ * Read-only questions about a game state, for the interface and for tools.
+ * Every function takes a `GameState` and changes nothing: the state hashes
+ * the same before and after. The rules' own checks answer them, so what a
+ * query calls legal is what `applyAction` accepts.
+ */
+
+import { buyCost, checkStep, stepCost, upgradeCost, validate } from './actions.ts';
+import { itemCost } from './cities.ts';
+import { cityStrength, defenceStrength, hexesApart, militaryStrength } from './combat.ts';
+import { at, atWar, cityAtHex, createCtx, isEmbarked, relationKey } from './context.ts';
+import type { Ctx } from './context.ts';
+import { AIR_STRIKE, FAVOUR, PROJECT, TRADE, conquestTarget } from './data.ts';
+import type { AgreementKind, PolicyId, TechId } from './data.ts';
+import { dealPrice } from './diplomacy.ts';
+import { openPolicies } from './policies.ts';
+import { isNation } from './relations.ts';
+import { hasResource, openTechs, ownsResource, researches, upgradeTargetFor } from './tech.ts';
+import { checkRoute, checkRouteTarget, findRoutePath, routeIncome, routeSlots, routesOf } from './trade.ts';
+import { capitalsHeld, contenders } from './turn.ts';
+import { NO_POLITY } from './types.ts';
+import type {
+  Action,
+  BuildItem,
+  City,
+  GameState,
+  MutableGameState,
+  RejectReason,
+  RouteTarget,
+  TradeRoute,
+  Unit,
+} from './types.ts';
+
+/**
+ * The rules' working context of a state. The rules only read a context they
+ * validate with, so one per state object is enough however often it is asked.
+ */
+const contexts = new WeakMap<GameState, Ctx>();
+
+function ctxOf(state: GameState): Ctx {
+  let ctx = contexts.get(state);
+  if (ctx === undefined) {
+    ctx = createCtx(state as MutableGameState);
+    contexts.set(state, ctx);
+  }
+  return ctx;
+}
+
+// ----------------------------------------------------------------- actions
+
+/** Why the rules would refuse the action, or null if they would accept it. */
+export function checkAction(state: GameState, action: Action): RejectReason | null {
+  return validate(ctxOf(state), action);
+}
+
+// ------------------------------------------------------------ units, hexes
+
+/** The unit with the id, or null. */
+export function unitWithId(state: GameState, id: number): Readonly<Unit> | null {
+  return ctxOf(state).unitById.get(id) ?? null;
+}
+
+/** The unit standing on the hex, or null. */
+export function unitOnHex(state: GameState, hex: number): Readonly<Unit> | null {
+  return ctxOf(state).unitAt.get(hex) ?? null;
+}
+
+/** The city whose site the hex is, or null. */
+export function cityOnHex(state: GameState, hex: number): Readonly<City> | null {
+  return cityAtHex(ctxOf(state), hex);
+}
+
+/** Distance between two hexes, in hexes. */
+export function hexDistance(state: GameState, a: number, b: number): number {
+  return hexesApart(ctxOf(state), a, b);
+}
+
+/** True if the two polities are at war. Tribes (`NO_POLITY`) are at war with everybody. */
+export function atWarWith(state: GameState, a: number, b: number): boolean {
+  return atWar(ctxOf(state), a, b);
+}
+
+/**
+ * Why a unit like `unit` could not step onto the adjacent hex `to`, or null.
+ * `unit` need not be in the state: a planner asks for a unit as it would
+ * stand somewhere else. Movement points are not checked.
+ */
+export function stepCheck(state: GameState, unit: Readonly<Unit>, to: number): RejectReason | null {
+  return checkStep(ctxOf(state), unit as Unit, to);
+}
+
+/** Movement points the step of {@link stepCheck} costs. */
+export function stepCostOf(state: GameState, unit: Readonly<Unit>, to: number): number {
+  return stepCost(ctxOf(state), unit as Unit, to);
+}
+
+/** True for a land unit standing on water. */
+export function unitEmbarked(state: GameState, unit: Readonly<Unit>): boolean {
+  return isEmbarked(ctxOf(state), unit as Unit);
+}
+
+/** Strength the unit defends with where it stands. */
+export function unitDefence(state: GameState, unit: Readonly<Unit>): number {
+  return defenceStrength(ctxOf(state), unit as Unit);
+}
+
+/** Combat strength of the city in `zone`, or 0 if there is none. */
+export function cityDefence(state: GameState, zone: number): number {
+  const city = state.cities[zone];
+  return city === undefined || city === null ? 0 : cityStrength(ctxOf(state), city as City);
+}
+
+/** What a unit would upgrade to and the gold it costs, or null if it has no upgrade now. */
+export function unitUpgrade(state: GameState, unitId: number): { readonly type: string; readonly gold: number } | null {
+  const ctx = ctxOf(state);
+  const unit = ctx.unitById.get(unitId);
+  const target = unit === undefined ? null : upgradeTargetFor(ctx, unit);
+  return unit === undefined || target === null ? null : { type: target.id, gold: upgradeCost(unit, target) };
+}
+
+// ------------------------------------------------------------------ cities
+
+/** Production the city in `zone` needs for the item, or 0 if there is no city. */
+export function buildCost(state: GameState, zone: number, item: BuildItem): number {
+  const city = state.cities[zone];
+  return city === undefined || city === null ? 0 : itemCost(ctxOf(state), city as City, item);
+}
+
+/** Gold the city in `zone` pays to buy the item outright, or 0 if there is no city. */
+export function buyCostOf(state: GameState, zone: number, item: BuildItem): number {
+  const city = state.cities[zone];
+  return city === undefined || city === null ? 0 : buyCost(ctxOf(state), city as City, item);
+}
+
+/** The hexes the air strike of the city in `zone` could hit now, ascending. Empty without an airfield. */
+export function airStrikeTargets(state: GameState, zone: number): number[] {
+  const city = state.cities[zone];
+  const site = state.map.zones[zone]?.siteHex;
+  if (city === undefined || city === null || site === undefined) return [];
+  const ctx = ctxOf(state);
+  const probe = { type: 'airStrike', polity: city.owner, city: zone } as const;
+  if (validate(ctx, { ...probe, target: site }) === 'noAirfield') return [];
+  const targets: number[] = [];
+  const seen = new Set<number>();
+  for (const unit of state.units) {
+    if (unit.owner !== city.owner) seen.add(unit.hex);
+  }
+  state.cities.forEach((other, index) => {
+    if (other !== null && other.owner !== city.owner) seen.add(at(state.map.zones, index).siteHex);
+  });
+  for (const hex of seen) {
+    if (hexesApart(ctx, site, hex) > AIR_STRIKE.range) continue;
+    if (validate(ctx, { ...probe, target: hex }) === null) targets.push(hex);
+  }
+  return targets.sort((a, b) => a - b);
+}
+
+// ---------------------------------------------------- research and policies
+
+/** The techs `polity` could research now, in table order. Empty for a polity that does not research. */
+export function researchOptions(state: GameState, polity: number): TechId[] {
+  if (state.polities[polity] === undefined || !researches(state, polity)) return [];
+  return openTechs(ctxOf(state), polity);
+}
+
+/** The policy cards `polity` could unlock now, in table order. */
+export function unlockOptions(state: GameState, polity: number): PolicyId[] {
+  if (state.polities[polity] === undefined) return [];
+  return openPolicies(ctxOf(state), polity);
+}
+
+// ---------------------------------------------------------------- standing
+
+/** Military strength of a polity: the sum of its units' power. */
+export function strengthOf(state: GameState, polity: number): number {
+  return militaryStrength(ctxOf(state), polity);
+}
+
+/** Hexes between the capitals of two polities, or null if one of them has none. */
+export function capitalDistance(state: GameState, a: number, b: number): number | null {
+  const site = (polity: number): number | undefined => {
+    const zone = state.polities[polity]?.capital ?? -1;
+    return state.map.zones[zone >= 0 ? zone : (state.map.polities[polity]?.capitalZone ?? -1)]?.siteHex;
+  };
+  const from = site(a);
+  const to = site(b);
+  return from === undefined || to === undefined ? null : hexesApart(ctxOf(state), from, to);
+}
+
+export type FavourCause = 'border' | 'war' | 'sharedEnemy' | 'deal' | 'route' | Exclude<AgreementKind, 'truce'>;
+
+export interface FavourTerm {
+  readonly cause: FavourCause;
+  /** What it adds to the level favour moves towards. */
+  readonly value: number;
+  /** How many times it counts: deals, routes and shared enemies. 1 for the others. */
+  readonly count: number;
+}
+
+export interface FavourStanding {
+  /** Favour now, from -100 to 100. */
+  readonly favour: number;
+  /** The level it moves towards by `FAVOUR.drift` a turn: the sum of the terms, within the limits. */
+  readonly target: number;
+  readonly terms: readonly FavourTerm[];
+}
+
+/**
+ * Favour between two nations and what moves it: the standing terms that the
+ * turn processing of `diplomacy.ts` adds up. Null unless both are living
+ * nations.
+ */
+export function favourStanding(state: GameState, a: number, b: number): FavourStanding | null {
+  const ctx = ctxOf(state);
+  if (a === b || !isNation(ctx, a) || !isNation(ctx, b)) return null;
+  if (state.polities[a]?.alive !== true || state.polities[b]?.alive !== true) return null;
+  const terms: FavourTerm[] = [];
+  const add = (cause: FavourCause, each: number, count = 1): void => {
+    if (count > 0) terms.push({ cause, value: each * count, count });
+  };
+
+  let bordering = false;
+  for (let zone = 0; zone < state.zoneOwner.length && !bordering; zone++) {
+    if (state.zoneOwner[zone] !== a) continue;
+    bordering = at(ctx.topo.zoneNeighbors, zone).some((other) => state.zoneOwner[other] === b);
+  }
+  if (bordering) add('border', FAVOUR.border);
+  if (atWar(ctx, a, b)) add('war', FAVOUR.war);
+  for (const agreement of state.agreements) {
+    if (agreement.kind === 'truce') continue;
+    if ((agreement.a === a && agreement.b === b) || (agreement.a === b && agreement.b === a)) {
+      add(agreement.kind, FAVOUR[agreement.kind]);
+    }
+  }
+  const deals = state.deals.filter(
+    (deal) => (deal.seller === a && deal.buyer === b) || (deal.seller === b && deal.buyer === a),
+  ).length;
+  add('deal', FAVOUR.deal, Math.min(deals, FAVOUR.maxCounted));
+  const routes = state.routes.filter((route) => {
+    const owner = route.toCity < 0 ? undefined : state.cities[route.toCity]?.owner;
+    return (route.owner === a && owner === b) || (route.owner === b && owner === a);
+  }).length;
+  add('route', FAVOUR.route, Math.min(routes, FAVOUR.maxCounted));
+  let shared = 0;
+  for (let other = 0; other < ctx.n && shared < FAVOUR.maxCounted; other++) {
+    if (ctx.war[a * ctx.n + other] === 1 && ctx.war[b * ctx.n + other] === 1) shared++;
+  }
+  add('sharedEnemy', FAVOUR.sharedEnemy, shared);
+
+  const sum = terms.reduce((total, term) => total + term.value, 0);
+  return {
+    favour: state.favour[relationKey(a, b)] ?? 0,
+    target: Math.max(-FAVOUR.max, Math.min(FAVOUR.max, sum)),
+    terms,
+  };
+}
+
+// -------------------------------------------------------------------- deals
+
+export interface DealOption {
+  readonly seller: number;
+  readonly buyer: number;
+  /** `MapResource.id`. */
+  readonly resource: string;
+  /** The price per turn an AI asks and pays. */
+  readonly goldPerTurn: number;
+}
+
+/**
+ * The resource deals that could stand between the two nations: each
+ * resource one of them has a source of and the other cannot draw on, at the
+ * price an AI asks and pays. Whether the other side agrees is `checkAction`'s
+ * answer for the `proposeDeal` action.
+ */
+export function dealOptions(state: GameState, a: number, b: number): DealOption[] {
+  const ctx = ctxOf(state);
+  if (a === b || !isNation(ctx, a) || !isNation(ctx, b)) return [];
+  const options: DealOption[] = [];
+  for (const [seller, buyer] of [[b, a], [a, b]] as const) {
+    for (const resource of state.map.resources) {
+      if (!ownsResource(ctx, seller, resource.id) || hasResource(ctx, buyer, resource.id)) continue;
+      options.push({ seller, buyer, resource: resource.id, goldPerTurn: dealPrice(resource.id) });
+    }
+  }
+  return options;
+}
+
+// ------------------------------------------------------------- trade routes
+
+export interface RouteOption {
+  readonly to: RouteTarget;
+  /** Why the route cannot be opened now, or null. */
+  readonly reason: RejectReason | null;
+  /** The hexes it would run over; empty when the target itself is refused. */
+  readonly path: readonly number[];
+  readonly sea: boolean;
+  /** Gold per turn it would give; 0 when the target itself is refused. */
+  readonly income: number;
+}
+
+export interface RouteSlots {
+  readonly used: number;
+  readonly total: number;
+}
+
+/** The trade route slots of `polity` and how many its routes fill. */
+export function routeSlotsOf(state: GameState, polity: number): RouteSlots {
+  const ctx = ctxOf(state);
+  return { used: routesOf(ctx, polity).length, total: routeSlots(ctx, polity) };
+}
+
+/**
+ * Where a trade route from the city in zone `from` could go, in the order of
+ * the map: every city with a path in range and every off-map port in reach,
+ * each with the income it would give and, where the rules refuse it now, the
+ * reason (no free slot, a route there already, a port its techs have not
+ * opened). Cities of polities it is at war with are left out.
+ */
+export function routeOptions(state: GameState, from: number): RouteOption[] {
+  const city = state.cities[from];
+  if (city === undefined || city === null) return [];
+  const ctx = ctxOf(state);
+  const polity = city.owner;
+  const start = at(state.map.zones, from).siteHex;
+  const reach = Math.max(TRADE.landRange, TRADE.seaRange) + 2;
+  const options: RouteOption[] = [];
+
+  const consider = (to: RouteTarget, hex: number): void => {
+    if (hexesApart(ctx, start, hex) > reach) return;
+    const closed = checkRouteTarget(ctx, polity, from, to);
+    if (closed === 'portClosed') {
+      options.push({ to, reason: closed, path: [], sea: false, income: 0 });
+      return;
+    }
+    if (closed !== null) return;
+    const found = findRoutePath(ctx, polity, from, to);
+    if (found === null) return;
+    const route: TradeRoute = {
+      id: 0,
+      owner: polity,
+      from,
+      toCity: to.kind === 'city' ? to.zone : -1,
+      toPort: to.kind === 'port' ? to.port : -1,
+      sea: found.sea,
+      path: found.path,
+      income: 0,
+      pillagedUntil: 0,
+    };
+    options.push({
+      to,
+      reason: checkRoute(ctx, polity, from, to),
+      path: found.path,
+      sea: found.sea,
+      income: routeIncome(ctx, route),
+    });
+  };
+
+  state.cities.forEach((other, zone) => {
+    if (other !== null && zone !== from) consider({ kind: 'city', zone }, at(state.map.zones, zone).siteHex);
+  });
+  state.map.offMapPorts.forEach((port, index) => {
+    consider({ kind: 'port', port: index }, port.hex);
+  });
+  return options;
+}
+
+// ------------------------------------------------------------------ victory
+
+export interface VictoryRow {
+  readonly polity: number;
+  /** Original capitals of major nations it holds, itself or through a vassal. */
+  readonly capitals: number;
+  /** Stages of the endgame project it has completed. */
+  readonly stages: number;
+  /** Cumulative gross income: what the Economic victory ranks. */
+  readonly income: number;
+}
+
+export interface VictoryStandings {
+  /** Capitals the Conquest victory needs. */
+  readonly capitalsNeeded: number;
+  /** Stages the Science victory needs. */
+  readonly stagesNeeded: number;
+  /** Turns left until the Economic victory is decided. */
+  readonly turnsLeft: number;
+  /** One row per polity that can win, ascending by polity. */
+  readonly rows: readonly VictoryRow[];
+}
+
+/** Where every polity that can win stands on each of the three victories. */
+export function victoryStandings(state: GameState): VictoryStandings {
+  const ctx = ctxOf(state);
+  return {
+    capitalsNeeded: conquestTarget(state.majors.length),
+    stagesNeeded: PROJECT.stages.length,
+    turnsLeft: Math.max(0, state.lastTurn - state.turn),
+    rows: contenders(ctx).map((polity) => ({
+      polity,
+      capitals: capitalsHeld(ctx, polity),
+      stages: state.polities[polity]?.projectStage ?? 0,
+      income: state.polities[polity]?.grossIncome ?? 0,
+    })),
+  };
+}
+
+/** The polities that can win: the living major nations and the player. */
+export function victoryContenders(state: GameState): number[] {
+  return contenders(ctxOf(state));
+}
+
+/** Number of major nations' original capitals `polity` holds, itself or through a vassal. */
+export function capitalsHeldBy(state: GameState, polity: number): number {
+  return polity === NO_POLITY ? 0 : capitalsHeld(ctxOf(state), polity);
+}

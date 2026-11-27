@@ -1,24 +1,16 @@
 /** Read-only questions the interface asks the rules. Nothing here changes a state. */
 
-import { upgradeCost, validate } from '../core/actions.ts';
-import { itemCost, maxCityHp } from '../core/cities.ts';
-import { createCtx } from '../core/context.ts';
-import type { Ctx } from '../core/context.ts';
+import { maxCityHp } from '../core/cities.ts';
 import { BUILDING_IDS, IMPROVEMENT_IDS, PROJECT, UNIT_IDS, WAR, noYields } from '../core/data.ts';
 import type { ImprovementId, TechId, Yields } from '../core/data.ts';
 import { NO_POLITY, researchCost } from '../core/game.ts';
-import { upgradeTargetFor } from '../core/tech.ts';
-import type { Action, BuildItem, City, GameState, MutableGameState, RejectReason } from '../core/game.ts';
+import type { Action, BuildItem, City, GameState, RejectReason } from '../core/game.ts';
+import { buildCost, capitalsHeldBy, checkAction, unitUpgrade, victoryContenders } from '../core/query.ts';
 import { topologyOf } from '../core/topology.ts';
-import { capitalsHeld, contenders } from '../core/turn.ts';
-
-function contextOf(state: GameState): Ctx {
-  return createCtx(state as MutableGameState);
-}
 
 /** Why the rules would refuse the action, or null if they would accept it. */
 export function check(state: GameState, action: Action): RejectReason | null {
-  return validate(contextOf(state), action);
+  return checkAction(state, action);
 }
 
 /** A thing a city can build, or is building. */
@@ -53,20 +45,20 @@ export interface CityView {
 export function cityView(state: GameState, zone: number): CityView | null {
   const city = state.cities[zone];
   if (city === undefined || city === null) return null;
-  const ctx = contextOf(state);
   const polity = city.owner;
+  const topo = topologyOf(state.map);
   const production = city.yields.production;
   const option = (item: BuildItem): BuildOption => {
-    const cost = itemCost(ctx, city, item);
+    const cost = buildCost(state, zone, item);
     return { item, cost, turns: turnsFor(cost, production) };
   };
   const legal = (item: BuildItem): boolean =>
-    validate(ctx, { type: 'queueBuild', polity, city: zone, item }) === null;
+    checkAction(state, { type: 'queueBuild', polity, city: zone, item }) === null;
 
   const units = UNIT_IDS.map((unit): BuildItem => ({ kind: 'unit', unit })).filter(legal).map(option);
   const buildings = BUILDING_IDS.map((building): BuildItem => ({ kind: 'building', building })).filter(legal).map(option);
   const improvements = IMPROVEMENT_IDS.flatMap((improvement) => {
-    const hexes = (ctx.topo.workHexes[zone] ?? []).filter((hex) => legal({ kind: 'improvement', improvement, hex }));
+    const hexes = (topo.workHexes[zone] ?? []).filter((hex) => legal({ kind: 'improvement', improvement, hex }));
     const first = hexes[0];
     return first === undefined ? [] : [{ ...option({ kind: 'improvement', improvement, hex: first }), improvement, hexes }];
   });
@@ -78,7 +70,7 @@ export function cityView(state: GameState, zone: number): CityView | null {
   const project: BuildItem = { kind: 'project', project: PROJECT.id };
   const projects = legal(project) ? [option(project)] : [];
   const queue = city.queue.map((item, index): BuildOption => {
-    const cost = itemCost(ctx, city, item);
+    const cost = buildCost(state, zone, item);
     return { item, cost, turns: turnsFor(index === 0 ? Math.max(1, cost - city.progress) : cost, production) };
   });
   return { city, maxHp: maxCityHp(city), queue, units, buildings, improvements, sites, projects };
@@ -142,14 +134,13 @@ export interface RankingRow {
 
 /** The nations that can win, the winner first, then by cumulative income. */
 export function ranking(state: GameState): RankingRow[] {
-  const ctx = contextOf(state);
-  const listed = new Set<number>([...state.majors, ...contenders(ctx)]);
+  const listed = new Set<number>([...state.majors, ...victoryContenders(state)]);
   if (state.player !== NO_POLITY) listed.add(state.player);
   const winner = state.result?.winner ?? NO_POLITY;
   return [...listed]
     .map((polity): RankingRow => ({
       polity,
-      capitals: capitalsHeld(ctx, polity),
+      capitals: capitalsHeldBy(state, polity),
       cities: state.cities.filter((city) => city !== null && city.owner === polity).length,
       income: state.polities[polity]?.grossIncome ?? 0,
       alive: state.polities[polity]?.alive === true,
@@ -171,10 +162,7 @@ export function cityZoneAt(state: GameState, hex: number): number {
 
 /** What a unit would upgrade to and the gold it costs, or null if it has no upgrade now. */
 export function upgradeView(state: GameState, unitId: number): { readonly type: string; readonly gold: number } | null {
-  const ctx = contextOf(state);
-  const unit = ctx.unitById.get(unitId);
-  const target = unit === undefined ? null : upgradeTargetFor(ctx, unit);
-  return unit === undefined || target === null ? null : { type: target.id, gold: upgradeCost(unit, target) };
+  return unitUpgrade(state, unitId);
 }
 
 /** What a polity is researching and how long it still takes, or null if it researches nothing now. */

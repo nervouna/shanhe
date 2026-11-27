@@ -4,12 +4,22 @@
  * of an attack. Legality and costs come from the rules' own functions.
  */
 
-import { checkStep, stepCost } from '../core/actions.ts';
-import { attackStrength, cityStrength, combatDamage, defenceStrength, hexesApart } from '../core/combat.ts';
-import { atWar, cityAtHex, createCtx, isEmbarked } from '../core/context.ts';
-import type { Ctx } from '../core/context.ts';
+import { attackStrength, combatDamage } from '../core/combat.ts';
 import { unitDef } from '../core/data.ts';
-import type { GameState, MutableGameState, Unit } from '../core/game.ts';
+import type { GameState, Unit } from '../core/game.ts';
+import {
+  atWarWith,
+  cityDefence,
+  cityOnHex,
+  hexDistance,
+  stepCheck,
+  stepCostOf,
+  unitDefence,
+  unitEmbarked,
+  unitOnHex,
+  unitWithId,
+} from '../core/query.ts';
+import { topologyOf } from '../core/topology.ts';
 
 export interface Path {
   /** The hexes to step on, in order, without the hex the unit stands on. */
@@ -18,11 +28,6 @@ export interface Path {
   readonly turns: number[];
   /** Turns the whole move takes; 0 if the unit is already there. */
   readonly total: number;
-}
-
-/** The rules never change a state they only read; they just do not say so in their types. */
-function contextOf(state: GameState): Ctx {
-  return createCtx(state as MutableGameState);
 }
 
 /** A binary heap of hexes ordered by a numeric key. */
@@ -94,8 +99,9 @@ interface Search {
  * @param done stops the search on the first hex for which it is true.
  * @param maxTurn hexes that would be reached after this turn (0 is the current one) are not explored.
  */
-function search(ctx: Ctx, unit: Unit, done: (hex: number) => boolean, maxTurn: number): Search {
-  const count = ctx.topo.count;
+function search(state: GameState, unit: Readonly<Unit>, done: (hex: number) => boolean, maxTurn: number): Search {
+  const topo = topologyOf(state.map);
+  const count = topo.count;
   // Movement points come in fractions on roads and railways, so the keys are not whole numbers.
   const key = new Float64Array(count).fill(-1);
   const from = new Int32Array(count).fill(-1);
@@ -123,9 +129,9 @@ function search(ctx: Ctx, unit: Unit, done: (hex: number) => boolean, maxTurn: n
     probe.hex = hex;
     probe.moves = left;
     for (let d = 0; d < 6; d++) {
-      const next = ctx.topo.neighbors[hex * 6 + d] as number;
-      if (next < 0 || checkStep(ctx, probe, next) !== null) continue;
-      const after = Math.max(0, left - stepCost(ctx, probe, next));
+      const next = topo.neighbors[hex * 6 + d] as number;
+      if (next < 0 || stepCheck(state, probe, next) !== null) continue;
+      const after = Math.max(0, left - stepCostOf(state, probe, next));
       const nextKey = turn * TURN_KEY + (full - after);
       if (key[next] === -1 || nextKey < (key[next] as number)) {
         key[next] = nextKey;
@@ -137,8 +143,8 @@ function search(ctx: Ctx, unit: Unit, done: (hex: number) => boolean, maxTurn: n
   return { key, from, end };
 }
 
-function isHex(ctx: Ctx, hex: number): boolean {
-  return Number.isInteger(hex) && hex >= 0 && hex < ctx.topo.count;
+function isHex(state: GameState, hex: number): boolean {
+  return Number.isInteger(hex) && hex >= 0 && hex < topologyOf(state.map).count;
 }
 
 /**
@@ -150,13 +156,12 @@ function isHex(ctx: Ctx, hex: number): boolean {
  *   reach. Default 0.
  */
 export function findPath(state: GameState, unitId: number, target: number, within = 0): Path | null {
-  const ctx = contextOf(state);
-  const unit = ctx.unitById.get(unitId);
-  if (unit === undefined || !isHex(ctx, target)) return null;
+  const unit = unitWithId(state, unitId);
+  if (unit === null || !isHex(state, target)) return null;
   const found = search(
-    ctx,
+    state,
     unit,
-    within <= 0 ? (hex) => hex === target : (hex) => hexesApart(ctx, hex, target) <= within,
+    within <= 0 ? (hex) => hex === target : (hex) => hexDistance(state, hex, target) <= within,
     Infinity,
   );
   if (found.end < 0) return null;
@@ -180,10 +185,9 @@ export function stepsThisTurn(state: GameState, unitId: number, target: number, 
 
 /** Every hex the unit can move to in the current turn, ascending. */
 export function reachableHexes(state: GameState, unitId: number): number[] {
-  const ctx = contextOf(state);
-  const unit = ctx.unitById.get(unitId);
-  if (unit === undefined || unit.moves <= 0) return [];
-  const found = search(ctx, unit, () => false, 0);
+  const unit = unitWithId(state, unitId);
+  if (unit === null || unit.moves <= 0) return [];
+  const found = search(state, unit, () => false, 0);
   const out: number[] = [];
   for (let hex = 0; hex < found.key.length; hex++) {
     const k = found.key[hex] as number;
@@ -201,9 +205,10 @@ export interface AttackPreview {
   readonly capture: boolean;
 }
 
-function riverBetween(ctx: Ctx, from: number, to: number): boolean {
+function riverBetween(state: GameState, from: number, to: number): boolean {
+  const topo = topologyOf(state.map);
   for (let d = 0; d < 6; d++) {
-    if (ctx.topo.neighbors[from * 6 + d] === to) return ((ctx.map.riverEdges[from] as number) & (1 << d)) !== 0;
+    if (topo.neighbors[from * 6 + d] === to) return ((state.map.riverEdges[from] as number) & (1 << d)) !== 0;
   }
   return false;
 }
@@ -216,20 +221,19 @@ function riverBetween(ctx: Ctx, from: number, to: number): boolean {
  * @param from the hex the unit would attack from. Default: where it stands.
  */
 export function previewAttack(state: GameState, unitId: number, target: number, from?: number): AttackPreview | null {
-  const ctx = contextOf(state);
-  const unit = ctx.unitById.get(unitId);
-  if (unit === undefined || !isHex(ctx, target)) return null;
+  const unit = unitWithId(state, unitId);
+  if (unit === null || !isHex(state, target)) return null;
   const def = unitDef(unit.type);
   if (def.strength <= 0) return null;
   const origin = from ?? unit.hex;
   const ranged = def.range > 0;
-  const across = riverBetween(ctx, origin, target);
+  const across = riverBetween(state, origin, target);
 
-  const city = cityAtHex(ctx, target);
+  const city = cityOnHex(state, target);
   if (city !== null && city.owner !== unit.owner) {
-    if (!atWar(ctx, unit.owner, city.owner)) return null;
+    if (!atWarWith(state, unit.owner, city.owner)) return null;
     if (!ranged && city.hp <= 0 && def.domain === 'land') return { toDefender: 0, toAttacker: 0, capture: true };
-    const strength = cityStrength(ctx, city);
+    const strength = cityDefence(state, city.zone);
     return {
       toDefender: combatDamage(attackStrength(unit, ranged, true, across), strength, 1),
       toAttacker: ranged ? 0 : combatDamage(strength, attackStrength(unit, false, false, false), 1),
@@ -237,11 +241,11 @@ export function previewAttack(state: GameState, unitId: number, target: number, 
     };
   }
 
-  const defender = ctx.unitAt.get(target);
-  if (defender === undefined || defender.owner === unit.owner || !atWar(ctx, unit.owner, defender.owner)) return null;
+  const defender = unitOnHex(state, target);
+  if (defender === null || defender.owner === unit.owner || !atWarWith(state, unit.owner, defender.owner)) return null;
   if (unitDef(defender.type).strength === 0) return { toDefender: defender.hp, toAttacker: 0, capture: false };
   const attack = attackStrength(unit, ranged, false, across);
-  const defence = defenceStrength(ctx, defender);
+  const defence = unitDefence(state, defender);
   return {
     toDefender: combatDamage(attack, defence, 1),
     toAttacker: ranged ? 0 : combatDamage(defence, attack, 1),
@@ -257,7 +261,6 @@ export function attackReach(state: GameState, unitId: number): number {
 
 /** True for a land unit standing on water. */
 export function embarked(state: GameState, unitId: number): boolean {
-  const ctx = contextOf(state);
-  const unit = ctx.unitById.get(unitId);
-  return unit !== undefined && isEmbarked(ctx, unit);
+  const unit = unitWithId(state, unitId);
+  return unit !== null && unitEmbarked(state, unit);
 }
