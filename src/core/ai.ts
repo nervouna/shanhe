@@ -26,7 +26,6 @@ import {
   unitDef,
   upgradeTarget,
 } from './data.ts';
-import type { BuildingId } from './data.ts';
 import { checkStep, isSettleSite, militaryStrength, upgradeCost, validate } from './actions.ts';
 import { checkItem, improvementFits } from './cities.ts';
 import {
@@ -49,16 +48,6 @@ const UNREACHABLE = 32767;
 const PATH_LIMIT = 60;
 /** Cost of a water hex on a land unit's path: crossing is possible but not preferred. */
 const WATER_PATH_COST = 3;
-
-/** The order in which the AI adds buildings to a city. */
-const BUILDING_ORDER: readonly BuildingId[] = ['granary', 'walls', 'workshop', 'market', 'academy', 'temple', 'harbour'];
-/** Field army mix: the class furthest below its share is built next. */
-const ARMY_MIX = [
-  ['infantry', 3],
-  ['ranged', 2],
-  ['siege', 2],
-  ['cavalry', 1],
-] as const;
 
 function isMilitary(unit: Unit): boolean {
   const def = unitDef(unit.type);
@@ -210,9 +199,9 @@ function manageFocus(polity: number, city: City, act: Act): void {
 }
 
 function fieldUnit(ctx: Ctx, plans: Plans): BuildItem {
-  let best: string = ARMY_MIX[0][0];
+  let best: string = AI.armyMix[0][0];
   let lowest = Infinity;
-  for (const [unitClass, share] of ARMY_MIX) {
+  for (const [unitClass, share] of AI.armyMix) {
     // The garrisons are infantry that never take the field.
     const serving = (plans.byClass[unitClass] ?? 0) - (unitClass === 'infantry' ? plans.garrisons : 0);
     const filled = Math.max(0, serving) / share;
@@ -281,7 +270,7 @@ function chooseBuild(ctx: Ctx, polity: number, city: City, cities: City[], plans
   if (recruiting && (plans.atWar || plans.military * 2 < plans.wanted)) return fieldUnit(ctx, plans);
   const worked = chooseImprovement(ctx, city, city.worked);
   if (worked !== null) return worked;
-  for (const building of BUILDING_ORDER.slice(0, AI.coreBuildings)) {
+  for (const building of AI.buildingOrder.slice(0, AI.coreBuildings)) {
     const item: BuildItem = { kind: 'building', building };
     if (can(item)) return item;
   }
@@ -292,7 +281,7 @@ function chooseBuild(ctx: Ctx, polity: number, city: City, cities: City[], plans
       return { kind: 'unit', unit: SETTLER };
     }
   }
-  for (const building of BUILDING_ORDER) {
+  for (const building of AI.buildingOrder) {
     const item: BuildItem = { kind: 'building', building };
     if (can(item)) return item;
   }

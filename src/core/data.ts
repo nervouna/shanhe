@@ -1,8 +1,9 @@
 /**
  * The rules' data tables: eras, terrain yields, improvements, buildings,
- * units and every balancing constant. Rules code reads these tables and holds
- * no numbers of its own, so later issues (tech, policies, nation kits) can
- * extend or replace entries without touching code paths.
+ * units and the balancing constants. Rules code reads these tables, so later
+ * issues (tech, policies, nation kits) can extend or replace entries without
+ * touching code paths. Only the AI's target scoring and path costs, which are
+ * heuristics and not rules, stay in `ai.ts`.
  */
 
 import { Feature, Terrain } from '../shared/mapData.ts';
@@ -442,7 +443,18 @@ export const HEXES_PER_TRIBE = 12;
 
 // --------------------------------------------------------------------- AI
 
+const AI_BUILDING_ORDER: readonly BuildingId[] = ['granary', 'walls', 'workshop', 'market', 'academy', 'temple', 'harbour'];
+
 export const AI = {
+  /** The order in which a city gets its buildings. */
+  buildingOrder: AI_BUILDING_ORDER,
+  /** Field army mix by class and share: the class furthest below its share is built next. */
+  armyMix: [
+    ['infantry', 3],
+    ['ranged', 2],
+    ['siege', 2],
+    ['cavalry', 1],
+  ],
   /** A major nation keeps this share of its spare gold income for unit upkeep. */
   armyIncomeShare: 0.6,
   /** No war before this turn. */

@@ -44,7 +44,10 @@ if (!Number.isInteger(turns) || turns < 1 || !Number.isInteger(seed)) {
 }
 
 const map = loadMap(source);
-let state = createGame(map, { seed, turns });
+// The synthetic map has none of the default major nations: take twelve spread evenly over its nations.
+const nations = map.polities.filter((polity) => polity.kind === 'nation').map((polity) => polity.id);
+const spread = Array.from({ length: 12 }, (_, i) => nations[Math.floor((i * nations.length) / 12)] ?? '');
+let state = createGame(map, source === 'synthetic' ? { seed, turns, majors: spread } : { seed, turns });
 console.log(
   `map: ${source}, ${map.width} x ${map.height} hexes, ${map.polities.length} polities, ` +
     `${map.zones.length} zones, ${state.majors.length} major nations`,
