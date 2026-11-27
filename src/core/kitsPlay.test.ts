@@ -164,6 +164,25 @@ describe('a war across the water', () => {
     expect(events.some((event) => event.type === 'combat' && ships.has(event.unit))).toBe(true);
   }, 60_000);
 
+  it('goes the other way too: the island nation lands on the mainland and takes a coastal city', () => {
+    // The island has room for three units; the rest of its army starts afloat beside it.
+    const shore = topo.zoneHexes[target]!.filter((hex) => topo.landmass[hex] === topo.landmass[site] && hex !== site);
+    const afloat = topo.workHexes[target]!.filter((hex) => topo.water[hex] === 1);
+    expect(shore).toHaveLength(2);
+    expect(afloat.length).toBeGreaterThanOrEqual(6);
+    let state = withCity(createGame(map, { majors: ['ryukyu'], seed: 5 }), SECOND, ATTACKER);
+    state = learn(learn(state, ATTACKER, ['boats']), DEFENDER, ['boats']);
+    state = edit(state, (draft) => {
+      draft.relations[`${ATTACKER}:${DEFENDER}`] = { a: ATTACKER, b: DEFENDER, atWar: true, since: 1, offerA: 0, offerB: 0 };
+      for (const hex of shore) put(draft, 'warrior', DEFENDER, hex);
+      for (let i = 0; i < 6; i++) put(draft, 'warrior', DEFENDER, afloat[i]!);
+    });
+    const { state: after, events } = play(state, 40);
+    const captured = events.find((event) => event.type === 'cityCaptured' && event.city === SECOND);
+    expect(captured).toMatchObject({ from: ATTACKER, to: DEFENDER });
+    expect(after.stats.seaInvasions).toBeGreaterThanOrEqual(1);
+  }, 60_000);
+
   it('has coastal nations keep warships, and inland ones none', () => {
     // Every nation knows Boats and nobody goes to war; after a while the ones whose capital
     // is on the coast have a ship, and a nation without a coastal city has none.

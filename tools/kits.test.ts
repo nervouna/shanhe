@@ -21,10 +21,37 @@ const ctx = createCtx(cloneState(state));
 const text = (language: 'zh' | 'en', key: string): string | undefined =>
   (dictionaries[language] as Record<string, string>)[key];
 
+/** The 50 nations of doc 02, in its order: id, Chinese name, English name. */
+const NATIONS: readonly (readonly [id: string, zh: string, en: string])[] = [
+  ['yan', '燕', 'Yan'], ['jin', '晋', 'Jin'], ['qi', '齐', 'Qi'], ['zhongzhou', '中州', 'Zhongzhou'], ['qin', '秦', 'Qin'],
+  ['longyou', '陇右', 'Longyou'], ['xixia', '西夏', 'Xixia'], ['qingtang', '青唐', 'Qingtang'], ['shu', '蜀', 'Shu'],
+  ['ba', '巴', 'Ba'], ['dian', '滇', 'Dian'], ['yelang', '夜郎', 'Yelang'], ['tubo', '吐蕃', 'Tubo'], ['chu', '楚', 'Chu'],
+  ['xiaoxiang', '潇湘', 'Xiaoxiang'], ['yuzhang', '豫章', 'Yuzhang'], ['huainan', '淮南', 'Huainan'], ['wu', '吴', 'Wu'],
+  ['yue', '越', 'Yue'], ['min', '闽', 'Min'], ['dongning', '东宁', 'Dongning'], ['lingnan', '岭南', 'Lingnan'],
+  ['luoyue', '骆越', 'Luoyue'], ['qiongya', '琼崖', 'Qiongya'], ['liaodong', '辽东', 'Liaodong'], ['fuyu', '扶余', 'Fuyu'],
+  ['heishui', '黑水', 'Heishui'], ['monan', '漠南', 'Monan'], ['mobei', '漠北', 'Mobei'], ['goryeo', '高丽', 'Goryeo'],
+  ['ezo', '虾夷', 'Ezo'], ['togoku', '东国', 'Togoku'], ['yamato', '大和', 'Yamato'], ['tsukushi', '筑紫', 'Tsukushi'],
+  ['ryukyu', '琉球', 'Ryukyu'], ['beihai', '北海', 'Beihai'], ['shuaibin', '率宾', 'Shuaibin'], ['jiaozhi', '交趾', 'Jiaozhi'],
+  ['champa', '占城', 'Champa'], ['lanxang', '澜沧', 'Lan Xang'], ['chenla', '真腊', 'Chenla'], ['siam', '暹罗', 'Siam'],
+  ['pagan', '蒲甘', 'Pagan'], ['malacca', '满剌加', 'Malacca'], ['srivijaya', '三佛齐', 'Srivijaya'], ['shepo', '阇婆', 'Shepo'],
+  ['boni', '渤泥', 'Boni'], ['luzon', '吕宋', 'Luzon'], ['sulu', '苏禄', 'Sulu'], ['maluku', '美洛居', 'Maluku'],
+];
+
 describe('the kits on the real map', () => {
   it('cover the 50 nations of the map, in its order', () => {
     const nations = map.polities.filter((polity) => polity.kind === 'nation').map((polity) => polity.id);
     expect(nations).toEqual(KIT_NATIONS);
+  });
+
+  it('find every nation of doc 02 on the map under its Chinese and its English name', () => {
+    expect(NATIONS).toHaveLength(50);
+    expect(NATIONS.map((row) => row[0])).toEqual(KIT_NATIONS);
+    for (const [id, zh, en] of NATIONS) {
+      const polity = map.polities.find((entry) => entry.id === id);
+      expect(polity?.kind, id).toBe('nation');
+      expect(polity?.nameZh, id).toBe(zh);
+      expect(polity?.nameEn, id).toBe(en);
+    }
   });
 
   it('find all 54 specialties on the map, named alike in both languages', () => {

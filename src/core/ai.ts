@@ -12,6 +12,7 @@
  * - Every nation with a coast keeps warships in proportion to its coastal
  *   cities and to the threats at sea; at war they go with the embarked army
  *   or to the waters of the city it marches on, and fight what they meet.
+ *   Units afloat that are held up step aside, so a landing spreads out.
  * - A leader's personality (`PERSONALITIES` in `kits.ts`) bends the weights:
  *   when to go to war, what to build and research first, which routes and
  *   agreements to seek, how large a navy to keep.
@@ -1101,13 +1102,14 @@ function advanceOneStep(ctx: Ctx, unit: Unit, field: Int16Array, act: Act): bool
 }
 
 /**
- * Where a unit that cannot get closer steps aside: a free hex no farther from
- * the goal from which the way on is open, so that a column held up behind
- * one unit spreads out along the front. -1 if there is none, or if the unit
- * has already moved this turn (it does not shuffle to and fro).
+ * Where a unit afloat that cannot get closer steps aside: a free hex no
+ * farther from the goal from which the way on is open, so that a landing held
+ * up behind one unit spreads out along the shore. -1 if there is none, if the
+ * unit is on land (armies on land march as they always did), or if it has
+ * already moved this turn (it does not shuffle to and fro).
  */
 function sidestep(ctx: Ctx, unit: Unit, field: Int16Array): number {
-  if (unit.acted) return -1;
+  if (unit.acted || ctx.topo.water[unit.hex] !== 1) return -1;
   const here = field[unit.hex] as number;
   for (let d = 0; d < 6; d++) {
     const next = ctx.topo.neighbors[unit.hex * 6 + d] as number;
