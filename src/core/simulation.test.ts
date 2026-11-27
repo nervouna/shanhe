@@ -4,7 +4,7 @@ import { Terrain } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
 import { createSyntheticMap } from '../shared/syntheticMap.ts';
 import { BORDER_OPENING } from './context.ts';
-import { CITY, TECHS, UNITS } from './data.ts';
+import { CITY, DIPLOMACY, TECHS, UNITS } from './data.ts';
 import { NO_POLITY, createGame, endTurn, hexOwner } from './game.ts';
 import type { Action, GameEvent, GameSetup, GameState } from './game.ts';
 import { topologyOf } from './topology.ts';
@@ -56,6 +56,52 @@ function violation(state: GameState): string | null {
     for (const tech of polity.techs) {
       if (TECHS[tech].era > polity.era) return `a polity knows ${tech} before its era`;
     }
+  }
+  // Diplomacy, trade and city-states.
+  const alive = (polity: number): boolean => state.polities[polity]?.alive === true;
+  const fighting = (a: number, b: number): boolean => state.relations[a < b ? `${a}:${b}` : `${b}:${a}`]?.atWar === true;
+  for (const [index, polity] of state.polities.entries()) {
+    if (polity.overlord !== NO_POLITY) {
+      if (!polity.alive || !alive(polity.overlord)) return `vassal ${index} or its overlord is dead`;
+      if (!state.agreements.some((a) => a.kind === 'vassalage' && a.a === polity.overlord && a.b === index)) {
+        return `vassal ${index} without a vassalage`;
+      }
+      if (fighting(index, polity.overlord)) return `vassal ${index} at war with its overlord`;
+    }
+    if (polity.slots.filter((card) => card !== null).some((card) => !polity.policies.includes(card))) {
+      return `polity ${index} has a card in a slot that it has not unlocked`;
+    }
+    if (polity.suzerain !== NO_POLITY && (!polity.alive || !alive(polity.suzerain) || polity.cityStateType === null)) {
+      return `polity ${index} has a suzerain it cannot have`;
+    }
+    if (polity.suzerain !== NO_POLITY && fighting(index, polity.suzerain)) return `city-state ${index} at war with its suzerain`;
+  }
+  for (const agreement of state.agreements) {
+    if (!alive(agreement.a) || !alive(agreement.b)) return `${agreement.kind} with a dead polity`;
+    if (fighting(agreement.a, agreement.b)) return `${agreement.kind} between polities at war`;
+    for (const side of [agreement.a, agreement.b]) {
+      if (map.polities[side]!.kind !== 'nation') return `${agreement.kind} with a polity that is no nation`;
+    }
+  }
+  for (const polity of state.polities.keys()) {
+    const alliances = state.agreements.filter((a) => a.kind === 'alliance' && (a.a === polity || a.b === polity));
+    if (alliances.length > DIPLOMACY.maxAlliances) return `polity ${polity} has too many alliances`;
+  }
+  for (const deal of state.deals) {
+    if (!alive(deal.seller) || !alive(deal.buyer) || fighting(deal.seller, deal.buyer)) return `deal ${deal.id} cannot stand`;
+  }
+  for (const offer of state.offers) if (offer.to !== state.player) return `offer ${offer.id} to an AI`;
+  for (const route of state.routes) {
+    const from = state.cities[route.from];
+    if (!alive(route.owner) || from === null || from === undefined || from.owner !== route.owner) {
+      return `route ${route.id} does not start from a city of its owner`;
+    }
+    const to = route.toCity < 0 ? null : state.cities[route.toCity];
+    if (to !== null && to !== undefined && fighting(route.owner, to.owner)) return `route ${route.id} to an enemy city`;
+    if (route.path.some((hex) => (topo.water[hex] === 1) !== route.sea)) return `route ${route.id} leaves its element`;
+  }
+  for (const hex of Object.keys(state.roads)) {
+    if (topo.water[Number(hex)] === 1 || topo.enterable[Number(hex)] !== 1) return `road on hex ${hex}`;
   }
   return null;
 }

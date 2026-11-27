@@ -10,7 +10,7 @@ Rules:
 - Every tech after the Ancient era has 1–2 prerequisites, all from earlier eras (see [Prerequisites](#prerequisites)). Ancient techs have none. Within an era the order is free.
 - A tech can be researched once its era has been entered. Entering the next era requires at least 4 techs of the current era; a nation's era is the highest it has entered, and each nation has its own.
 - **Catch-up**: a tech already known by any other living nation or city-state costs 20% less.
-- Cost per tech by era: 7, 32, 100, 250, 720, 1000 science. With these the leading major nation enters the Modern era around turn 115–125 and knows 38–39 of the 40 techs when the game ends; the other major nations end with 22 or more.
+- Cost per tech by era: 7, 32, 100, 250, 720, 1000 science. With these the leading major nation enters the Modern era around turn 110–125 and knows 35–40 of the 40 techs when the game ends (fewer when it wins by science before turn 150); the other major nations end with 22 or more.
 - **Simplified-AI nations and city-states do not research.** They know a tech once half of the researching nations (the living major nations and the player) know it, and their era follows from what they know.
 - A unit, building or improvement is available only with its tech. The settler needs no tech: it needs the Classical era.
 
@@ -129,8 +129,8 @@ Ancient techs have no prerequisite.
 - **Irrigation canal** (Irrigation): an improvement for flat river land (plains, grassland, desert): +3 food.
 - **Canal** (Irrigation): an improvement for flat river land: +1 production, +3 gold. Ships do not sail it yet.
 - **New Crops**: farms may also be built on hills.
-- **Railway**: only recorded for now; roads do not exist yet.
-- **Trade routes and off-map ports** (Currency, Guilds, Banking, Ocean Navigation): recorded per nation for the trade rules to come.
+- **Railway**: the roads on the nation's land become railways (see "Roads" in [03-gameplay.md](03-gameplay.md)).
+- **Trade routes and off-map ports** (Currency, Guilds, Banking, Ocean Navigation): each of the first three adds a trade route slot; Currency opens the off-map land ports to the nation's routes and Ocean Navigation the sea exits (see "Trade" in [03-gameplay.md](03-gameplay.md)).
 - **Endgame project** 天宫工程: three stages built one after the other in the capital, 470 production each. The first needs Rocketry, the second Electronics, the third Information Networks. Only the major nations and the player can build it; completing the third stage wins the game.
 
 ## Generic unit roster
@@ -189,6 +189,26 @@ Rules:
 - Slots are untyped: any card fits any slot. Slots grow with the eras from 2 to 6.
 - Unlocking a card grants one free swap. Any other swap starts a 5-turn cooldown.
 - No mutually exclusive pairs in v1.
+
+In detail:
+
+- **Unlocking.** A nation's culture of each turn is added to a store. The card after `n` unlocked ones costs `6 + 0.85 × n²` culture, rounded (6, 7, 9, 14, 20, 27, …, 456 for the last). The nation chooses which card to unlock among those of the eras it has entered. With this the leading major nation holds 20–23 cards when the game ends, about one every 6 turns; a nation that neglects culture gets about half as many.
+- **Slots by era**: 2, 3, 4, 5, 6, 6. Only slotted cards have an effect.
+- **Swaps.** Putting a card into an empty slot, or emptying a slot, is always allowed. Replacing a card is a swap: it uses a free swap if the nation has one (each card unlocked grants one, and they add up), and otherwise it is allowed only when no cooldown runs and starts a cooldown of 5 turns.
+- City-states have no policy cards.
+
+What the wording of some cards means:
+
+- **Citizen levy, New Army, Industrial planning**: the percentage is added to the city's production while it builds an item of that kind. New Army's "modern land units" are the land combat units of the Industrial and Modern eras.
+- **Merit ranks**: 5 culture for each enemy unit one of the nation's units destroys. It goes into the store for the next card too.
+- **Vertical and horizontal alliances**: a unit "fights alongside an ally" when the enemy it fights is one that an ally of its owner is also at war with.
+- **Tribute**: a vassal then pays 30% instead of 20%, and a city-state 15% instead of 10% (see [01-world-and-map.md](01-world-and-map.md)).
+- **Firearms corps**: the firearm units are the gunpowder land units of the Early Modern and Industrial eras: musketeer, field gun, dragoon, heavy cannon, rifleman, machine gun, mounted rifleman, howitzer.
+- **Industry first**: a city with a factory gets +15% production.
+- **Treaty ports**: the holder gets +10% city gold while it has at least one trade pact, and so does every nation it has a trade pact with. The bonus counts once however many pacts carry it.
+- **Total defence**: a unit standing on its owner's land, attacking or defending.
+- **Regional cooperation**: doubles the income of the holder's trade routes that go to a city of a nation it is allied with.
+- **Covenant**: every gain of influence, from a route or a gift, is 25% larger.
 
 | Era | Economy | Military | Civil | Diplomacy |
 |---|---|---|---|---|

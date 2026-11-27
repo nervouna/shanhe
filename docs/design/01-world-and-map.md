@@ -62,6 +62,14 @@ Suzerain bonus by type:
 
 Influence is gained through trade routes and gifts of gold. The nation with the most influence is the suzerain.
 
+- Influence with a city-state runs from 0 to 200. A trade route to it gives 4 a turn, a gift of gold 1 for every 2 gold, and everybody's influence fades by 1 a turn.
+- The suzerain is the polity with the most influence, once that reaches 60. A tie leaves the current suzerain in place.
+- Going to war with a city-state wipes out the attacker's influence with it.
+- A city-state pays its suzerain 10% of its gold income each turn, on top of the bonus of its type.
+- The bonuses, per city-state: Finance +10% city gold; Culture +3 culture in the capital; Industry +15% production in the capital; Commerce one extra trade route; Naval 8 experience (one level) for every ship built or bought.
+- City-states make no agreements and have no favour: influence is their whole diplomacy. They have no policy cards.
+- A city-state on a map that is not in the table above gets a type by its position in the list of city-states.
+
 A city-state defends itself with walls and one garrison unit. A nation that conquers it gains the city, and every nation loses its suzerain bonus.
 
 ## Wasteland
@@ -87,7 +95,7 @@ India, Central Asia, New Guinea, the tip of Alaska and any other land inside the
 
 - is rendered with complete terrain, the same as the play area;
 - has no owner and cannot be entered;
-- has trade ports on its edge, used as off-map trade partners.
+- has trade ports on its edge, used as off-map trade partners. A trade route to a port ends on the hex next to it: on land for a land port, on water for a sea exit.
 
 The terrain inside the visible frame is always complete. Nothing is cut off at the play boundary.
 
