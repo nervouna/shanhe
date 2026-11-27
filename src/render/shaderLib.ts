@@ -62,6 +62,8 @@ export interface MapUniforms {
   readonly cloudOffset: UniformNode<'vec2'>;
   /** How dark a cloud's shadow is, 0 to 1. */
   readonly cloudShadow: UniformNode<'float'>;
+  /** Opacity of the cloud layer seen from above, 0 near the ground. */
+  readonly cloudLayer: UniformNode<'float'>;
   /** `apexZ`, `scale`, `c`, `n` of `LatitudeTerms` in `climate.ts`. */
   readonly latitude: UniformNode<'vec4'>;
   readonly textures: MapTextures;
@@ -88,6 +90,7 @@ export function createMapUniforms(
     clock: uniform(0),
     cloudOffset: uniform(new Vector2()),
     cloudShadow: uniform(0.22),
+    cloudLayer: uniform(0),
     latitude: uniform(new Vector4(latitude.apexZ, latitude.scale, latitude.c, latitude.n)),
     textures,
   };

@@ -8,14 +8,14 @@ import type { Language } from '../shared/i18n.ts';
 import type { RenderBackend } from '../shared/types.ts';
 import type { CameraState } from './cameraRig.ts';
 import type { CityFamilyId } from './cityGen.ts';
-import type { PostEffect, PostEffectState } from './postfx.ts';
+import type { PostEffect, PostEffectState } from './postEffects.ts';
 import type { Quality } from './renderScale.ts';
 
 export { CityFamily } from './cityGen.ts';
 export type { CityFamilyId } from './cityGen.ts';
 export { LANDMARK_IDS } from './landmarks.ts';
-export { POST_EFFECTS } from './postfx.ts';
-export type { PostEffect, PostEffectState } from './postfx.ts';
+export { POST_EFFECTS } from './postEffects.ts';
+export type { PostEffect, PostEffectState } from './postEffects.ts';
 export { QUALITY_TIERS } from './renderScale.ts';
 export type { Quality } from './renderScale.ts';
 
@@ -266,6 +266,8 @@ export interface FrameStats {
   readonly shadowDraws: number;
   /** Trees drawn in the last frame; 0 from far away, where forests are colour and relief only. */
   readonly trees: number;
+  /** Opacity of the cloud layer over the map: 0 near the ground, where only cloud shadows show. */
+  readonly cloudLayer: number;
 }
 
 export interface RendererOptions {

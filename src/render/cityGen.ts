@@ -261,10 +261,12 @@ export function generateCity(spec: CitySpec): Part[] {
     const d = (0.055 + 0.035 * random()) * big;
     let h = (0.04 + 0.014 * Math.sqrt(population) * inner + 0.022 * random()) * (i === 0 ? 1.5 : 1);
     if (family === CityFamily.Tibetan) h *= 1.5;
+    // a house stays well below a piece, whatever the population
+    h = Math.min(h, 0.11);
     const yaw = style.order > 0 ? -grid + (random() < 0.5 ? 0 : Math.PI / 2) : random() * Math.PI;
     if (modern && i > 0 && inner > 0.55 && random() < 0.75) {
       // the middle of a modern city: towers of glass and concrete
-      const tall = 0.16 + 0.3 * inner * random() + 0.012 * Math.sqrt(population);
+      const tall = 0.2 + 0.32 * inner * random() + 0.012 * Math.sqrt(population);
       const glass = pick([0x8fa9bd, 0xa9b9c4, 0x6f8ea6, 0xd0d4d6], random);
       parts.push({ shape: PartShape.Box, x, y: 0, z, w: w * 0.9, h: tall, d: w * 0.9, yaw, color: glass, glow: 0.35 });
       parts.push({ shape: PartShape.Box, x, y: tall, z, w: w * 0.5, h: 0.015, d: w * 0.5, yaw, color: 0x5a6068 });
@@ -284,7 +286,7 @@ export function generateCity(spec: CitySpec): Part[] {
   for (let m = 0; m < monuments; m++) {
     const a = grid + (m / Math.max(1, monuments)) * Math.PI * 2 + 0.6;
     const r = radius * 0.42;
-    monument(parts, family, Math.cos(a) * r, Math.sin(a) * r, 0.075 + 0.01 * m, -grid);
+    monument(parts, family, Math.cos(a) * r, Math.sin(a) * r, 0.095 + 0.012 * m, -grid);
   }
 
   if (spec.walls) {

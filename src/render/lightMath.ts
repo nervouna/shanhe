@@ -74,3 +74,15 @@ export function cascadeNeedsFit(fit: CascadeFit | null, x: number, z: number, di
   if (ratio > 1.2 || ratio < 0.7) return true;
   return Math.hypot(x - fit.x, z - fit.z) > fit.half * 0.22;
 }
+
+/** The layer starts to show at this zoom fraction and is at its fullest at the next one. */
+const SHOW_FROM = 0.5;
+const SHOW_FULL = 0.8;
+/** Opacity of the thickest cloud at the farthest zoom. */
+const MAX_OPACITY = 0.5;
+
+/** How opaque the cloud layer is at a zoom fraction. */
+export function cloudLayerOpacity(zoom: number): number {
+  const t = Math.min(Math.max((zoom - SHOW_FROM) / (SHOW_FULL - SHOW_FROM), 0), 1);
+  return t * t * (3 - 2 * t) * MAX_OPACITY;
+}

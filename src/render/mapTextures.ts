@@ -17,6 +17,7 @@ import {
 import { Feature, Terrain } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
 import { FogState, Improvement } from './scene.ts';
+import { blurLayer } from './hexRaster.ts';
 import type { HexRaster } from './hexRaster.ts';
 import { buildNoiseTile } from './noiseTile.ts';
 
@@ -68,33 +69,6 @@ function makeTexture(raster: HexRaster): DataTexture {
 
 function bytes(texture: DataTexture): Uint8Array {
   return texture.image.data as Uint8Array;
-}
-
-/**
- * Softens a layer in place: every pixel becomes the mean of the 3 x 3
- * around it, `passes` times. Hex outlines in the land cover turn into
- * gradual transitions, which the terrain shader then breaks up with noise.
- */
-export function blurLayer(data: Uint8Array, width: number, height: number, passes: number): void {
-  const copy = new Uint8Array(data.length);
-  for (let pass = 0; pass < passes; pass++) {
-    copy.set(data);
-    for (let j = 0; j < height; j++) {
-      for (let i = 0; i < width; i++) {
-        for (let c = 0; c < 4; c++) {
-          let sum = 0;
-          for (let dj = -1; dj <= 1; dj++) {
-            const jj = Math.min(Math.max(j + dj, 0), height - 1);
-            for (let di = -1; di <= 1; di++) {
-              const ii = Math.min(Math.max(i + di, 0), width - 1);
-              sum += copy[(jj * width + ii) * 4 + c] as number;
-            }
-          }
-          data[(j * width + i) * 4 + c] = Math.round(sum / 9);
-        }
-      }
-    }
-  }
 }
 
 export function createMapTextures(map: MapData, raster: HexRaster): MapTextures {

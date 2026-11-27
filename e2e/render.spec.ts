@@ -1,8 +1,9 @@
 /**
  * Smoke tests in headless Chromium: the render demo and the default page
- * must start without any console error and draw frames. The demo also plays
- * a move and a melee animation to their end and is the political map at the
- * far zoom.
+ * must start without any console error and draw frames. The demo also
+ * shows its gallery, switches every effect of the finish and the fog of war,
+ * plays a move and a melee animation to their end and is the political map,
+ * under clouds, at the far zoom.
  *
  * A software renderer on a small machine can take seconds per frame, so
  * nothing here waits for a moment to be caught: the checks read promises,
@@ -10,8 +11,9 @@
  * map and a small canvas to keep the frames cheap.
  *
  * Set `SHANHE_CAPTURE_DIR` to a folder outside the repository to also save
- * screenshots of the demo at the near, the middle and the political zoom
- * and in the middle of both animations.
+ * screenshots of the demo at the near, the middle and the political zoom,
+ * of the gallery with and without fog of war, and in the middle of both
+ * animations.
  */
 
 import path from 'node:path';
@@ -96,6 +98,79 @@ test('the render demo draws frames without console errors', async ({ page }) => 
   const capture = async (name: string): Promise<void> => {
     if (captureDir !== undefined) await page.screenshot({ path: path.join(captureDir, `${name}.png`) });
   };
+
+  // the finish: what runs follows the tier and the backend, and says so
+  const finish = await page.evaluate(() => {
+    const renderer = window.__shanhe?.render.renderer;
+    if (renderer === undefined) throw new Error('window.__shanhe is not set');
+    return { quality: renderer.quality, effects: renderer.getEffects(), stats: renderer.getStats() };
+  });
+  expect(finish.quality).toBe('auto');
+  expect(finish.effects.toneMapping).toBe(true);
+  expect(finish.effects.tiltShift).toBe(true);
+  expect(finish.effects.antialiasing).toBe(true);
+  // ambient occlusion and bloom switch themselves off on the WebGL fallback
+  expect(finish.effects.ambientOcclusion).toBe(report.backend === 'webgpu');
+  expect(finish.effects.bloom).toBe(report.backend === 'webgpu');
+  // the shadow cascades have been drawn, and no cloud layer hangs over a near view
+  expect(finish.stats.shadowDraws).toBeGreaterThanOrEqual(2);
+  expect(finish.stats.cloudLayer).toBe(0);
+  expect(finish.stats.trees).toBeGreaterThanOrEqual(0);
+
+  // the gallery: a city of every family in every era, pieces, improvements, roads and routes
+  const gallery = JSON.parse((await page.getAttribute('#demo-controls', 'data-gallery')) ?? 'null') as {
+    cities: number;
+    firstCity: number | null;
+    units: number;
+    improvements: number;
+    roads: number;
+    routes: number;
+  } | null;
+  expect(gallery).not.toBeNull();
+  expect(gallery?.cities).toBe(42);
+  expect(gallery?.units).toBe(12);
+  expect(gallery?.improvements).toBeGreaterThanOrEqual(12);
+  expect(gallery?.roads).toBeGreaterThan(0);
+  expect(gallery?.routes).toBeGreaterThanOrEqual(2);
+
+  // every effect has a switch: it turns the effect off and on again, except where the backend keeps it off
+  const effectsShown = async (): Promise<Record<string, boolean>> =>
+    JSON.parse((await page.getAttribute('#demo-controls', 'data-effects')) ?? '{}') as Record<string, boolean>;
+  expect(await effectsShown()).toEqual(finish.effects);
+  for (const effect of ['ambientOcclusion', 'tiltShift', 'bloom', 'toneMapping', 'antialiasing'] as const) {
+    const before = finish.effects[effect];
+    await page.click(`#demo-fx-${effect}`);
+    const carried = report.backend === 'webgpu' || (effect !== 'ambientOcclusion' && effect !== 'bloom');
+    expect((await effectsShown())[effect]).toBe(carried ? !before : false);
+    await page.click(`#demo-fx-${effect}`);
+    expect((await effectsShown())[effect]).toBe(before);
+  }
+  // the low tier draws without any finish, and frames keep coming
+  await page.click('#demo-quality-low');
+  expect(Object.values(await effectsShown())).toEqual([false, false, false, false, false]);
+  await drawFrames(page, 2);
+  await page.click('#demo-quality-auto');
+  expect(await effectsShown()).toEqual(finish.effects);
+  await page.evaluate(() => window.__shanhe?.render.renderer.setEffects(null));
+  await drawFrames(page, 2);
+
+  // fog of war on and off: the scene is drawn either way
+  await page.click('#demo-fog');
+  expect(await page.getAttribute('#demo-controls', 'data-fog')).toBe('on');
+  await drawFrames(page, 2);
+  if (captureDir !== undefined && gallery?.firstCity != null) {
+    await page.evaluate((hex) => {
+      window.__shanhe?.render.renderer.focusHex(hex, { distance: 8, immediate: true });
+    }, gallery.firstCity);
+    await drawFrames(page, 3);
+    await capture('gallery-fog');
+  }
+  await page.click('#demo-fog');
+  expect(await page.getAttribute('#demo-controls', 'data-fog')).toBe('off');
+  if (captureDir !== undefined) {
+    await drawFrames(page, 2);
+    await capture('gallery');
+  }
 
   // an event is animated only if its hexes are in view: jump to the demo's actors
   const stage = JSON.parse((await page.getAttribute('#demo-controls', 'data-stage')) ?? 'null') as {
@@ -201,6 +276,9 @@ test('the render demo draws frames without console errors', async ({ page }) => 
   expect(far?.politicalMap).toBe(true);
   // the names of the polities are shown
   expect(far?.labels).toBeGreaterThan(0);
+  // from up here the clouds are in view and the forests are colour and relief only
+  expect(far?.cloudLayer).toBeGreaterThan(0);
+  expect(far?.trees).toBe(0);
   console.log(`political map: ${far?.labels} labels, ${far?.drawCalls} draw calls, ${far?.triangles} triangles`);
   await capture('political');
 
@@ -209,7 +287,9 @@ test('the render demo draws frames without console errors', async ({ page }) => 
     window.__shanhe?.render.renderer.setCamera({ distance: 0 }, true);
   });
   await drawFrames(page, 2);
-  expect((await page.evaluate(() => window.__shanhe?.render.stats))?.politicalMap).toBe(false);
+  const near = await page.evaluate(() => window.__shanhe?.render.stats);
+  expect(near?.politicalMap).toBe(false);
+  expect(near?.cloudLayer).toBe(0);
 
   expect(errors).toEqual([]);
 });

@@ -100,7 +100,7 @@ export function createTerrainMaterial(u: MapUniforms): MeshStandardNodeMaterial 
   ground = mix(ground, marsh, coverB.a);
   // marsh: pools of dark standing water between the reeds
   const pools = smoothstep(0.56, 0.68, mid.g).mul(coverB.a);
-  ground = mix(ground, color(0x27352f), pools.mul(0.85));
+  ground = mix(ground, color(0x2f4a44), pools.mul(0.7));
 
   // farmland: a patchwork of small fields, each with its own crop and its
   // furrows in its own direction; on slopes the furrows follow the contours

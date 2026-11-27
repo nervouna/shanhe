@@ -35,6 +35,7 @@ import {
 } from './cameraRig.ts';
 import type { CameraPose, CameraState } from './cameraRig.ts';
 import { createCities } from './cities.ts';
+import { createClouds } from './clouds.ts';
 import type { Part } from './cityGen.ts';
 import { latitudeTerms } from './climate.ts';
 import { createCameraController } from './controls.ts';
@@ -51,8 +52,9 @@ import { pickHexOnRay } from './picking.ts';
 import { createPieces } from './pieces.ts';
 import { placePoliticalNames } from './politicalNames.ts';
 import { improvementParts, volcanoParts } from './props.ts';
-import { createPostFx, resolveEffects } from './postfx.ts';
-import type { PostEffect } from './postfx.ts';
+import { resolveEffects } from './postEffects.ts';
+import type { PostEffect } from './postEffects.ts';
+import { createPostFx } from './postfx.ts';
 import { QUALITY_SETTINGS, createScaleController, renderPixelRatio } from './renderScale.ts';
 import type { Quality } from './renderScale.ts';
 import type { FrameStats, Renderer, RendererOptions } from './scene.ts';
@@ -141,6 +143,7 @@ export async function createRenderer(
   const table = new Mesh(tableGeometry, tableMaterial);
   table.position.set((rect.minX + rect.maxX) / 2, tableY, (rect.minZ + rect.maxZ) / 2);
   table.receiveShadow = true;
+  const clouds = createClouds(uniforms, rect, surface.field.maxY + CLOUD_HEIGHT * layout.size);
   const groundLines = createGroundLines(surface, uniforms);
   const vegetation = createVegetation(surface, uniforms);
   const pieces = createPieces(surface, lighting.environment);
@@ -148,7 +151,7 @@ export async function createRenderer(
   const props = createPartBatch(uniforms, layout.size, 'props');
   const labels = createLabels();
   const effects = createEffects();
-  scene.add(terrain.object, water.object, groundLines.object, overlays.object, table, vegetation.object, pieces.shadows, pieces.object, cities.object, props.object, effects.object);
+  scene.add(terrain.object, water.object, groundLines.object, overlays.object, table, vegetation.object, pieces.shadows, pieces.object, cities.object, props.object, effects.object, clouds.object);
   // with the finish, labels are drawn on their own and laid over the picture
   const labelScene = new Scene();
   renderer.setClearColor(0x000000, 0);
@@ -276,6 +279,7 @@ export async function createRenderer(
   let shownLabels = 0;
   let terrainBuilds = 0;
   let shownTrees = 0;
+  let cloudLayer = 0;
   const applyCamera = (state: CameraState, firstFrame: boolean): void => {
     const pose = poseOf(state);
     camera.position.set(...pose.position);
@@ -316,10 +320,11 @@ export async function createRenderer(
     shadowMoving = false;
     uniforms.clock.value = seconds;
     // the cloud that shades a point floats between it and the sun
-    const sunward = (CLOUD_HEIGHT * layout.size) / lighting.sunDirection.y;
+    const sunward = (surface.field.maxY * 0.5 + CLOUD_HEIGHT * layout.size) / lighting.sunDirection.y;
     uniforms.cloudOffset.value.set(lighting.sunDirection.x * sunward, lighting.sunDirection.z * sunward);
     shownLabels = labels.update(camera, Math.max(1, canvas.clientWidth), height, zoom, political);
     postfx.update(state.distance, zoom);
+    cloudLayer = clouds.update(zoom);
   };
 
   /** Whether the centre of any of the hexes is in the view, with a margin of one hex. */
@@ -368,6 +373,7 @@ export async function createRenderer(
     animating: false,
     shadowDraws: 0,
     trees: 0,
+    cloudLayer: 0,
   };
   const listeners = new Set<(stats: FrameStats) => void>();
   let lastTime: number | null = null;
@@ -430,6 +436,7 @@ export async function createRenderer(
       animating: animator.playing,
       shadowDraws: lighting.shadowDraws,
       trees: shownTrees,
+      cloudLayer,
     };
     for (const listener of listeners) listener(stats);
   };
@@ -622,6 +629,7 @@ export async function createRenderer(
       pieces.dispose();
       cities.dispose();
       props.dispose();
+      clouds.dispose();
       labels.dispose();
       effects.dispose();
       overlays.dispose();
