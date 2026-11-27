@@ -157,6 +157,18 @@ export type VisualEvent =
 
 export type VisualEventType = VisualEvent['type'];
 
+/** How many events of one type {@link Renderer.play} has taken so far. The numbers only grow. */
+export interface AnimationCount {
+  /** Events that were in view and got an animation. */
+  readonly animated: number;
+  /** Events applied without an animation: out of view, or played while rendering was paused. */
+  readonly instant: number;
+  /** Events of both kinds whose end state is on the board. */
+  readonly finished: number;
+  /** Events that named a unit that is not in the scene or a hex that is not on the map. */
+  readonly ignored: number;
+}
+
 export interface PlayOptions {
   /** Multiplies the speed of these events, on top of {@link Renderer.setAnimationSpeed}. 1 if omitted. */
   readonly speed?: number;
@@ -276,6 +288,17 @@ export interface Renderer {
   setAnimationSpeed(factor: number): void;
   /** Finishes every playing and queued event at once; their promises resolve. */
   skip(): void;
+  /**
+   * What `play` has done since the renderer started, per event type. Unlike
+   * `FrameStats.animating` these numbers do not depend on when they are read.
+   */
+  getAnimationCounts(): Readonly<Record<VisualEventType, AnimationCount>>;
+  /**
+   * The hex a unit's piece stands on as drawn: the hex of the scene, or where
+   * the events played since have left it. `null` for a unit that is not in
+   * the scene or was destroyed by an event.
+   */
+  getUnitHex(unit: number): number | null;
   /** Shows or hides the hex grid overlay. */
   setGridVisible(visible: boolean): void;
   /** The camera state being drawn. */

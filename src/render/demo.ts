@@ -261,8 +261,10 @@ export function createDemoStage(map: MapData, scene: RenderScene): DemoStage | n
 /**
  * Adds the demo's buttons to the page: one per animation, the quality tiers
  * and the three views. For automated checks the element carries
- * `data-played`, the number of animations that have finished, and
- * `data-stage-hex`, the hex the animations start on.
+ * `data-played`, the number of animations that have finished,
+ * `data-stage-hex`, the hex the animations start on, and `data-stage`, the
+ * actors as JSON: the unit ids of attacker and defender, the defender's hex
+ * and the attacker's path.
  *
  * @returns a function that removes the buttons.
  */
@@ -271,7 +273,15 @@ export function attachDemoControls(renderer: Renderer, map: MapData, scene: Rend
   const panel = document.createElement('div');
   panel.id = 'demo-controls';
   panel.dataset.played = '0';
-  if (stage !== null) panel.dataset.stageHex = String(stage.attacker.hex);
+  if (stage !== null) {
+    panel.dataset.stageHex = String(stage.attacker.hex);
+    panel.dataset.stage = JSON.stringify({
+      attacker: stage.attacker.id,
+      defender: stage.defender.id,
+      defenderHex: stage.defender.hex,
+      path: stage.path,
+    });
+  }
   Object.assign(panel.style, {
     position: 'fixed',
     left: '12px',

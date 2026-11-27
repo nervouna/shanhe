@@ -25,7 +25,7 @@ import { surfaceHeightAt } from './heightField.ts';
 import type { Surface } from './heightField.ts';
 import type { Overlays } from './overlays.ts';
 import type { PiecePose, Pieces } from './pieces.ts';
-import type { VisualEvent } from './scene.ts';
+import type { AnimationCount, VisualEvent, VisualEventType } from './scene.ts';
 
 export interface AnimatorHost {
   readonly surface: Surface;
@@ -68,6 +68,10 @@ export interface Animator {
   frame(now: number): boolean;
   /** Whether events are playing or queued. */
   readonly playing: boolean;
+  /** Per event type, what has been played so far. */
+  counts(): Record<VisualEventType, AnimationCount>;
+  /** Where a unit's piece stands after the events that have ended; `null` if it is gone or unknown. */
+  standing(unit: number): PiecePose | null;
   dispose(): void;
 }
 
@@ -100,6 +104,24 @@ export function createAnimator(map: MapData, host: AnimatorHost): Animator {
 
   let timeline: Timeline | null = null;
   let clips: Clip[] = [];
+  /** The event type of each clip, `null` for an ignored event. */
+  let clipTypes: (VisualEventType | null)[] = [];
+  const tally = (): { animated: number; instant: number; finished: number; ignored: number } => ({
+    animated: 0,
+    instant: 0,
+    finished: 0,
+    ignored: 0,
+  });
+  const counted = {
+    move: tally(),
+    melee: tally(),
+    ranged: tally(),
+    siege: tally(),
+    cityStrike: tally(),
+    destroy: tally(),
+    promote: tally(),
+    capture: tally(),
+  } satisfies Record<VisualEventType, AnimationCount>;
   /** Clips whose `end` has run. */
   let ended = 0;
   let waiters: { readonly after: number; readonly resolve: () => void }[] = [];
@@ -465,6 +487,8 @@ export function createAnimator(map: MapData, host: AnimatorHost): Animator {
     const state = timeline.at(now);
     while (ended < state.completed) {
       (clips[ended] as Clip).end();
+      const type = clipTypes[ended];
+      if (type !== null && type !== undefined) counted[type].finished++;
       ended++;
     }
     if (state.active >= 0) {
@@ -487,6 +511,7 @@ export function createAnimator(map: MapData, host: AnimatorHost): Animator {
     } else {
       timeline = null;
       clips = [];
+      clipTypes = [];
       ended = 0;
     }
   };
@@ -497,13 +522,22 @@ export function createAnimator(map: MapData, host: AnimatorHost): Animator {
       const rate = Number.isFinite(factor) && factor > 0 ? factor : 1;
       const added = events.map((event) => clipOf(event, rate, immediate));
       const lengths = added.map((clip) => clip.seconds);
+      const types = events.map((event, i) => {
+        const clip = added[i] as Clip;
+        if (clip === idle) counted[event.type].ignored++;
+        else if (clip.seconds > 0) counted[event.type].animated++;
+        else counted[event.type].instant++;
+        return clip === idle ? null : event.type;
+      });
       if (timeline === null) {
         timeline = createTimeline(lengths, now, speed);
         clips = added;
+        clipTypes = types;
         ended = 0;
       } else {
         timeline.append(lengths, now);
         clips.push(...added);
+        clipTypes.push(...types);
       }
       const after = clips.length;
       return new Promise<void>((resolve) => {
@@ -527,6 +561,7 @@ export function createAnimator(map: MapData, host: AnimatorHost): Animator {
       disarm();
       timeline = null;
       clips = [];
+      clipTypes = [];
       ended = 0;
       homes.clear();
       gone.clear();
@@ -546,6 +581,19 @@ export function createAnimator(map: MapData, host: AnimatorHost): Animator {
     get playing() {
       return timeline !== null;
     },
+    counts() {
+      return {
+        move: { ...counted.move },
+        melee: { ...counted.melee },
+        ranged: { ...counted.ranged },
+        siege: { ...counted.siege },
+        cityStrike: { ...counted.cityStrike },
+        destroy: { ...counted.destroy },
+        promote: { ...counted.promote },
+        capture: { ...counted.capture },
+      };
+    },
+    standing: homeOf,
     dispose() {
       this.reset();
     },

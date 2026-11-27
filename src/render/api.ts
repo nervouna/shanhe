@@ -17,7 +17,7 @@ import {
   Vector3,
   WebGPURenderer,
 } from 'three/webgpu';
-import { hexToWorld, indexToOffset } from '../shared/hex.ts';
+import { hexToWorld, indexToOffset, worldToHex } from '../shared/hex.ts';
 import { getLanguage } from '../shared/i18n.ts';
 import type { Language } from '../shared/i18n.ts';
 import { NO_ZONE } from '../shared/mapData.ts';
@@ -445,6 +445,16 @@ export async function createRenderer(
     skip() {
       animator.skip();
       shadowDirty = true;
+    },
+    getAnimationCounts() {
+      return animator.counts();
+    },
+    getUnitHex(unit) {
+      const pose = animator.standing(unit);
+      if (pose === null) return null;
+      const hex = worldToHex({ x: pose.x, z: pose.z }, layout);
+      if (hex.col < 0 || hex.col >= mapData.width || hex.row < 0 || hex.row >= mapData.height) return null;
+      return hex.row * mapData.width + hex.col;
     },
     setGridVisible(visible) {
       uniforms.gridOpacity.value = visible ? 1 : 0;
