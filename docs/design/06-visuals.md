@@ -65,6 +65,11 @@ Motion and combat:
 | Ranged and siege | The piece stays put; an arc of arrows or shells flies from it and lands in smoke |
 | Destroyed | The piece cracks, falls and is taken off the table |
 | Naval | The same piece on water, with ripples around it |
+| City strike | A volley of arrows flies from the city and lands in dust |
+| Promotion | The piece flashes gold and throws sparks |
+| City capture | The zone takes the colour of its new owner in a sweep outwards from the city |
+
+Animations are shown only for hexes in view; elsewhere the board changes at once. They have a speed factor and can be skipped.
 
 Why pieces and not figures: realistic rigged people are the weakest thing procedural generation can make. Pieces remove that weakness, read clearly at any zoom, are easy to hit on touch screens, and fit the sand-table concept. The cost is the spectacle of armies meeting; arrows, gunfire and smoke particles make up part of it.
 
@@ -76,7 +81,11 @@ Tilt-shift depth of field, ambient occlusion, tone mapping, slight bloom, anti-a
 
 ## Political map
 
-Zoomed out, the realistic ground crossfades into a political map: nations tinted in their colours, borders glowing, names laid out along the shape of each territory.
+Zoomed out, the realistic ground crossfades into a political map: nations filled with their colours over lightly shaded relief, borders bright, and one name per nation laid out along the shape of its territory and sized to it, in Chinese or English.
+
+Zoomed in, the territory tint is faint, so that the terrain's own colours carry the picture; the borders stay clear at every zoom.
+
+City labels thin out with distance: all cities near, then only large cities and capitals, then only capitals, and none once the nations' names are shown. Labels never overlap: where two would, the less important one is hidden.
 
 ## Fog of war
 
@@ -85,6 +94,7 @@ Terrain is always visible; fog hides only foreign units and city details, and ou
 ## Performance targets
 
 - 60 fps on laptops and tablets of the last few years; older devices drop a quality tier and hold 30 fps.
+- Quality tiers: low, medium, high and auto. Auto is the default: it lowers the internal resolution when frames run long and restores it when they do not. The other tiers hold a fixed resolution and terrain detail.
 - WebGPU first, with a WebGL fallback for browsers without it.
 - Three.js's WebGPU side changes fast. Check the current documentation before relying on a specific API.
 

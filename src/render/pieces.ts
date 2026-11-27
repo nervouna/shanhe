@@ -39,6 +39,8 @@ import {
   LinearMipmapLinearFilter,
   Matrix4,
   MeshStandardNodeMaterial,
+  Quaternion,
+  Vector3,
 } from 'three/webgpu';
 import { hexToWorld, indexToOffset } from '../shared/hex.ts';
 import { surfaceHeightAtHex } from './heightField.ts';
@@ -46,9 +48,39 @@ import type { Surface } from './heightField.ts';
 import type { RenderUnit } from './scene.ts';
 import { noise } from './shaderLib.ts';
 
+/** Where a piece is drawn while it is animated. */
+export interface PiecePose {
+  /** Position of the middle of its underside. */
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  /** Angle by which it is tipped over, in radians, and the direction it falls in. */
+  readonly tilt?: number;
+  readonly tiltX?: number;
+  readonly tiltZ?: number;
+  /** Size, 1 if omitted; 0 hides the piece. */
+  readonly scale?: number;
+}
+
 export interface Pieces {
   readonly object: InstancedMesh;
+  /** Replaces the pieces. Every pose and effect set since the last call is dropped. */
   setUnits(units: readonly RenderUnit[]): void;
+  /** Whether a unit with this id is on the board. */
+  has(id: number): boolean;
+  /** The hex a unit was placed on by `setUnits`, or `null`. */
+  hexOf(id: number): number | null;
+  /** Where a piece stands when it is on a hex. */
+  standOn(hex: number): PiecePose;
+  /** Draws a unit's piece somewhere else than on its hex. */
+  setPose(id: number, pose: PiecePose): void;
+  /**
+   * Effects on a unit's piece.
+   *
+   * @param flash a golden glow, 0 to 1.
+   * @param crack how far cracks have spread over it, 0 to 1.
+   */
+  setEffect(id: number, flash: number, crack: number): void;
   dispose(): void;
 }
 
@@ -174,6 +206,8 @@ function createMaterial(atlas: GlyphAtlas): MeshStandardNodeMaterial {
   // per piece: glyph cell, era, unique flag, hit points
   const data = attribute('pieceData', 'vec4');
   const bandColor = attribute('pieceColor', 'vec3');
+  // per piece, while animated: golden flash, spread of cracks
+  const effect = attribute('pieceEffect', 'vec2');
   const era = data.y;
   const unique = data.z;
   const hp = data.w;
@@ -240,6 +274,12 @@ function createMaterial(atlas: GlyphAtlas): MeshStandardNodeMaterial {
   surface = mix(surface, ink, engraved);
   surface = mix(surface, tickColor, tick);
 
+  // cracks: dark lines that grow out of a noise pattern as the piece breaks
+  const fracture = abs(noise(vec3(g.x.mul(7.5), g.y.mul(5), g.z.mul(7.5)).add(seed)));
+  const cracks = float(1).sub(smoothstep(0, effect.y.mul(0.11).add(0.0001), fracture)).mul(step(0.001, effect.y));
+  surface = mix(surface, vec3(0.03, 0.025, 0.02), cracks);
+  surface = mix(surface, color(0xfff0b8), effect.x.mul(0.45));
+
   const goldFill = engraved.mul(unique);
   const material = new MeshStandardNodeMaterial();
   material.colorNode = vec3(surface);
@@ -254,7 +294,9 @@ function createMaterial(atlas: GlyphAtlas): MeshStandardNodeMaterial {
     goldFill,
   );
   // lit ticks and gold stay readable in shadow
-  material.emissiveNode = vec3(tickColor.mul(tick).mul(lit).mul(0.35).add(color(GOLD).mul(goldFill).mul(0.25)));
+  material.emissiveNode = vec3(
+    tickColor.mul(tick).mul(lit).mul(0.35).add(color(GOLD).mul(goldFill).mul(0.25)).add(color(GOLD).mul(effect.x).mul(0.9)),
+  );
   return material;
 }
 
@@ -274,6 +316,7 @@ export function createPieces(surface: Surface): Pieces {
     capacity = size;
     geometry.setAttribute('pieceData', new InstancedBufferAttribute(new Float32Array(size * 4), 4));
     geometry.setAttribute('pieceColor', new InstancedBufferAttribute(new Float32Array(size * 3), 3));
+    geometry.setAttribute('pieceEffect', new InstancedBufferAttribute(new Float32Array(size * 2), 2));
     const created = new InstancedMesh(geometry, material, size);
     created.name = 'pieces';
     created.count = 0;
@@ -285,6 +328,19 @@ export function createPieces(surface: Surface): Pieces {
   }
 
   const matrix = new Matrix4();
+  const rotation = new Quaternion();
+  const axis = new Vector3();
+  const position = new Vector3();
+  const scale = new Vector3();
+  /** Unit id to instance index and hex. */
+  const slots = new Map<number, { readonly index: number; readonly hex: number }>();
+
+  const standOn = (hex: number): PiecePose => {
+    const p = hexToWorld(indexToOffset(hex, map.width), layout);
+    const afloat = !Number.isNaN(surface.waterLevel[hex] as number);
+    return { x: p.x, y: surfaceHeightAtHex(surface, hex) - (afloat ? DRAFT * HEIGHT * layout.size : 0), z: p.z };
+  };
+
   const pieces: Pieces = {
     get object() {
       return mesh;
@@ -301,22 +357,51 @@ export function createPieces(surface: Surface): Pieces {
       }
       const data = geometry.getAttribute('pieceData') as InstancedBufferAttribute;
       const colors = geometry.getAttribute('pieceColor') as InstancedBufferAttribute;
+      const effects = geometry.getAttribute('pieceEffect') as InstancedBufferAttribute;
+      slots.clear();
       units.forEach((unit, i) => {
-        const p = hexToWorld(indexToOffset(unit.hex, map.width), layout);
-        const afloat = !Number.isNaN(surface.waterLevel[unit.hex] as number);
-        const y = surfaceHeightAtHex(surface, unit.hex) - (afloat ? DRAFT * HEIGHT * layout.size : 0);
-        matrix.makeScale(layout.size, layout.size, layout.size).setPosition(p.x, y, p.z);
+        slots.set(unit.id, { index: i, hex: unit.hex });
+        const stand = standOn(unit.hex);
+        matrix.makeScale(layout.size, layout.size, layout.size).setPosition(stand.x, stand.y, stand.z);
         mesh.setMatrixAt(i, matrix);
         // one character per piece; anything longer shows its first character
         const character = [...unit.character][0] ?? '';
         data.setXYZW(i, atlas.cell(character), unit.era, unit.unique ? 1 : 0, Math.min(Math.max(unit.hp, 0), 1));
         const band = polityColors[unit.polity] ?? fallbackColor;
         colors.setXYZ(i, band.r, band.g, band.b);
+        effects.setXY(i, 0, 0);
       });
       mesh.count = units.length;
       mesh.instanceMatrix.needsUpdate = true;
       data.needsUpdate = true;
       colors.needsUpdate = true;
+      effects.needsUpdate = true;
+    },
+    has(id) {
+      return slots.has(id);
+    },
+    hexOf(id) {
+      return slots.get(id)?.hex ?? null;
+    },
+    standOn,
+    setPose(id, pose) {
+      const slot = slots.get(id);
+      if (slot === undefined) return;
+      const size = layout.size * (pose.scale ?? 1);
+      // tipping over turns the piece about the horizontal axis across its fall
+      axis.set(pose.tiltZ ?? 0, 0, -(pose.tiltX ?? 1));
+      if (axis.lengthSq() < 1e-9) axis.set(0, 0, -1);
+      rotation.setFromAxisAngle(axis.normalize(), pose.tilt ?? 0);
+      matrix.compose(position.set(pose.x, pose.y, pose.z), rotation, scale.set(size, size, size));
+      mesh.setMatrixAt(slot.index, matrix);
+      mesh.instanceMatrix.needsUpdate = true;
+    },
+    setEffect(id, flash, crack) {
+      const slot = slots.get(id);
+      if (slot === undefined) return;
+      const effects = geometry.getAttribute('pieceEffect') as InstancedBufferAttribute;
+      effects.setXY(slot.index, flash, crack);
+      effects.needsUpdate = true;
     },
     dispose() {
       mesh.dispose();

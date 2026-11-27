@@ -1,16 +1,26 @@
 /**
  * Smoke tests in headless Chromium: the render demo and the default page
- * must start without any console error and keep rendering frames.
+ * must start without any console error and draw frames. The demo also plays
+ * a move and a melee animation to their end and is the political map at the
+ * far zoom.
+ *
+ * A software renderer on a small machine can take seconds per frame, so
+ * nothing here waits for a moment to be caught: the checks read promises,
+ * counters that only grow and states that stay. Both tests use the fixture
+ * map and a small canvas to keep the frames cheap.
  *
  * Set `SHANHE_CAPTURE_DIR` to a folder outside the repository to also save
- * screenshots of the demo at the near and the far zoom.
+ * screenshots of the demo at the near, the middle and the political zoom
+ * and in the middle of both animations.
  */
 
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
-const MIN_FRAMES = 30;
+test.use({ viewport: { width: 640, height: 360 } });
+
+const MIN_FRAMES = 5;
 const captureDir = process.env.SHANHE_CAPTURE_DIR;
 
 function collectErrors(page: Page): string[] {
@@ -32,9 +42,15 @@ async function waitForFrames(page: Page, frames: number): Promise<void> {
   );
 }
 
+/** Waits until `count` more frames are drawn: what was set before is on screen then. */
+async function drawFrames(page: Page, count: number): Promise<void> {
+  const frames = await page.evaluate(() => window.__shanhe?.render.stats.frames ?? 0);
+  await waitForFrames(page, frames + count);
+}
+
 test('the render demo draws frames without console errors', async ({ page }) => {
   const errors = collectErrors(page);
-  await page.goto('/?demo=render');
+  await page.goto('/?demo=render&map=fixture');
   await waitForFrames(page, MIN_FRAMES);
 
   const report = await page.evaluate(() => {
@@ -71,32 +87,140 @@ test('the render demo draws frames without console errors', async ({ page }) => 
   expect(report.camera.distance).toBeGreaterThan(0);
   expect(report.readout).toMatch(/^\d+(\.\d)? ms$/);
 
+  // the page opens on the ground drawn as terrain
+  expect(report.stats.politicalMap).toBe(false);
+  expect(report.stats.political).toBe(0);
+  expect(report.stats.renderScale).toBeGreaterThan(0);
+  expect(report.stats.renderScale).toBeLessThanOrEqual(1);
+
+  const capture = async (name: string): Promise<void> => {
+    if (captureDir !== undefined) await page.screenshot({ path: path.join(captureDir, `${name}.png`) });
+  };
+
+  // an event is animated only if its hexes are in view: jump to the demo's actors
+  const stage = JSON.parse((await page.getAttribute('#demo-controls', 'data-stage')) ?? 'null') as {
+    attacker: number;
+    defender: number;
+    defenderHex: number;
+    path: number[];
+  } | null;
+  expect(stage).not.toBeNull();
+  if (stage === null) return;
+  const destination = stage.path[stage.path.length - 1];
+  await page.evaluate((hex) => {
+    window.__shanhe?.render.renderer.focusHex(hex, { distance: 0, immediate: true });
+  }, stage.path[0] as number);
+  await drawFrames(page, 2);
+  await capture('near');
+
   if (captureDir !== undefined) {
-    for (const [name, zoom] of [
-      ['near', 0],
-      ['far', Infinity],
+    // for the captures only: play slowly and catch both animations under way
+    for (const [name, event] of [
+      ['move', { type: 'move', unit: stage.attacker, path: stage.path }],
+      ['melee', { type: 'melee', unit: stage.attacker, targetHex: stage.defenderHex }],
     ] as const) {
-      const before = await page.evaluate((distance) => {
-        const render = window.__shanhe?.render;
-        if (render === undefined) throw new Error('window.__shanhe is not set');
-        render.renderer.setCamera({ distance }, true);
-        return render.stats.frames;
-      }, zoom);
-      await waitForFrames(page, before + 20);
-      await page.screenshot({ path: path.join(captureDir, `${name}.png`) });
+      await page.evaluate((visual) => {
+        const renderer = window.__shanhe?.render.renderer;
+        renderer?.setAnimationSpeed(0.1);
+        void renderer?.play([visual]);
+      }, event);
+      await page.waitForTimeout(2500);
+      await capture(name);
+      await page.evaluate(() => {
+        const renderer = window.__shanhe?.render.renderer;
+        renderer?.skip();
+        renderer?.setAnimationSpeed(1);
+      });
     }
   }
+
+  // a move and a melee attack, each played to its end: the promises resolve,
+  // the counters grow and the piece stands where the move took it
+  const played = await page.evaluate(async (actors) => {
+    const renderer = window.__shanhe?.render.renderer;
+    if (renderer === undefined) throw new Error('window.__shanhe is not set');
+    const before = renderer.getAnimationCounts();
+    const startHex = renderer.getUnitHex(actors.attacker);
+    await renderer.play([{ type: 'move', unit: actors.attacker, path: actors.path }]);
+    const afterMove = renderer.getAnimationCounts();
+    const movedTo = renderer.getUnitHex(actors.attacker);
+    await renderer.play([{ type: 'melee', unit: actors.attacker, targetHex: actors.defenderHex }]);
+    // an event for a unit that does not exist is ignored and still resolves
+    await renderer.play([{ type: 'promote', unit: -1 }]);
+    return {
+      before,
+      afterMove,
+      after: renderer.getAnimationCounts(),
+      startHex,
+      movedTo,
+      endHex: renderer.getUnitHex(actors.attacker),
+      defenderHex: renderer.getUnitHex(actors.defender),
+      missing: renderer.getUnitHex(-1),
+      animating: renderer.getStats().animating,
+    };
+  }, stage);
+  if (captureDir === undefined) expect(played.startHex).toBe(stage.path[0]);
+  expect(played.afterMove.move.animated).toBe(played.before.move.animated + 1);
+  expect(played.afterMove.move.finished).toBe(played.before.move.finished + 1);
+  expect(played.afterMove.move.instant).toBe(played.before.move.instant);
+  expect(played.movedTo).toBe(destination);
+  expect(played.after.melee.animated).toBe(played.before.melee.animated + 1);
+  expect(played.after.melee.finished).toBe(played.before.melee.finished + 1);
+  expect(played.after.melee.instant).toBe(played.before.melee.instant);
+  expect(played.after.promote.ignored).toBe(played.before.promote.ignored + 1);
+  expect(played.after.promote.finished).toBe(played.before.promote.finished);
+  // the attacker comes home from its strike; the defender has not moved
+  expect(played.endHex).toBe(destination);
+  expect(played.defenderHex).toBe(stage.defenderHex);
+  expect(played.missing).toBeNull();
+  expect(played.animating).toBe(false);
+  console.log(
+    `animations: move ${JSON.stringify(played.after.move)}, melee ${JSON.stringify(played.after.melee)}`,
+  );
+
+  if (captureDir !== undefined) {
+    await page.evaluate(() => {
+      const renderer = window.__shanhe?.render.renderer;
+      if (renderer === undefined) return;
+      renderer.setCamera({ distance: 0 }, true);
+      const near = renderer.getCamera().distance;
+      renderer.setCamera({ distance: Infinity }, true);
+      renderer.setCamera({ distance: Math.sqrt(near * renderer.getCamera().distance) }, true);
+    });
+    await drawFrames(page, 2);
+    await capture('middle');
+  }
+
+  // at the farthest zoom the view is the political map
+  await page.evaluate(() => {
+    window.__shanhe?.render.renderer.setCamera({ distance: Infinity }, true);
+  });
+  await drawFrames(page, 2);
+  const far = await page.evaluate(() => window.__shanhe?.render.stats);
+  expect(far?.political).toBe(1);
+  expect(far?.politicalMap).toBe(true);
+  // the names of the polities are shown
+  expect(far?.labels).toBeGreaterThan(0);
+  console.log(`political map: ${far?.labels} labels, ${far?.drawCalls} draw calls, ${far?.triangles} triangles`);
+  await capture('political');
+
+  // and nearer it is terrain again
+  await page.evaluate(() => {
+    window.__shanhe?.render.renderer.setCamera({ distance: 0 }, true);
+  });
+  await drawFrames(page, 2);
+  expect((await page.evaluate(() => window.__shanhe?.render.stats))?.politicalMap).toBe(false);
 
   expect(errors).toEqual([]);
 });
 
 test('the default page draws frames and follows the language switch', async ({ page }) => {
   const errors = collectErrors(page);
-  await page.goto('/');
+  await page.goto('/?map=fixture');
   await waitForFrames(page, MIN_FRAMES);
-  const before = await page.evaluate(() => window.__shanhe?.render.stats.frames ?? 0);
   await page.click('#language');
-  await waitForFrames(page, before + 10);
   expect(await page.evaluate(() => document.documentElement.lang)).toBe('en');
+  // the page keeps drawing after the switch
+  await drawFrames(page, 2);
   expect(errors).toEqual([]);
 });
