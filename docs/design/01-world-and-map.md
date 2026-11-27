@@ -11,7 +11,7 @@ Projection is an equal-area conic centred near 105°E, 35°N, so that high-latit
 
 ## Grid and scale
 
-- Hex grid, 6000–8000 hexes over the playable area. One hex is 70 km across.
+- Hex grid, 6000–8000 hexes over the playable area. One hex is roughly 80 km across.
 - The map is **not strictly to scale**. Small units are enlarged so they are playable:
   - every nation has at least 7 hexes (a city and one ring);
   - every city-state has 1–3 hexes;

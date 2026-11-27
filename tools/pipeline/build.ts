@@ -10,6 +10,7 @@
  * `data/raw/debug/` (never committed).
  */
 
+import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -69,6 +70,10 @@ const OUT_DIR = join(ROOT, 'public', 'data');
 const KOPPEN_URL = 'https://ndownloader.figshare.com/files/12407516';
 const KOPPEN_ZIP = 'Beck_KG_V1.zip';
 const KOPPEN_TIFF = 'Beck_KG_V1_present_0p083.tif';
+/** MD5 of the archive, as the figshare record gives it. */
+const KOPPEN_MD5 = '69594689d3cdd8323a0f74ce658125a1';
+const isKoppenArchive = (bytes: Uint8Array): boolean =>
+  createHash('md5').update(bytes).digest('hex') === KOPPEN_MD5;
 
 /** Rivers of Natural Earth up to this `scalerank` become river edges. */
 const RIVER_MAX_SCALERANK = 6;
@@ -170,7 +175,9 @@ async function main(): Promise<void> {
   };
 
   step('datasets');
-  if (await ensureFile(KOPPEN_URL, join(RAW_DIR, KOPPEN_ZIP))) console.log(`  fetched ${KOPPEN_ZIP}`);
+  if (await ensureFile(KOPPEN_URL, join(RAW_DIR, KOPPEN_ZIP), isKoppenArchive)) {
+    console.log(`  fetched ${KOPPEN_ZIP}`);
+  }
   await ensureEtopo(join(RAW_DIR, 'etopo'));
 
   const mapping = createMapping(LENSES);
@@ -548,12 +555,15 @@ async function main(): Promise<void> {
     for (const i of group) owner[i] = inPlay && !onBorder(i) ? OWNER_SEA : OWNER_OFF_MAP;
   }
 
-  // City sites stand on open, flat ground.
+  // City sites stand on open, flat ground: a city in a mountain hex lies in
+  // its valley, which has the terrain of the climate there.
   for (const z of zones) {
-    if (terrain[z.siteHex] === Terrain.Mountain || terrain[z.siteHex] === Terrain.Snow) {
-      terrain[z.siteHex] = Terrain.Tundra;
+    const i = z.siteHex;
+    if (terrain[i] === Terrain.Mountain || terrain[i] === Terrain.Snow) {
+      const valley = climateLook(climateOf[i] as number, latitudeOf[i] as number).terrain;
+      terrain[i] = valley === Terrain.Snow ? Terrain.Tundra : valley;
     }
-    hills[z.siteHex] = 0;
+    hills[i] = 0;
   }
 
   // ---- Rivers: real courses snapped to hex edges. ----

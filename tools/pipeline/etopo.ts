@@ -70,11 +70,20 @@ function chunkUrl(c: Chunk): string {
   return `${BASE_URL}?${encodeURIComponent(query).replace(/%3A/g, ':')}`;
 }
 
+/** Size in bytes of the values of one band; the response is a little longer. */
+function chunkBytes(c: Chunk): number {
+  return ((c.row1 - c.row0) / STRIDE + 1) * ((c.col1 - c.col0) / STRIDE + 1) * 4;
+}
+
 /** Downloads every band that is not cached yet. */
 export async function ensureEtopo(dir: string): Promise<void> {
   const { east, west } = chunks();
   for (const c of [...east, ...west]) {
-    const fresh = await ensureFile(chunkUrl(c), chunkFile(dir, c));
+    const fresh = await ensureFile(
+      chunkUrl(c),
+      chunkFile(dir, c),
+      (bytes) => bytes.byteLength > chunkBytes(c) && Buffer.from(bytes).includes('\nData:\n', 0, 'latin1'),
+    );
     if (fresh) console.log(`  fetched ${chunkFile(dir, c)}`);
   }
 }

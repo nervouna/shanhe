@@ -86,11 +86,11 @@ Every hex goes to the site it is nearest to, travelling over the polity's own la
 - **Land** takes its base terrain from the Köppen-Geiger class at its centre: tropical classes are grassland or plains with jungle, deserts are desert, hot steppe is plains and cold steppe grassland, temperate classes grassland, continental classes plains, subarctic classes tundra with forest (taiga), polar tundra is tundra and, north of 74°N or above 5300 m, snow.
 - **Relief** is the standard deviation of the elevation inside the hex: 180 m makes it hilly, 600 m (450 m above 3500 m) an impassable mountain.
 - **Features**: forest and jungle by the climate's share and a fixed pseudo-random number per hex; marsh on low flat ground next to a river or lake; oasis on desert next to a river or lake; volcanoes from the list in `features.ts`.
-- City sites are cleared: no hills, no mountain.
+- City sites are cleared: no hills, and a site in a mountain hex gets the terrain of its climate instead (the city lies in the valley).
 
 ### Rivers
 
-Natural Earth river and lake centre lines up to `scalerank` 6 are sent to the map plane and snapped to the corners of the hexes; consecutive corners are joined along hex edges. An edge counts where both of its hexes are land, and is stored on both.
+Natural Earth river and lake centre lines up to `scalerank` 6 are sent to the map plane and snapped to the corners of the hexes; consecutive corners are joined along hex edges. An edge counts where both of its hexes are land, and is stored on both; so a river is interrupted where it passes a lake hex and ends where it reaches the sea.
 
 **"40 rivers' worth".** The check counts rivers from the edges alone: river edges form a graph on the hex corners; in each connected piece a corner where one river edge ends is a spring or a mouth, and a piece with `n` such ends counts as `n − 1` rivers (the main stream and one per tributary), a piece without ends as one.
 

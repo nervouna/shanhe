@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import type { Albers } from './albers.ts';
 import { wrapDegrees } from './albers.ts';
 import { FRAME_KM } from './config.ts';
-import { ensureFile } from './fetch.ts';
+import { ensureFile, isZip } from './fetch.ts';
 import { FULL_COVERAGE, POLITIES } from './polities.ts';
 import type { Box, Source } from './polities.ts';
 import { readShapefile } from './shapefile.ts';
@@ -58,7 +58,7 @@ async function loadLayer(rawDir: string, layer: LayerName): Promise<ShapeRecord[
   const path = LAYERS[layer];
   const name = path.slice(path.lastIndexOf('/') + 1);
   const zipPath = join(rawDir, `${name}.zip`);
-  if (await ensureFile(`${NATURAL_EARTH}/${path}.zip`, zipPath)) console.log(`  fetched ${name}.zip`);
+  if (await ensureFile(`${NATURAL_EARTH}/${path}.zip`, zipPath, isZip)) console.log(`  fetched ${name}.zip`);
   const files = readZipEntries(zipPath, [`${name}.shp`, `${name}.dbf`]);
   return readShapefile(files.get(`${name}.shp`) as Buffer, files.get(`${name}.dbf`) as Buffer);
 }
