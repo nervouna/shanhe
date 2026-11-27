@@ -10,9 +10,9 @@ A turn-based 4X strategy game for the browser, played on the real terrain of Eas
 
 ## Status
 
-- **Maturity**: design complete, no playable build yet. Development is tracked in the [issues](https://github.com/nervouna/shanhe/issues).
+- **Maturity**: early and under construction. A whole 150-turn game can be played against the AI on the real map, with a first pass of the rules (cities, combat, war and peace, the tech tree, three victories) and of the visuals. Policies, diplomacy, trade and the 50 nations' own traits are not in yet. Development is tracked in the [issues](https://github.com/nervouna/shanhe/issues).
 - **Who it is for**: people curious about what a language model can build on its own. The whole game, from design to code, is written by Claude (Anthropic's Fable model) with a human owner who makes product decisions.
-- **What it will take to run**: a desktop or tablet browser with WebGPU; WebGL is the fallback. Nothing to install.
+- **What it takes to run**: a desktop browser with WebGPU; WebGL is the fallback. There is no hosted build yet: clone the repository, then `npm ci` and `npm run dev` (Node 24 or later).
 - **Languages**: Chinese and English UI.
 - **Releases**: none yet.
 
