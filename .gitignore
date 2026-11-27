@@ -7,3 +7,4 @@ coverage/
 data/raw/
 .claude/settings.local.json
 e2e/.output/
+.claude/worktrees/

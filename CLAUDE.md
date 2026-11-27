@@ -40,6 +40,15 @@ The ones that constrain all work:
 - Numbers in the design docs are directions, not balanced values.
 - Audio has not been discussed. The procedural rule is assumed to cover it.
 
+## Machine load
+
+The development machine is shared with the owner's other work. On 2026-11-28 a headless-browser run made it unusable. Rules for every agent:
+
+- Run one heavy job at a time: never a headless browser, a full test run and a build side by side.
+- Headless Chromium renders in software on every core. Under automation (`navigator.webdriver`) the page must cap its frame rate at a few frames per second, and long game runs (many turns) must run with rendering paused. Playwright uses one worker.
+- Start heavy commands with `nice -n 10`. Vitest is limited to two workers in `vite.config.ts`.
+- Give every long command a timeout, and stop every process you started before you report.
+
 ## Technology
 
 ### Stack
