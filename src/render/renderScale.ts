@@ -148,18 +148,16 @@ export interface QualitySettings {
   readonly scale: number | null;
   /** Target size of a terrain triangle edge, as a fraction of the view height. */
   readonly edgeFraction: number;
-  /** Side of the shadow map in texels. */
-  readonly shadowMapSize: number;
 }
 
 export const QUALITY_TIERS = ['low', 'medium', 'high', 'auto'] as const;
 export type Quality = (typeof QUALITY_TIERS)[number];
 
 export const QUALITY_SETTINGS: Readonly<Record<Quality, QualitySettings>> = {
-  low: { maxPixelRatio: 1, scale: 0.85, edgeFraction: 0.028, shadowMapSize: 1024 },
-  medium: { maxPixelRatio: 1.5, scale: 1, edgeFraction: 0.02, shadowMapSize: 2048 },
-  high: { maxPixelRatio: 2, scale: 1, edgeFraction: 0.013, shadowMapSize: 2048 },
-  auto: { maxPixelRatio: 2, scale: null, edgeFraction: 0.018, shadowMapSize: 2048 },
+  low: { maxPixelRatio: 1, scale: 0.85, edgeFraction: 0.028 },
+  medium: { maxPixelRatio: 1.5, scale: 1, edgeFraction: 0.02 },
+  high: { maxPixelRatio: 2, scale: 1, edgeFraction: 0.013 },
+  auto: { maxPixelRatio: 2, scale: null, edgeFraction: 0.018 },
 };
 
 /**
