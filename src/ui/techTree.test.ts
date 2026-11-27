@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BUILDING_IDS, ERAS, IMPROVEMENT_IDS, TECHS, TECH_IDS, UNITS } from '../core/data.ts';
+import { BUILDING_IDS, ERAS, IMPROVEMENT_IDS, TECHS, TECH_IDS, UNITS, UNIT_IDS } from '../core/data.ts';
 import { applyAction, createGame } from '../core/game.ts';
 import { learn } from '../core/testUtil.ts';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
@@ -58,7 +58,8 @@ describe('techUnlocks', () => {
   it('lists every buildable unit, building and improvement under its tech, once', () => {
     const all = TECH_IDS.flatMap((tech) => techUnlocks(tech));
     const units = all.flatMap((entry) => (entry.kind === 'unit' ? [entry.unit] : []));
-    const wanted = Object.values(UNITS).filter((def) => def.buildable && def.tech !== null).map((def) => def.id);
+    // the generic roster: a nation's own units are not part of the shared tree
+    const wanted = UNIT_IDS.filter((id) => UNITS[id]!.buildable && UNITS[id]!.tech !== null);
     expect(units.sort()).toEqual(wanted.sort());
     expect(all.flatMap((entry) => (entry.kind === 'building' ? [entry.building] : [])).sort()).toEqual([...BUILDING_IDS].sort());
     expect(all.flatMap((entry) => (entry.kind === 'improvement' ? [entry.improvement] : [])).sort()).toEqual(
