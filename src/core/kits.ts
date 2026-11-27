@@ -94,15 +94,15 @@ export const PERSONALITIES: Readonly<Record<PersonalityId, Personality>> = {
   balanced: BALANCED,
   warlike: { ...BALANCED, warRatio: 0.8, armyShare: 1.25, research: { military: 3 }, policy: { military: 3 }, favour: 10 },
   mercantile: {
-    ...BALANCED, warRatio: 1.3, armyShare: 0.8, buildFirst: ['market', 'harbour', 'bank'],
+    ...BALANCED, warRatio: 1.3, armyShare: 0.9, buildFirst: ['market'],
     research: { economy: 2 }, policy: { economy: 2, diplomacy: 1 }, routeForeign: 3, favour: -5,
   },
   defensive: {
     ...BALANCED, warRatio: 1.6, buildFirst: ['walls'], research: { military: 1 }, policy: { military: 2 },
   },
   scholarly: {
-    ...BALANCED, warRatio: 1.3, armyShare: 0.8, buildFirst: ['academy', 'university', 'observatory'],
-    research: { science: 3 }, policy: { civil: 3 },
+    ...BALANCED, warRatio: 1.3, armyShare: 0.9, buildFirst: ['academy'],
+    research: { science: 2 }, policy: { civil: 3 },
   },
   expansionist: {
     ...BALANCED, warRatio: 0.9, buildFirst: ['granary'], research: { economy: 1 }, settleRange: 6, settleFirst: true,

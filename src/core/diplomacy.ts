@@ -21,7 +21,8 @@ import {
   setWarFlag,
 } from './context.ts';
 import type { Ctx } from './context.ts';
-import { modsOf, percentOf } from './modifiers.ts';
+import { personalityOf } from './kits.ts';
+import { modsOf, nationOf, percentOf } from './modifiers.ts';
 import {
   addFavour,
   alliesOf,
@@ -126,7 +127,9 @@ export function favourShift(ctx: Ctx, a: number, b: number, kind: AgreementKind)
 /** True if the AI-run `target` agrees to the agreement `proposer` asks for. */
 export function acceptsAgreement(ctx: Ctx, target: number, proposer: number, kind: AgreementKind): boolean {
   const major = ctx.state.majors.includes(target);
-  const favour = favourOf(ctx, target, proposer) - favourShift(ctx, target, proposer, kind);
+  // What the two nations' modifiers and the decider's style add to the favour it needs comes off the favour it has.
+  const favour =
+    favourOf(ctx, target, proposer) - favourShift(ctx, target, proposer, kind) - personalityOf(nationOf(ctx, target)).favour;
   switch (kind) {
     case 'tradePact':
       return !major || favour >= AI.tradePactFavour;

@@ -21,7 +21,7 @@ import {
 import type { ROSTER, TechId, UnitDef } from './data.ts';
 import { at, atWar, polityOf, seaLevelOf } from './context.ts';
 import type { Ctx } from './context.ts';
-import { kitOfNation } from './kits.ts';
+import { kitOfNation, personalityOf } from './kits.ts';
 import { forgetMods, modsOf, nationOf } from './modifiers.ts';
 import type { Modifier } from './mods.ts';
 import { growSlots } from './policies.ts';
@@ -303,12 +303,14 @@ export function suggestResearch(ctx: Ctx, polity: number): TechId | null {
     if (city !== null && city.owner === polity && ctx.topo.coastal[city.zone] === true) coastal = true;
   }
   const oldest = Math.min(...open.map((tech) => TECHS[tech].era));
+  // The leader's style adds to the kinds of tech it cares for.
+  const style = personalityOf(nationOf(ctx, polity));
   let best: TechId | null = null;
   let bestScore = -Infinity;
   for (const tech of open) {
     const def = TECHS[tech];
     const kind = def.kind === 'naval' && coastal ? 'economy' : def.kind;
-    const score = weights[kind] - AI.researchEraStep * (def.era - oldest);
+    const score = weights[kind] + (style.research[def.kind] ?? 0) - AI.researchEraStep * (def.era - oldest);
     if (score > bestScore) {
       bestScore = score;
       best = tech;

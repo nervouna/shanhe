@@ -188,8 +188,9 @@ describe('build queue', () => {
     expect(applyAction(later, { type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'building', building: 'harbour' } })).toMatchObject({ ok: false, reason: 'needsCoast' });
     expect(applyAction(later, { type: 'queueBuild', polity: JIA, city: 0, item: { kind: 'unit', unit: 'galley' } })).toMatchObject({ ok: false, reason: 'needsCoast' });
     const afloat = run(queue(later, { kind: 'unit', unit: 'galley' }, 8), 20).state;
-    const galley = afloat.units.find((unit) => unit.type === 'galley')!;
-    expect(topo.water[galley.hex]).toBe(1);
+    // The AI that owns it may have upgraded the galley since: any ship of the city will do.
+    const ship = afloat.units.find((unit) => unit.owner === afloat.cities[8]!.owner && UNITS[unit.type]!.domain === 'sea')!;
+    expect(topo.water[ship.hex]).toBe(1);
   });
 });
 

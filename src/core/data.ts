@@ -1247,4 +1247,16 @@ export const AI = {
   threatRange: 3,
   /** Candidate destinations it tries per free route slot. */
   routeTries: 8,
+  /** Warships a nation wants per coastal city... */
+  shipsPerCoastalCity: 0.5,
+  /** ...plus one per enemy warship afloat... */
+  shipsPerEnemyShip: 1,
+  /** ...plus this many while its army marches on a city it can only reach by sea. */
+  shipsForSeaTarget: 2,
+  /** Its navy is at most this share of the units it can pay for (but one ship is always allowed beside the garrisons). */
+  navyShare: 0.4,
+  /** A coastal city within this many hexes by water of one of its own is a neighbour by sea. */
+  seaReach: 12,
+  /** A fleet with nothing else to do hunts enemy ships and embarked units this close to its coastal cities. */
+  patrolRange: 8,
 } as const;

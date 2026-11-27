@@ -4,14 +4,22 @@
  * decision is issued as an action through the same validator a player uses.
  *
  * - Major nations research, develop, found their cities, keep an army their
- *   income can pay for, declare war on a weaker neighbour, march on one city
- *   at a time and make peace when the war goes badly. The one that leads in
- *   science builds the endgame project.
+ *   income can pay for, declare war on a weaker neighbour (by land or across
+ *   the sea), march on one city at a time and make peace when the war goes
+ *   badly. The one that leads in science builds the endgame project.
  * - Other nations and city-states develop and defend with the techs the
  *   world has in common.
+ * - Every nation with a coast keeps warships in proportion to its coastal
+ *   cities and to the threats at sea; at war they go with the embarked army
+ *   or to the waters of the city it marches on, and fight what they meet.
+ * - A leader's personality (`PERSONALITIES` in `kits.ts`) bends the weights:
+ *   when to go to war, what to build and research first, which routes and
+ *   agreements to seek, how large a navy to keep.
  */
 
 import { hexRange, indexToOffset } from '../shared/hex.ts';
+import { Terrain } from '../shared/mapData.ts';
+import type { MapData } from '../shared/mapData.ts';
 import {
   AI,
   AIR_STRIKE,
@@ -34,10 +42,11 @@ import {
   WAR,
   unitDef,
 } from './data.ts';
-import type { ImprovementDef, PolicyId } from './data.ts';
+import type { BuildingId, ImprovementDef, PolicyId } from './data.ts';
 import { checkStep, isSettleSite, militaryStrength, upgradePrice, validate } from './actions.ts';
 import { canImprove, checkItem, hasBuilding, improvableHexes } from './cities.ts';
 import {
+  amphibiousFactor,
   attackStrength,
   checkDemandVassalage,
   cityStrength,
@@ -48,6 +57,8 @@ import {
 import { at, atWar, bordersOpen, cityAtHex, polityOf, relationOf, terrainAllows } from './context.ts';
 import type { Ctx } from './context.ts';
 import { dealPriceFrom, wantsResource } from './diplomacy.ts';
+import { personalityOf } from './kits.ts';
+import type { Personality } from './kits.ts';
 import { nationOf } from './modifiers.ts';
 import { openPolicies } from './policies.ts';
 import { alliesOf, enemiesOf, favourOf, isNation, partnersIn, vassalsOf } from './relations.ts';
@@ -68,6 +79,110 @@ const WATER_PATH_COST = 3;
 function isMilitary(unit: Unit): boolean {
   const def = unitDef(unit.type);
   return def.strength > 0 && def.domain === 'land';
+}
+
+function isWarship(unit: Unit): boolean {
+  const def = unitDef(unit.type);
+  return def.strength > 0 && def.domain === 'sea';
+}
+
+/** The style of the polity's leader. */
+function styleOf(ctx: Ctx, polity: number): Personality {
+  return personalityOf(nationOf(ctx, polity));
+}
+
+// ----------------------------------------------------------------- the sea
+
+const seaCache = new WeakMap<MapData, Map<number, readonly number[]>>();
+
+/**
+ * The zones whose city site lies within `AI.seaReach` hexes by water of the
+ * site of `zone`: its neighbours by sea. It depends on the map alone.
+ *
+ * @param ocean cross ocean too; otherwise only coast and lake.
+ */
+export function seaNeighbours(ctx: Ctx, zone: number, ocean: boolean): readonly number[] {
+  let cache = seaCache.get(ctx.map);
+  if (cache === undefined) {
+    cache = new Map();
+    seaCache.set(ctx.map, cache);
+  }
+  const key = zone * 2 + (ocean ? 1 : 0);
+  const known = cache.get(key);
+  if (known !== undefined) return known;
+  const { topo, map } = ctx;
+  const sails = (hex: number): boolean =>
+    topo.enterable[hex] === 1 && topo.water[hex] === 1 && (ocean || map.terrain[hex] !== Terrain.Ocean);
+  const seen = new Set<number>();
+  const found = new Set<number>();
+  let frontier: number[] = [];
+  const visit = (hex: number, into: number[]): void => {
+    for (let d = 0; d < 6; d++) {
+      const next = topo.neighbors[hex * 6 + d] as number;
+      if (next < 0) continue;
+      const site = topo.siteZone[next] as number;
+      if (site >= 0 && site !== zone) found.add(site);
+      if (seen.has(next) || !sails(next)) continue;
+      seen.add(next);
+      into.push(next);
+    }
+  };
+  visit(at(map.zones, zone).siteHex, frontier);
+  found.clear();
+  for (let depth = 1; depth < AI.seaReach && frontier.length > 0; depth++) {
+    const next: number[] = [];
+    for (const hex of frontier) visit(hex, next);
+    frontier = next;
+  }
+  for (const hex of frontier) visit(hex, []);
+  const list = [...found].sort((a, b) => a - b);
+  cache.set(key, list);
+  return list;
+}
+
+/** True if no city of `cities` stands on the landmass of `zone`: an army can only get there by sea. */
+export function overseas(ctx: Ctx, zone: number, cities: readonly City[]): boolean {
+  const mass = ctx.topo.landmass[at(ctx.map.zones, zone).siteHex];
+  return !cities.some((city) => ctx.topo.landmass[at(ctx.map.zones, city.zone).siteHex] === mass);
+}
+
+/**
+ * Steps a ship of `polity` needs to reach one of `goals` (water hexes) from
+ * every water hex in reach. `UNREACHABLE` where there is no way within `limit`.
+ */
+function seaField(ctx: Ctx, polity: number, goals: Iterable<number>, limit = PATH_LIMIT): Int16Array {
+  const { topo } = ctx;
+  const ship = unitDef(at(ROSTER.naval, 0));
+  const cost = new Int16Array(topo.count).fill(UNREACHABLE);
+  let frontier: number[] = [];
+  for (const goal of goals) {
+    if (cost[goal] === 0 || topo.water[goal] !== 1) continue;
+    cost[goal] = 0;
+    frontier.push(goal);
+  }
+  for (let depth = 1; depth <= limit && frontier.length > 0; depth++) {
+    const next: number[] = [];
+    for (const hex of frontier) {
+      for (let d = 0; d < 6; d++) {
+        const to = topo.neighbors[hex * 6 + d] as number;
+        if (to < 0 || cost[to] !== UNREACHABLE || !terrainAllows(ctx, ship, to, polity)) continue;
+        cost[to] = depth;
+        next.push(to);
+      }
+    }
+    frontier = next;
+  }
+  return cost;
+}
+
+/** The water hexes next to `hex`. */
+function watersBy(ctx: Ctx, hex: number): number[] {
+  const out: number[] = [];
+  for (let d = 0; d < 6; d++) {
+    const next = ctx.topo.neighbors[hex * 6 + d] as number;
+    if (next >= 0 && ctx.topo.water[next] === 1 && ctx.topo.enterable[next] === 1) out.push(next);
+  }
+  return out;
 }
 
 /** Runs one polity's whole turn. */
@@ -165,6 +280,17 @@ function diplomacy(ctx: Ctx, polity: number, major: boolean, cities: City[], act
       if (owner !== NO_POLITY && owner !== polity) neighbours.add(owner);
     }
   }
+  // Once its units can embark, the cities across the water are neighbours too.
+  const seaLevel = ctx.seaLevel[polity] as number;
+  if (seaLevel >= 1) {
+    for (const city of cities) {
+      if (topo.coastal[city.zone] !== true) continue;
+      for (const zone of seaNeighbours(ctx, city.zone, seaLevel >= 2)) {
+        const owner = at(state.zoneOwner, zone);
+        if (owner !== NO_POLITY && owner !== polity && state.cities[zone] !== null) neighbours.add(owner);
+      }
+    }
+  }
   let target = -1;
   let weakest = Infinity;
   for (const other of [...neighbours].sort((a, b) => a - b)) {
@@ -179,7 +305,8 @@ function diplomacy(ctx: Ctx, polity: number, major: boolean, cities: City[], act
       target = other;
     }
   }
-  if (target >= 0 && strength >= weakest * AI.warStrengthRatio) act({ type: 'declareWar', polity, target });
+  const ratio = AI.warStrengthRatio * styleOf(ctx, polity).warRatio;
+  if (target >= 0 && strength >= weakest * ratio) act({ type: 'declareWar', polity, target });
 }
 
 // ---------------------------------------------------------------- policies
@@ -205,7 +332,8 @@ function policyApplies(ctx: Ctx, polity: number, id: PolicyId): boolean {
 function policyScore(ctx: Ctx, polity: number, id: PolicyId, fighting: boolean): number {
   const def = POLICIES[id];
   const weights = fighting ? AI.policyAtWar : AI.policyAtPeace;
-  return weights[def.kind] + def.era * AI.policyEraWeight - (policyApplies(ctx, polity, id) ? 0 : 10);
+  const liking = styleOf(ctx, polity).policy[def.kind] ?? 0;
+  return weights[def.kind] + liking + def.era * AI.policyEraWeight - (policyApplies(ctx, polity, id) ? 0 : 10);
 }
 
 /**
@@ -269,6 +397,7 @@ function statecraft(ctx: Ctx, polity: number, cities: City[], act: Act): void {
   const { state, map } = ctx;
   if ((state.turn + polity) % AI.diplomacyInterval !== 0) return;
   const self = polityOf(ctx, polity);
+  const style = styleOf(ctx, polity);
   const toPlayer = (state.turn + polity) % (AI.diplomacyInterval * 3) === 0;
   const neighbours = neighbourNations(ctx, polity, cities)
     .filter((other) => other !== state.player || toPlayer)
@@ -282,13 +411,15 @@ function statecraft(ctx: Ctx, polity: number, cities: City[], act: Act): void {
 
   first((target) => ({ type: 'propose', polity, target, agreement: 'tradePact' }));
   first((target) =>
-    favourOf(ctx, polity, target) >= AI.openBordersFavour
+    favourOf(ctx, polity, target) >= AI.openBordersFavour + style.favour
       ? { type: 'propose', polity, target, agreement: 'openBorders' }
       : null,
   );
   if (self.overlord === NO_POLITY) {
     first((target) =>
-      favourOf(ctx, polity, target) >= AI.allianceFavour ? { type: 'propose', polity, target, agreement: 'alliance' } : null,
+      favourOf(ctx, polity, target) >= AI.allianceFavour + style.favour
+        ? { type: 'propose', polity, target, agreement: 'alliance' }
+        : null,
     );
     if (vassalsOf(ctx, polity).length < AI.maxVassals) {
       first((target) =>
@@ -335,11 +466,19 @@ function openRoutes(ctx: Ctx, polity: number, cities: City[], act: Act): void {
   const own = routesOf(ctx, polity);
   if (own.length >= routeSlots(ctx, polity)) return;
   const reach = Math.max(TRADE.landRange, TRADE.seaRange);
+  const style = styleOf(ctx, polity);
   const options: { income: number; city: number; to: RouteTarget }[] = [];
+  /** What the leader's style adds to a destination: another polity's city, or one over the sea. */
+  const liking = (city: City, to: RouteTarget): number => {
+    if (to.kind === 'port') return at(map.offMapPorts, to.port).kind === 'sea' ? style.routeSea : 0;
+    const other = state.cities[to.zone];
+    const foreign = other !== null && other !== undefined && other.owner !== polity ? style.routeForeign : 0;
+    return foreign + (overseas(ctx, to.zone, [city]) ? style.routeSea : 0);
+  };
   const rate = (city: City, to: RouteTarget, apart: number): void => {
     if (checkRouteTarget(ctx, polity, city.zone, to) !== null) return;
     if (own.some((route) => (to.kind === 'city' ? route.toCity === to.zone : route.toPort === to.port))) return;
-    const income = routeIncome(ctx, {
+    const income = liking(city, to) + routeIncome(ctx, {
       id: 0,
       owner: polity,
       from: city.zone,
@@ -426,6 +565,10 @@ interface Plans {
   /** Cities busy with a unit. At most half of them are, so that the others develop. */
   barracks: number;
   maxBarracks: number;
+  /** Warships, alive or queued, and how many the polity wants. */
+  navy: number;
+  navyWanted: number;
+  style: Personality;
 }
 
 function armyTarget(ctx: Ctx, polity: number, major: boolean, cities: City[]): number {
@@ -436,23 +579,51 @@ function armyTarget(ctx: Ctx, polity: number, major: boolean, cities: City[]): n
   let buildingUpkeep = 0;
   for (const city of cities) for (const id of city.buildings) buildingUpkeep += BUILDINGS[id].upkeep;
   const spare = Math.max(0, polityOf(ctx, polity).yields.gold - buildingUpkeep);
-  return free + Math.floor((spare * AI.armyIncomeShare) / UNIT_UPKEEP);
+  return free + Math.floor((spare * AI.armyIncomeShare * styleOf(ctx, polity).armyShare) / UNIT_UPKEEP);
+}
+
+/**
+ * Warships the polity wants: in proportion to its coastal cities, more for
+ * every enemy warship afloat and while its army marches on a city it can only
+ * reach by sea, and never more than its share of the `budget` of units.
+ */
+function navyTarget(ctx: Ctx, polity: number, cities: City[], budget: number): number {
+  const { state, topo } = ctx;
+  const coastal = cities.filter((city) => topo.coastal[city.zone] === true).length;
+  if (coastal === 0 || bestUnit(ctx, polity, 'naval') === null) return 0;
+  let wanted = coastal * AI.shipsPerCoastalCity;
+  for (const unit of state.units) {
+    if (unit.owner !== NO_POLITY && unit.owner !== polity && atWar(ctx, polity, unit.owner) && isWarship(unit)) {
+      wanted += AI.shipsPerEnemyShip;
+    }
+  }
+  const focus = polityOf(ctx, polity).aiTarget;
+  if (focus >= 0 && state.cities[focus] !== null && overseas(ctx, focus, cities)) wanted += AI.shipsForSeaTarget;
+  // One ship is always allowed beside the garrisons, so that a one-city island has a navy at all.
+  const cap = Math.max(Math.min(1, budget - cities.length), Math.floor(budget * AI.navyShare));
+  return Math.max(0, Math.min(Math.ceil(wanted * styleOf(ctx, polity).navy), cap));
 }
 
 function manageCities(ctx: Ctx, polity: number, major: boolean, cities: City[], act: Act): void {
+  const budget = armyTarget(ctx, polity, major, cities);
+  const navyWanted = at(ctx.map.polities, polity).kind === 'nation' ? navyTarget(ctx, polity, cities, budget) : 0;
   const plans: Plans = {
     military: 0,
-    wanted: armyTarget(ctx, polity, major, cities),
+    wanted: budget - navyWanted,
     byClass: {},
     settler: false,
     atWar: enemiesOf(ctx, polity).length > 0,
     garrisons: cities.length,
     barracks: 0,
     maxBarracks: Math.ceil(cities.length / 2),
+    navy: 0,
+    navyWanted,
+    style: styleOf(ctx, polity),
   };
   const count = (type: string): void => {
     const def = unitDef(type);
     if (def.id === SETTLER) plans.settler = true;
+    if (def.strength > 0 && def.domain === 'sea') plans.navy++;
     if (def.strength <= 0 || def.domain !== 'land') return;
     plans.military++;
     plans.byClass[def.unitClass] = (plans.byClass[def.unitClass] ?? 0) + 1;
@@ -535,10 +706,10 @@ function chooseImprovement(ctx: Ctx, city: City, hexes: readonly number[]): Buil
   return best !== null && checkItem(ctx, city, best) === null ? best : null;
 }
 
-function settleTargetNear(ctx: Ctx, from: number): number {
+function settleTargetNear(ctx: Ctx, from: number, polity: number): number {
   const { state, map } = ctx;
   let best = -1;
-  let bestDistance = AI.settleRange + 1;
+  let bestDistance = AI.settleRange + styleOf(ctx, polity).settleRange + 1;
   for (let zone = 0; zone < state.cities.length; zone++) {
     if (state.zoneOwner[zone] !== NO_POLITY || state.cities[zone] !== null) continue;
     const site = at(map.zones, zone).siteHex;
@@ -568,23 +739,41 @@ function chooseBuild(ctx: Ctx, polity: number, city: City, cities: City[], plans
       if (state.zoneOwner[zone] === polity && state.cities[zone] === null && can(item)) return item;
     }
   }
+  // A coastal city builds the next warship: at once in a war, after its first buildings at peace.
+  const ship = bestUnit(ctx, polity, 'naval');
+  const shipyard =
+    ship !== null &&
+    plans.navy < plans.navyWanted &&
+    plans.barracks < plans.maxBarracks &&
+    ctx.topo.coastal[city.zone] === true &&
+    can({ kind: 'unit', unit: ship.id });
+  if (shipyard && ship !== null && plans.atWar) return { kind: 'unit', unit: ship.id };
   const recruiting = plans.military < plans.wanted && plans.barracks < plans.maxBarracks;
   if (recruiting && (plans.atWar || plans.military * 2 < plans.wanted)) return fieldUnit(ctx, polity, plans);
   const worked = chooseImprovement(ctx, city, city.worked);
   if (worked !== null) return worked;
+  const settler = (): BuildItem | null => {
+    if (!nation || plans.settler || city.pop < AI.expandPop || !can({ kind: 'unit', unit: SETTLER })) return null;
+    if (settleTargetNear(ctx, at(map.zones, city.zone).siteHex, polity) < 0) return null;
+    plans.settler = true;
+    return { kind: 'unit', unit: SETTLER };
+  };
+  if (plans.style.settleFirst) {
+    const item = settler();
+    if (item !== null) return item;
+  }
+  // The buildings its leader favours come first, then the common order.
   const own = nationOf(ctx, polity);
-  const order = AI.buildingOrder.map((building) => buildingFor(own, building));
+  const favoured = plans.style.buildFirst as readonly BuildingId[];
+  const order = [...new Set([...favoured, ...AI.buildingOrder])].map((building) => buildingFor(own, building));
   for (const building of order.slice(0, AI.coreBuildings)) {
     const item: BuildItem = { kind: 'building', building };
     if (can(item)) return item;
   }
+  if (shipyard && ship !== null) return { kind: 'unit', unit: ship.id };
   if (recruiting) return fieldUnit(ctx, polity, plans);
-  if (nation && !plans.settler && city.pop >= AI.expandPop && can({ kind: 'unit', unit: SETTLER })) {
-    if (settleTargetNear(ctx, at(map.zones, city.zone).siteHex) >= 0) {
-      plans.settler = true;
-      return { kind: 'unit', unit: SETTLER };
-    }
-  }
+  const item = settler();
+  if (item !== null) return item;
   for (const building of order) {
     const item: BuildItem = { kind: 'building', building };
     if (can(item)) return item;
@@ -676,7 +865,11 @@ function chooseTarget(ctx: Ctx, unit: Unit, focus: number, resting: boolean): nu
       } else if (ranged) {
         score = 150 + def.cityAttackPercent;
       } else {
-        const taken = combatDamage(cityStrength(ctx, city), attackStrength(unit, false, false, false), 1);
+        const taken = combatDamage(
+          cityStrength(ctx, city),
+          attackStrength(unit, false, false, false) * amphibiousFactor(ctx, unit),
+          1,
+        );
         score = taken >= unit.hp ? 0 : 100;
       }
       if (score > 0 && city.zone === focus) score += 20;
@@ -688,7 +881,7 @@ function chooseTarget(ctx: Ctx, unit: Unit, focus: number, resting: boolean): nu
       if (unitDef(defender.type).strength === 0) {
         score = 300;
       } else {
-        const attack = attackStrength(unit, ranged, false, false);
+        const attack = attackStrength(unit, ranged, false, false) * amphibiousFactor(ctx, unit);
         const dealt = combatDamage(attack, defence, 1);
         const taken = ranged ? 0 : combatDamage(defence, attack, 1);
         const kills = dealt >= defender.hp;
@@ -763,6 +956,13 @@ function commandUnits(ctx: Ctx, polity: number, major: boolean, cities: City[], 
   if (focus < 0) self.aiTarget = -1;
   const field = focus >= 0 ? pathField(ctx, polity, at(map.zones, focus).siteHex) : null;
   if (field !== null) units.sort((a, b) => (field[a.hex] as number) - (field[b.hex] as number) || a.id - b.id);
+  const warships = units.some(isWarship);
+  const fleet = warships ? fleetField(ctx, polity, cities, units, focus) : null;
+  // Where a battered ship goes to mend: the waters of its own coastal cities.
+  const harbours = warships
+    ? cities.filter((city) => ctx.topo.coastal[city.zone] === true).flatMap((city) => watersBy(ctx, at(map.zones, city.zone).siteHex))
+    : [];
+  const home = fleet !== null && harbours.length > 0 ? seaField(ctx, polity, harbours) : null;
 
   for (const unit of units) {
     if (!alive(unit)) continue;
@@ -772,7 +972,7 @@ function commandUnits(ctx: Ctx, polity: number, major: boolean, cities: City[], 
       commandSettler(ctx, unit, act);
       continue;
     }
-    if (def.strength <= 0 || def.domain !== 'land') {
+    if (def.strength <= 0) {
       if (unit.status === 'ready') act({ type: 'sleep', polity, unit: unit.id });
       continue;
     }
@@ -783,6 +983,11 @@ function commandUnits(ctx: Ctx, polity: number, major: boolean, cities: City[], 
       self.gold >= upgradePrice(ctx, unit, upgrade) + AI.upgradeReserve &&
       act({ type: 'upgrade', polity, unit: unit.id })
     ) {
+      continue;
+    }
+
+    if (def.domain === 'sea') {
+      commandShip(ctx, unit, fleet, home, focus, act);
       continue;
     }
 
@@ -815,6 +1020,69 @@ function commandUnits(ctx: Ctx, polity: number, major: boolean, cities: City[], 
   }
 }
 
+/**
+ * Where the fleet goes, as a field of steps over water, or null when it
+ * stays in port. At war it goes with the army: to the embarked unit nearest
+ * the city the army marches on, or failing that to the waters of that city;
+ * with neither, it hunts enemy ships and embarked units near its own coast.
+ */
+function fleetField(ctx: Ctx, polity: number, cities: City[], units: Unit[], focus: number): Int16Array | null {
+  const { state, map, topo } = ctx;
+  if (enemiesOf(ctx, polity).length === 0) return null;
+  const goals = new Set<number>();
+  if (focus >= 0) {
+    const site = at(map.zones, focus).siteHex;
+    // The escort: the embarked unit that has come farthest.
+    let lead: Unit | null = null;
+    for (const unit of units) {
+      if (!ctx.unitById.has(unit.id) || !isMilitary(unit) || topo.water[unit.hex] !== 1) continue;
+      if (lead === null || hexesApart(ctx, unit.hex, site) < hexesApart(ctx, lead.hex, site)) lead = unit;
+    }
+    if (lead !== null) for (const hex of watersBy(ctx, lead.hex)) goals.add(hex);
+    else for (const hex of watersBy(ctx, site)) goals.add(hex);
+  }
+  if (goals.size === 0) {
+    const ports = cities.filter((city) => topo.coastal[city.zone] === true).map((city) => at(map.zones, city.zone).siteHex);
+    for (const unit of state.units) {
+      if (unit.owner === NO_POLITY || unit.owner === polity || !atWar(ctx, polity, unit.owner)) continue;
+      if (topo.water[unit.hex] !== 1 || unitDef(unit.type).strength <= 0) continue;
+      if (!ports.some((port) => hexesApart(ctx, port, unit.hex) <= AI.patrolRange)) continue;
+      for (const hex of watersBy(ctx, unit.hex)) goals.add(hex);
+    }
+  }
+  return goals.size === 0 ? null : seaField(ctx, polity, goals);
+}
+
+/**
+ * One warship's turn: strike what is in reach, else follow the fleet, pillage
+ * sea routes, or wait in port. A battered ship sails home instead, which
+ * also clears the water by the enemy city for the units that storm it.
+ */
+function commandShip(
+  ctx: Ctx,
+  unit: Unit,
+  fleet: Int16Array | null,
+  home: Int16Array | null,
+  focus: number,
+  act: Act,
+): void {
+  const polity = unit.owner;
+  const alive = (): boolean => ctx.unitById.has(unit.id);
+  const resting = unit.hp < AI.restHp;
+  const course = resting ? home : fleet;
+  for (let step = 0; step < 8 && alive() && unit.moves > 0; step++) {
+    const target = resting ? -1 : chooseTarget(ctx, unit, focus, false);
+    if (target >= 0) {
+      act({ type: 'attack', polity, unit: unit.id, target });
+      break;
+    }
+    if (course === null || !advanceOneStep(ctx, unit, course, act)) break;
+  }
+  if (!alive()) return;
+  if (unit.moves > 0 && checkPillage(ctx, unit) === null) act({ type: 'pillage', polity, unit: unit.id });
+  if (fleet === null && !unit.acted && unit.status === 'ready') act({ type: 'sleep', polity, unit: unit.id });
+}
+
 /** One step towards the focus, stopping short of the city itself. */
 function advanceOneStep(ctx: Ctx, unit: Unit, field: Int16Array, act: Act): boolean {
   const here = field[unit.hex] as number;
@@ -828,7 +1096,29 @@ function advanceOneStep(ctx: Ctx, unit: Unit, field: Int16Array, act: Act): bool
     best = next;
     bestCost = field[next] as number;
   }
+  if (best < 0) best = sidestep(ctx, unit, field);
   return best >= 0 && act({ type: 'move', polity: unit.owner, unit: unit.id, to: best });
+}
+
+/**
+ * Where a unit that cannot get closer steps aside: a free hex no farther from
+ * the goal from which the way on is open, so that a column held up behind
+ * one unit spreads out along the front. -1 if there is none, or if the unit
+ * has already moved this turn (it does not shuffle to and fro).
+ */
+function sidestep(ctx: Ctx, unit: Unit, field: Int16Array): number {
+  if (unit.acted) return -1;
+  const here = field[unit.hex] as number;
+  for (let d = 0; d < 6; d++) {
+    const next = ctx.topo.neighbors[unit.hex * 6 + d] as number;
+    if (next < 0 || (field[next] as number) !== here || checkStep(ctx, unit, next) !== null) continue;
+    for (let e = 0; e < 6; e++) {
+      const beyond = ctx.topo.neighbors[next * 6 + e] as number;
+      if (beyond < 0 || (field[beyond] as number) >= here) continue;
+      if (!ctx.unitAt.has(beyond)) return next;
+    }
+  }
+  return -1;
 }
 
 function commandSettler(ctx: Ctx, unit: Unit, act: Act): void {
@@ -837,7 +1127,7 @@ function commandSettler(ctx: Ctx, unit: Unit, act: Act): void {
     act({ type: 'settle', polity, unit: unit.id });
     return;
   }
-  const zone = settleTargetNear(ctx, unit.hex);
+  const zone = settleTargetNear(ctx, unit.hex, polity);
   if (zone < 0) {
     if (unit.status === 'ready') act({ type: 'sleep', polity, unit: unit.id });
     return;
