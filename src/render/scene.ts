@@ -7,9 +7,13 @@
 import type { Language } from '../shared/i18n.ts';
 import type { RenderBackend } from '../shared/types.ts';
 import type { CameraState } from './cameraRig.ts';
+import type { CityFamilyId } from './cityGen.ts';
 import type { PostEffect, PostEffectState } from './postfx.ts';
 import type { Quality } from './renderScale.ts';
 
+export { CityFamily } from './cityGen.ts';
+export type { CityFamilyId } from './cityGen.ts';
+export { LANDMARK_IDS } from './landmarks.ts';
 export { POST_EFFECTS } from './postfx.ts';
 export type { PostEffect, PostEffectState } from './postfx.ts';
 export { QUALITY_TIERS } from './renderScale.ts';
@@ -62,6 +66,28 @@ export interface RenderCity {
    * on the site of a capital zone of the map counts as one.
    */
   readonly capital?: boolean;
+  /**
+   * The architectural family the city is built in. If omitted, the family
+   * of the owner: by the id of the polity, Central Plains for an id the
+   * renderer does not know.
+   */
+  readonly family?: CityFamilyId;
+  /**
+   * How far the city has come, 0 (ancient) to 5 (modern), as {@link PieceEra}:
+   * from the industrial era on it has works with chimneys, in the modern
+   * era towers. 0 if omitted.
+   */
+  readonly era?: PieceEraId;
+  /** Whether the city has walls. None if omitted. */
+  readonly walls?: boolean;
+  /** How many buildings the city has built: every third adds a public building. 0 if omitted. */
+  readonly buildings?: number;
+  /**
+   * The unique building that stands in the city: the id of its nation in
+   * the map's polity list, one of {@link LANDMARK_IDS}. None if omitted or
+   * for an id without a landmark.
+   */
+  readonly landmark?: string;
 }
 
 /** What has been built on a hex. Values of `RenderScene.improvements`. */

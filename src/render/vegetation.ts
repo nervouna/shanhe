@@ -186,7 +186,9 @@ export function createVegetation(surface: Surface, u: MapUniforms): Vegetation {
     mesh.geometry.dispose();
   };
 
-  const show = (mesh: Mesh | null, visible: boolean): boolean => {
+  const show = (mesh: Mesh | null, wanted: boolean): boolean => {
+    // a chunk whose trees all fell to water, cliffs or snow has nothing to draw
+    const visible = wanted && mesh !== null && mesh.geometry.getAttribute('position').count > 0;
     if (mesh === null || mesh.visible === visible) return false;
     mesh.visible = visible;
     return true;

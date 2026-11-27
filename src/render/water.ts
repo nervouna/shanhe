@@ -216,7 +216,7 @@ function createMaterial(u: MapUniforms, surface: Surface, ground: DataTexture, e
   material.roughnessNode = mix(float(0.1), float(0.55), saturate(foam.add(caps)));
   material.metalness = 0;
   material.envMap = environment;
-  material.envMapIntensity = 0.3;
+  material.envMapIntensity = 0.06;
   material.transparent = true;
   material.depthWrite = false;
   return material;

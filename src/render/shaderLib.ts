@@ -87,7 +87,7 @@ export function createMapUniforms(
     unitsPerMetre: uniform(unitsPerMetre),
     clock: uniform(0),
     cloudOffset: uniform(new Vector2()),
-    cloudShadow: uniform(0.3),
+    cloudShadow: uniform(0.22),
     latitude: uniform(new Vector4(latitude.apexZ, latitude.scale, latitude.c, latitude.n)),
     textures,
   };

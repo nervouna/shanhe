@@ -64,11 +64,11 @@ const RIVER_HALF = 0.085;
 const ROAD_HALF = 0.05;
 const RAIL_HALF = 0.062;
 const ROUTE_HALF = 0.034;
-const RIVER_LIFT = 0.012;
-const ROAD_LIFT = 0.02;
-const ROUTE_LIFT = 0.035;
+const RIVER_LIFT = 0.02;
+const ROAD_LIFT = 0.028;
+const ROUTE_LIFT = 0.042;
 /** Distance between two points of a line, so that it follows the relief. */
-const SPACING = 0.18;
+const SPACING = 0.1;
 
 /** Per-vertex extras a ribbon can carry besides its own attributes. */
 interface Extras {
@@ -143,8 +143,8 @@ export function createGroundLines(surface: Surface, u: MapUniforms): GroundLines
   riverMaterial.positionNode = widened(0.5);
   riverMaterial.side = DoubleSide;
   riverMaterial.polygonOffset = true;
-  riverMaterial.polygonOffsetFactor = -2;
-  riverMaterial.polygonOffsetUnits = -2;
+  riverMaterial.polygonOffsetFactor = -4;
+  riverMaterial.polygonOffsetUnits = -4;
 
   const riverRibbon = emptyRibbon();
   for (const course of riverCourses(map)) {
@@ -165,10 +165,10 @@ export function createGroundLines(surface: Surface, u: MapUniforms): GroundLines
   const rail = step(0.5, kind);
   const earth = mix(color(0xa8946c), color(0x8a7650), smoothstep(0.5, 1, across));
   const ruts = float(1).sub(float(1).sub(smoothstep(0.08, 0.2, abs(across.sub(0.45)))).mul(0.18));
-  const sleeper = step(0.5, fract(along.mul(9)));
-  const ballast = mix(color(0x5d5852), color(0x4a3b2c), sleeper.mul(float(1).sub(smoothstep(0.75, 0.85, across))));
+  const sleeper = step(0.55, fract(along.mul(16)));
+  const ballast = mix(color(0x6a655d), color(0x3f3226), sleeper.mul(float(1).sub(smoothstep(0.75, 0.85, across))));
   const steel = float(1).sub(smoothstep(0.05, 0.11, abs(across.sub(0.5))));
-  const railway = mix(ballast, color(0xb9c0c6), steel);
+  const railway = mix(ballast, color(0x8d949a), steel);
   const roadColor = mix(earth.mul(ruts), railway, rail);
   roadMaterial.colorNode = withFogOfWar(vec3(roadColor.mul(cloudShade(u, xz))), fogged);
   roadMaterial.roughnessNode = mix(float(0.95), mix(float(0.9), float(0.35), steel), rail);
@@ -176,8 +176,8 @@ export function createGroundLines(surface: Surface, u: MapUniforms): GroundLines
   roadMaterial.positionNode = widened(0.35);
   roadMaterial.side = DoubleSide;
   roadMaterial.polygonOffset = true;
-  roadMaterial.polygonOffsetFactor = -3;
-  roadMaterial.polygonOffsetUnits = -3;
+  roadMaterial.polygonOffsetFactor = -6;
+  roadMaterial.polygonOffsetUnits = -6;
   const roads = new Mesh(new BufferGeometry(), roadMaterial);
   roads.name = 'roads';
   roads.receiveShadow = true;
@@ -197,8 +197,8 @@ export function createGroundLines(surface: Surface, u: MapUniforms): GroundLines
   routeMaterial.depthWrite = false;
   routeMaterial.side = DoubleSide;
   routeMaterial.polygonOffset = true;
-  routeMaterial.polygonOffsetFactor = -4;
-  routeMaterial.polygonOffsetUnits = -4;
+  routeMaterial.polygonOffsetFactor = -8;
+  routeMaterial.polygonOffsetUnits = -8;
   const routes = new Mesh(new BufferGeometry(), routeMaterial);
   routes.name = 'routes';
   routes.renderOrder = 2;

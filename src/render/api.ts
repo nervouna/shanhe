@@ -19,7 +19,7 @@ import {
 import { hexToWorld, indexToOffset, worldToHex } from '../shared/hex.ts';
 import { getLanguage } from '../shared/i18n.ts';
 import type { Language } from '../shared/i18n.ts';
-import { NO_ZONE } from '../shared/mapData.ts';
+import { Feature, NO_ZONE } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
 import type { RenderBackend } from '../shared/types.ts';
 import { createAnimator } from './animator.ts';
@@ -35,6 +35,7 @@ import {
 } from './cameraRig.ts';
 import type { CameraPose, CameraState } from './cameraRig.ts';
 import { createCities } from './cities.ts';
+import type { Part } from './cityGen.ts';
 import { latitudeTerms } from './climate.ts';
 import { createCameraController } from './controls.ts';
 import { createEffects } from './effects.ts';
@@ -45,9 +46,11 @@ import { POLITICAL_NAMES_FROM, createLabels } from './labels.ts';
 import { createLighting } from './lighting.ts';
 import { createMapTextures } from './mapTextures.ts';
 import { createOverlays } from './overlays.ts';
+import { createPartBatch } from './partBatch.ts';
 import { pickHexOnRay } from './picking.ts';
 import { createPieces } from './pieces.ts';
 import { placePoliticalNames } from './politicalNames.ts';
+import { improvementParts, volcanoParts } from './props.ts';
 import { createPostFx, resolveEffects } from './postfx.ts';
 import type { PostEffect } from './postfx.ts';
 import { QUALITY_SETTINGS, createScaleController, renderPixelRatio } from './renderScale.ts';
@@ -140,17 +143,47 @@ export async function createRenderer(
   table.receiveShadow = true;
   const groundLines = createGroundLines(surface, uniforms);
   const vegetation = createVegetation(surface, uniforms);
-  const pieces = createPieces(surface);
-  const cities = createCities(surface);
+  const pieces = createPieces(surface, lighting.environment);
+  const cities = createCities(surface, uniforms);
+  const props = createPartBatch(uniforms, layout.size, 'props');
   const labels = createLabels();
   const effects = createEffects();
-  scene.add(terrain.object, water.object, groundLines.object, overlays.object, table, vegetation.object, pieces.object, cities.object, effects.object);
+  scene.add(terrain.object, water.object, groundLines.object, overlays.object, table, vegetation.object, pieces.shadows, pieces.object, cities.object, props.object, effects.object);
   // with the finish, labels are drawn on their own and laid over the picture
   const labelScene = new Scene();
   renderer.setClearColor(0x000000, 0);
   const postfx = createPostFx(renderer, scene, labelScene, camera);
 
   const hexCount = mapData.width * mapData.height;
+
+  /** Draws what stands on hexes besides cities: volcano cones and the buildings of improvements. */
+  const showProps = (improvements: ReadonlyMap<number, number>): void => {
+    const parts: Part[] = [];
+    const place = (hex: number, local: readonly Part[]): void => {
+      const centre = hexToWorld(indexToOffset(hex, mapData.width), layout);
+      for (const part of local) {
+        const x = centre.x + part.x * layout.size;
+        const z = centre.z + part.z * layout.size;
+        parts.push({
+          ...part,
+          x,
+          y: surfaceHeightAt(surface, x, z) + part.y * layout.size,
+          z,
+          w: part.w * layout.size,
+          h: part.h * layout.size,
+          d: part.d * layout.size,
+        });
+      }
+    };
+    for (let hex = 0; hex < hexCount; hex++) {
+      if (mapData.feature[hex] === Feature.Volcano) place(hex, volcanoParts(hex));
+    }
+    for (const [hex, kind] of improvements) {
+      if (Number.isInteger(hex) && hex >= 0 && hex < hexCount) place(hex, improvementParts(kind, hex));
+    }
+    props.set(parts);
+  };
+  showProps(NO_IMPROVEMENTS);
   const validHex = (hex: number): boolean => Number.isInteger(hex) && hex >= 0 && hex < hexCount;
 
   // the owner of every hex as drawn: the map's, the scene's overrides, and what animations changed
@@ -266,6 +299,7 @@ export async function createRenderer(
       0.42 * layout.size,
     );
     cities.object.visible = (0.12 * layout.size) / perPixel >= MIN_HOUSE_PIXELS;
+    props.object.visible = cities.object.visible;
     const update = terrain.update(camera.position, viewHeight, firstFrame ? Infinity : undefined);
     terrainBuilds = update.builds;
     const grown = vegetation.update(camera.position, firstFrame ? 64 : undefined);
@@ -451,6 +485,8 @@ export async function createRenderer(
       if (improvementKey !== improvementsKey) {
         improvementsKey = improvementKey;
         textures.setImprovements(improvements);
+        showProps(improvements);
+        shadowDirty = true;
       }
       const roads = next.roads ?? NO_IMPROVEMENTS;
       const roadKey = keyOfMap(roads);
@@ -585,6 +621,7 @@ export async function createRenderer(
       water.dispose();
       pieces.dispose();
       cities.dispose();
+      props.dispose();
       labels.dispose();
       effects.dispose();
       overlays.dispose();
