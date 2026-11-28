@@ -19,15 +19,17 @@ import {
 } from './combat.ts';
 import { at, atWar, cityAtHex, createCtx, isEmbarked, relationKey, relationOf } from './context.ts';
 import type { Ctx } from './context.ts';
-import { AIR_STRIKE, DIPLOMACY, PROJECT, TRADE, conquestTarget, unitDef } from './data.ts';
-import type { AgreementKind, PolicyId, TechId } from './data.ts';
+import { AIR_STRIKE, CAPITAL_PERCENT, DIPLOMACY, PROJECT, TRADE, conquestTarget, supplySurcharge, unitDef } from './data.ts';
+import type { AgreementKind, PolicyId, TechId, Yields } from './data.ts';
 import { dealPrice, favourStandings, submits } from './diplomacy.ts';
 import { kitOf, roadUpgradeOf } from './modifiers.ts';
 import { openPolicies } from './policies.ts';
+import { balanceIn, ratedIn } from './power.ts';
+import type { Track } from './power.ts';
 import { isNation, vassalsOf } from './relations.ts';
 import { eraOf, hasResource, openTechs, ownsResource, researches, upgradeTargetFor } from './tech.ts';
 import { checkRoute, checkRouteTarget, findRoutePath, routeIncome, routeSlots, routesOf } from './trade.ts';
-import { capitalsHeld, contenders } from './turn.ts';
+import { capitalsHeld, contenders, needsSupply, supplyOf } from './turn.ts';
 import { NO_POLITY } from './types.ts';
 import type {
   Action,
@@ -553,4 +555,63 @@ export function peaceMakesVassal(state: GameState, polity: number, other: number
   if (relation === undefined) return false;
   const theirOffer = relation.a === other ? relation.offerA : relation.offerB;
   return theirOffer > 0 && submits(ctx, other, polity);
+}
+
+// ------------------------- supply, the capital, the balance of power (interface)
+
+export interface SupplyStanding {
+  /** Fighting units the polity's cities and people keep at the ordinary upkeep. */
+  readonly limit: number;
+  /** Fighting units it has. */
+  readonly used: number;
+  /** Gold a turn the units beyond the limit cost on top of their upkeep. */
+  readonly surcharge: number;
+  /** Gold a turn one more fighting unit would add to the surcharge; 0 while there is room for it. */
+  readonly nextUnit: number;
+}
+
+/** The supply of `polity` as the turn charges it, and what its next fighting unit would cost beyond the upkeep. */
+export function supplyStanding(state: GameState, polity: number): SupplyStanding {
+  if (state.polities[polity] === undefined) return { limit: 0, used: 0, surcharge: 0, nextUnit: 0 };
+  const { limit, used, surcharge } = supplyOf(ctxOf(state), polity);
+  return { limit, used, surcharge, nextUnit: supplySurcharge(used + 1 - limit) - surcharge };
+}
+
+/** True if a unit of this type counts against its owner's supply limit. */
+export function takesSupply(type: string): boolean {
+  return needsSupply({ type } as Unit);
+}
+
+/**
+ * The percentages the city in `zone` adds to its yields for being the seat
+ * of its nation (`CAPITAL_PERCENT`). Empty for any other city, and for the
+ * seat of a polity that is not a nation.
+ */
+export function capitalBonus(state: GameState, zone: number): Readonly<Partial<Yields>> {
+  const city = state.cities[zone];
+  if (city === undefined || city === null) return {};
+  const ctx = ctxOf(state);
+  return isNation(ctx, city.owner) && state.polities[city.owner]?.capital === zone ? CAPITAL_PERCENT : {};
+}
+
+export interface PowerRow {
+  readonly polity: number;
+  /** The favour it loses with every nation that fears it; 0 for a nation nobody fears. */
+  readonly fear: number;
+  /** The track on which it is feared most, or null. */
+  readonly lead: Track | null;
+}
+
+/**
+ * The balance of power: for every nation in the race (the living major
+ * nations and the player), how much it is feared and for which lead,
+ * ascending by polity. All of it is public knowledge.
+ */
+export function powerStandings(state: GameState): PowerRow[] {
+  const balance = balanceIn(state);
+  return ratedIn(state).map((polity) => ({
+    polity,
+    fear: balance.fear[polity] ?? 0,
+    lead: balance.lead[polity] ?? null,
+  }));
 }
