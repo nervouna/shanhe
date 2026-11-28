@@ -16,6 +16,8 @@ import type { Part } from './cityGen.ts';
 import { CAPITAL_MARKER_FACTOR, cityFootprint, cityMarkerHalf, cityMarkerShare, cityScale, layOutCity } from './cityLayout.ts';
 import { surfaceHeightAt, surfaceHeightAtHex } from './heightField.ts';
 import type { Surface } from './heightField.ts';
+import { createKeyedCache } from './keyed.ts';
+import type { GroundArea } from './keyed.ts';
 import { cityTier } from './labelLayout.ts';
 import type { CityLabel } from './labels.ts';
 import { generateLandmark, placeParts } from './landmarks.ts';
@@ -38,21 +40,42 @@ export interface Cities {
    */
   setView(distance: number, viewportHeight: number, political: number): { readonly markerShare: number; readonly markerHalf: number };
   /**
-   * Replaces the cities.
+   * Replaces the cities. Only the cities that are new or changed are
+   * generated and drawn again; the others keep their models.
    *
-   * @returns what the name of each city names, or `null` if the cities
-   *   are the same as before.
+   * @returns `null` if the cities are the same as before.
    */
-  setCities(cities: readonly RenderCity[]): CityLabel[] | null;
+  setCities(cities: readonly RenderCity[]): CitiesUpdate | null;
   /** Parts now drawn, landmarks included. */
   readonly parts: number;
+  /** City models generated since the start. Only grows. */
+  readonly builds: number;
+  /** Instanced meshes made for the houses since the start. Only grows. */
+  readonly meshBuilds: number;
   dispose(): void;
+}
+
+export interface CitiesUpdate {
+  /** What the name of each city names, for all cities now on the board. */
+  readonly labels: CityLabel[];
+  /** Cities generated in this call: the new ones and the ones that changed. */
+  readonly built: number;
+  /** Cities taken off the board in this call. */
+  readonly removed: number;
+  /** The ground on which houses went or came: their shadows changed. */
+  readonly areas: readonly GroundArea[];
 }
 
 /** A landmark is drawn at this share of its size (before the city is enlarged), behind the houses. */
 const LANDMARK_SCALE = 0.72;
 /** The markers are drawn after the cloud layer (order 8) and before the pieces (order 9). */
 const MARKER_ORDER = 8.5;
+
+interface CityModel {
+  readonly parts: readonly Part[];
+  readonly label: CityLabel;
+  readonly site: MarkerSite;
+}
 
 interface MarkerSite {
   readonly x: number;
@@ -67,8 +90,78 @@ export function createCities(surface: Surface, u: MapUniforms): Cities {
   const layout = map.projection.hexLayout;
   const size = layout.size;
   const batch = createPartBatch(u, size, 'cities');
-  let shownKey = '';
   const capitalSites = new Set(map.zones.filter((zone) => zone.capital).map((zone) => zone.siteHex));
+  let markersKey = '';
+
+  /** A city as it stands on the board: its parts in world coordinates, what its name names and its marker. */
+  const buildModel = (city: RenderCity): CityModel => {
+    const centre = hexToWorld(indexToOffset(city.hex, map.width), layout);
+    const polityColor = map.polities[city.polity]?.color ?? 0x888888;
+    const family = city.family ?? CityFamily.CentralPlains;
+    let parts = generateCity({
+      seed: city.hex,
+      population: city.population,
+      era: city.era ?? 0,
+      family,
+      walls: city.walls ?? false,
+      buildings: city.buildings ?? 0,
+      polityColor,
+    });
+    if (city.landmark !== undefined) {
+      const landmark = generateLandmark(city.landmark);
+      if (landmark.length > 0) {
+        // behind the houses as the board is usually seen, to the north-west or the north-east,
+        // where neither a house nor the garrison stands before it; houses in its way make room
+        const side = ((city.hex * 2654435761) >>> 0) / 4294967296 < 0.5 ? -1 : 1;
+        const angle = -Math.PI / 2 + side * 0.75;
+        const away = cityRadius(city.population, family) * 0.78;
+        const lx = Math.cos(angle) * away;
+        const lz = Math.sin(angle) * away;
+        const room = 0.36 * LANDMARK_SCALE;
+        parts = parts.filter((part) => Math.hypot(part.x - lx, part.z - lz) > room);
+        parts = parts.concat(placeParts(landmark, lx, lz, 0, LANDMARK_SCALE));
+      }
+    }
+    parts = layOutCity(parts, cityScale(city.population, family));
+    const world: Part[] = [];
+    for (const part of parts) {
+      const x = centre.x + part.x * size;
+      const z = centre.z + part.z * size;
+      world.push({
+        ...part,
+        x,
+        y: surfaceHeightAt(surface, x, z) + part.y * size,
+        z,
+        w: part.w * size,
+        h: part.h * size,
+        d: part.d * size,
+      });
+    }
+    const isCapital = city.capital ?? capitalSites.has(city.hex);
+    const ground = surfaceHeightAtHex(surface, city.hex);
+    const footprint = cityFootprint(city.population);
+    return {
+      parts: world,
+      label: {
+        name: city.name,
+        color: polityColor,
+        hex: city.hex,
+        x: centre.x,
+        y: ground,
+        z: centre.z,
+        footprint: { z: footprint.z * size, halfWidth: footprint.halfWidth * size, halfDepth: footprint.halfDepth * size },
+        height: partsHeight(parts) * size,
+        tier: cityTier(isCapital, city.population),
+        population: city.population,
+      },
+      site: { x: centre.x, y: ground, z: centre.z, color: polityColor, capital: isCapital },
+    };
+  };
+  const models = createKeyedCache<RenderCity, CityModel>(
+    (city) => city.hex,
+    (c) => JSON.stringify([c.polity, c.population, c.name, c.capital, c.family, c.era, c.walls, c.buildings, c.landmark]),
+    buildModel,
+  );
 
   // the marker: a square in the owner's colour inside a line, with the sign of a walled town in it
   const markerHalf = uniform(0.5 * size);
@@ -134,6 +227,12 @@ export function createCities(surface: Surface, u: MapUniforms): Cities {
     get parts() {
       return batch.count;
     },
+    get builds() {
+      return models.builds;
+    },
+    get meshBuilds() {
+      return batch.meshBuilds;
+    },
     setView(distance, viewportHeight, political) {
       const share = cityMarkerShare(distance, viewportHeight, size);
       const half = cityMarkerHalf(distance, viewportHeight, size, political);
@@ -145,78 +244,29 @@ export function createCities(surface: Surface, u: MapUniforms): Cities {
       return { markerShare: share, markerHalf: half };
     },
     setCities(cities) {
-      const key = JSON.stringify(
-        cities.map((c) => [c.hex, c.polity, c.population, c.name, c.capital, c.family, c.era, c.walls, c.buildings, c.landmark]),
-      );
-      if (key === shownKey) return null;
-      shownKey = key;
+      const { built: changed, removed } = models.update(cities.filter((city) => city.hex >= 0 && city.hex < map.width * map.height));
+      if (changed.length === 0 && removed.length === 0) return null;
+      const changes: [number, readonly Part[] | null][] = removed.map((hex) => [hex, null]);
+      for (const hex of changed) changes.push([hex, models.get(hex)?.parts ?? null]);
+      const update = batch.update(changes);
 
-      const world: Part[] = [];
       const labels: CityLabel[] = [];
       const sites: MarkerSite[] = [];
+      const seen = new Set<number>();
       for (const city of cities) {
-        if (city.hex < 0 || city.hex >= map.width * map.height) continue;
-        const centre = hexToWorld(indexToOffset(city.hex, map.width), layout);
-        const polityColor = map.polities[city.polity]?.color ?? 0x888888;
-        const family = city.family ?? CityFamily.CentralPlains;
-        let parts = generateCity({
-          seed: city.hex,
-          population: city.population,
-          era: city.era ?? 0,
-          family,
-          walls: city.walls ?? false,
-          buildings: city.buildings ?? 0,
-          polityColor,
-        });
-        if (city.landmark !== undefined) {
-          const landmark = generateLandmark(city.landmark);
-          if (landmark.length > 0) {
-            // behind the houses as the board is usually seen, to the north-west or the north-east,
-            // where neither a house nor the garrison stands before it; houses in its way make room
-            const side = ((city.hex * 2654435761) >>> 0) / 4294967296 < 0.5 ? -1 : 1;
-            const angle = -Math.PI / 2 + side * 0.75;
-            const away = cityRadius(city.population, family) * 0.78;
-            const lx = Math.cos(angle) * away;
-            const lz = Math.sin(angle) * away;
-            const room = 0.36 * LANDMARK_SCALE;
-            parts = parts.filter((part) => Math.hypot(part.x - lx, part.z - lz) > room);
-            parts = parts.concat(placeParts(landmark, lx, lz, 0, LANDMARK_SCALE));
-          }
-        }
-        parts = layOutCity(parts, cityScale(city.population, family));
-        for (const part of parts) {
-          const x = centre.x + part.x * size;
-          const z = centre.z + part.z * size;
-          world.push({
-            ...part,
-            x,
-            y: surfaceHeightAt(surface, x, z) + part.y * size,
-            z,
-            w: part.w * size,
-            h: part.h * size,
-            d: part.d * size,
-          });
-        }
-        const isCapital = city.capital ?? capitalSites.has(city.hex);
-        const ground = surfaceHeightAtHex(surface, city.hex);
-        const footprint = cityFootprint(city.population);
-        labels.push({
-          name: city.name,
-          color: polityColor,
-          hex: city.hex,
-          x: centre.x,
-          y: ground,
-          z: centre.z,
-          footprint: { z: footprint.z * size, halfWidth: footprint.halfWidth * size, halfDepth: footprint.halfDepth * size },
-          height: partsHeight(parts) * size,
-          tier: cityTier(isCapital, city.population),
-          population: city.population,
-        });
-        sites.push({ x: centre.x, y: ground, z: centre.z, color: polityColor, capital: isCapital });
+        const model = models.get(city.hex);
+        if (model === undefined || seen.has(city.hex)) continue;
+        seen.add(city.hex);
+        labels.push(model.label);
+        sites.push(model.site);
       }
-      batch.set(world);
-      showMarkers(sites);
-      return labels;
+      // the markers change with the sites, their owners and their rank, not with what a city has built
+      const sitesKey = sites.map((site) => `${site.x},${site.z},${site.color},${site.capital ? 1 : 0}`).join(';');
+      if (sitesKey !== markersKey) {
+        markersKey = sitesKey;
+        showMarkers(sites);
+      }
+      return { labels, built: changed.length, removed: removed.length, areas: update.areas };
     },
     dispose() {
       batch.dispose();

@@ -372,7 +372,8 @@ export function createLabels(): Labels {
     },
     setCities(next) {
       cities = next;
-      atlasDirty = true;
+      // the atlas is drawn again only for a name it does not hold yet
+      if (next.some((label) => !slots.has(cityKey(label)))) atlasDirty = true;
       layoutDirty = true;
     },
     setNames(next) {

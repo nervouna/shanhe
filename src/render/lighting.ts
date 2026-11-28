@@ -50,10 +50,11 @@ import {
   angleBetween,
   cascadeHalf,
   cascadeNeedsFit,
+  cascadeSeesAny,
   shadowRedraw,
   sunDirectionAt,
 } from './lightMath.ts';
-import type { CascadeFit, Direction, ShadowLayers } from './lightMath.ts';
+import type { CascadeFit, Direction, ShadowArea, ShadowLayers } from './lightMath.ts';
 import { GROUND_SHADOW_LAYER, PIECE_SHADOW_LAYER } from './shadowLayers.ts';
 
 export interface Lighting {
@@ -75,10 +76,20 @@ export interface Lighting {
    * @param tilt of the view above the horizon, in radians.
    * @param changed the layers in which something that casts a shadow changed
    *   since the last call.
+   * @param groundAreas where on the ground something that casts a shadow
+   *   changed besides: only the cascades that cover one of them draw their
+   *   ground map again.
    * @param seconds of drawn time since the start, for the drift of the sun.
    * @returns whether a shadow map is drawn again in the next frame.
    */
-  update(target: Vector3, distance: number, tilt: number, changed: ShadowLayers, seconds: number): boolean;
+  update(
+    target: Vector3,
+    distance: number,
+    tilt: number,
+    changed: ShadowLayers,
+    seconds: number,
+    groundAreas?: readonly ShadowArea[],
+  ): boolean;
   /**
    * Without tone mapping the picture would burn out: the lights are dimmed
    * to make up for it.
@@ -298,7 +309,7 @@ export function createLighting(scene: Scene, renderer: WebGPURenderer, mapSpan: 
     get shadowTriangles() {
       return shadowTriangles;
     },
-    update(target, distance, tilt, changed, seconds) {
+    update(target, distance, tilt, changed, seconds, groundAreas = []) {
       shadowTriangles = 0;
       // the sun moves in steps, so that the shadows are not drawn every frame
       const wanted = sunDirectionAt(seconds);
@@ -317,7 +328,8 @@ export function createLighting(scene: Scene, renderer: WebGPURenderer, mapSpan: 
       let redraw = false;
       for (const [index, cascade] of cascades.entries()) {
         const refit = stepped || cascadeNeedsFit(cascade.fit, target.x, target.z, distance);
-        const draw = shadowRedraw(refit, changed);
+        const touched = !refit && !changed.ground && cascadeSeesAny(cascade.fit, groundAreas, sunDirection.y);
+        const draw = shadowRedraw(refit, touched ? { ground: true, pieces: changed.pieces } : changed);
         if (refit) {
           const half = cascadeHalf(index, distance, mapSpan);
           cascade.fit = { x: target.x, z: target.z, distance, half };

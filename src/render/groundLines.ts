@@ -44,17 +44,30 @@ import {
   roadCourses,
   splineCourse,
 } from './ribbon.ts';
-import type { Ribbon } from './ribbon.ts';
+import type { Course, Ribbon, RoadCourse } from './ribbon.ts';
+import { createKeyedCache } from './keyed.ts';
+import { replaceGeometry } from './release.ts';
 import type { RenderRoute } from './scene.ts';
 import { cloudShade, mapUv, withFogOfWar } from './shaderLib.ts';
 import type { MapUniforms } from './shaderLib.ts';
 
 export interface GroundLines {
   readonly object: Group;
-  /** Replaces the roads: hex index to 1 (road) or 2 (railway). */
-  setRoads(roads: ReadonlyMap<number, number>): void;
-  /** Replaces the trade routes. */
-  setRoutes(routes: readonly RenderRoute[]): void;
+  /**
+   * Replaces the roads: hex index to 1 (road) or 2 (railway). A stretch of
+   * road that runs as before keeps its vertices.
+   *
+   * @returns the stretches laid on the ground in this call.
+   */
+  setRoads(roads: ReadonlyMap<number, number>): number;
+  /**
+   * Replaces the trade routes; a route that runs as before keeps its vertices.
+   *
+   * @returns the routes laid on the ground in this call.
+   */
+  setRoutes(routes: readonly RenderRoute[]): number;
+  /** Stretches of road and routes laid on the ground since the start. Only grows. */
+  readonly builds: number;
   /** Triangles of the rivers, roads and routes now drawn. */
   readonly counts: { readonly rivers: number; readonly roads: number; readonly routes: number };
   dispose(): void;
@@ -71,22 +84,33 @@ const ROUTE_LIFT = 0.042;
 /** Distance between two points of a line, so that it follows the relief. */
 const SPACING = 0.1;
 
-/** Per-vertex extras a ribbon can carry besides its own attributes. */
-interface Extras {
-  readonly kind: number[];
-  readonly tint: number[];
+/** One line as it is drawn: the vertices of its ribbon, laid on the ground. */
+interface Piece {
+  readonly positions: Float32Array;
+  readonly line: Float32Array;
+  readonly outward: Float32Array;
+  readonly kind: Float32Array;
+  readonly tint: Float32Array;
+  readonly indices: readonly number[];
 }
 
-function toGeometry(
+/**
+ * Lays a ribbon on the ground.
+ *
+ * @param kind per vertex: 0 for a road, 1 for a railway.
+ * @param tint the colour of every vertex.
+ */
+function buildPiece(
   ribbon: Ribbon,
   height: (x: number, z: number) => number,
   lift: number,
-  extras: Extras,
-): BufferGeometry {
+  kind: number,
+  tint: readonly [number, number, number],
+): Piece {
   const count = ribbon.across.length;
   const positions = new Float32Array(count * 3);
-  const normals = new Float32Array(count * 3);
   const line = new Float32Array(count * 2);
+  const tints = new Float32Array(count * 3);
   for (let v = 0; v < count; v++) {
     const x = ribbon.positions[v * 2] as number;
     const z = ribbon.positions[v * 2 + 1] as number;
@@ -95,21 +119,60 @@ function toGeometry(
     positions[v * 3] = x;
     positions[v * 3 + 1] = y + lift;
     positions[v * 3 + 2] = z;
-    normals[v * 3 + 1] = 1;
     line[v * 2] = ribbon.across[v] as number;
     line[v * 2 + 1] = ribbon.along[v] as number;
+    tints.set(tint, v * 3);
   }
+  return {
+    positions,
+    line,
+    outward: new Float32Array(ribbon.outward),
+    kind: new Float32Array(count).fill(kind),
+    tint: tints,
+    indices: ribbon.indices,
+  };
+}
+
+/** One geometry of all pieces. */
+function mergePieces(pieces: readonly Piece[]): BufferGeometry {
+  let count = 0;
+  let indexCount = 0;
+  for (const piece of pieces) {
+    count += piece.kind.length;
+    indexCount += piece.indices.length;
+  }
+  const positions = new Float32Array(count * 3);
+  const normals = new Float32Array(count * 3);
+  const line = new Float32Array(count * 2);
+  const outward = new Float32Array(count * 2);
+  const kind = new Float32Array(count);
+  const tint = new Float32Array(count * 3);
+  const indices = count > 65535 ? new Uint32Array(indexCount) : new Uint16Array(indexCount);
+  let v = 0;
+  let n = 0;
+  for (const piece of pieces) {
+    positions.set(piece.positions, v * 3);
+    line.set(piece.line, v * 2);
+    outward.set(piece.outward, v * 2);
+    kind.set(piece.kind, v);
+    tint.set(piece.tint, v * 3);
+    for (const index of piece.indices) indices[n++] = v + index;
+    v += piece.kind.length;
+  }
+  for (let i = 0; i < count; i++) normals[i * 3 + 1] = 1;
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new BufferAttribute(positions, 3));
   geometry.setAttribute('normal', new BufferAttribute(normals, 3));
   geometry.setAttribute('line', new BufferAttribute(line, 2));
-  geometry.setAttribute('outward', new BufferAttribute(new Float32Array(ribbon.outward), 2));
-  geometry.setAttribute('kind', new BufferAttribute(new Float32Array(extras.kind), 1));
-  geometry.setAttribute('tint', new BufferAttribute(new Float32Array(extras.tint), 3));
-  geometry.setIndex(ribbon.indices);
+  geometry.setAttribute('outward', new BufferAttribute(outward, 2));
+  geometry.setAttribute('kind', new BufferAttribute(kind, 1));
+  geometry.setAttribute('tint', new BufferAttribute(tint, 3));
+  geometry.setIndex(new BufferAttribute(indices, 1));
   geometry.computeBoundingSphere();
   return geometry;
 }
+
+const WHITE = [1, 1, 1] as const;
 
 export function createGroundLines(surface: Surface, u: MapUniforms): GroundLines {
   const { map, field } = surface;
@@ -160,11 +223,7 @@ export function createGroundLines(surface: Surface, u: MapUniforms): GroundLines
     const line = riverLine(course, size, SPACING * size);
     appendRibbon(riverRibbon, line.course, RIVER_HALF * size, true, line.widths);
   }
-  const noExtras = (ribbon: Ribbon): Extras => ({
-    kind: new Array<number>(ribbon.across.length).fill(0),
-    tint: new Array<number>(ribbon.across.length * 3).fill(1),
-  });
-  const rivers = new Mesh(toGeometry(riverRibbon, ground, RIVER_LIFT * size, noExtras(riverRibbon)), riverMaterial);
+  const rivers = new Mesh(mergePieces([buildPiece(riverRibbon, ground, RIVER_LIFT * size, 0, WHITE)]), riverMaterial);
   rivers.name = 'rivers';
   rivers.receiveShadow = true;
   rivers.visible = riverRibbon.indices.length > 0;
@@ -217,45 +276,75 @@ export function createGroundLines(surface: Surface, u: MapUniforms): GroundLines
 
   const counts = { rivers: riverRibbon.indices.length / 3, roads: 0, routes: 0 };
   const polityColors = map.polities.map((polity) => new Color().setHex(polity.color));
-  const swap = (mesh: Mesh, geometry: BufferGeometry, triangles: number): void => {
-    mesh.geometry.dispose();
-    mesh.geometry = geometry;
+  const show = (mesh: Mesh, pieces: readonly Piece[]): number => {
+    const geometry = mergePieces(pieces);
+    replaceGeometry(mesh, geometry);
+    const triangles = (geometry.getIndex()?.count ?? 0) / 3;
     mesh.visible = triangles > 0;
+    return triangles;
+  };
+
+  // a line that is drawn as before keeps its vertices: only new and changed lines are laid on the ground
+  const courseKey = (course: Course): string => {
+    let key = course.closed ? 'o' : '-';
+    for (const point of course.points) key += `${point.x.toFixed(3)},${point.z.toFixed(3)};`;
+    return key;
+  };
+  const roadId = (road: RoadCourse): string => `${road.level}${courseKey(road.course)}`;
+  const roadPieces = createKeyedCache<RoadCourse, Piece, string>(
+    roadId,
+    () => '',
+    ({ course, level }) => {
+      const ribbon = emptyRibbon();
+      appendRibbon(ribbon, resampleCourse(splineCourse(course, 4), SPACING * size), (level === 2 ? RAIL_HALF : ROAD_HALF) * size);
+      return buildPiece(ribbon, top, ROAD_LIFT * size, level === 2 ? 1 : 0, WHITE);
+    },
+  );
+  const routeId = (route: RenderRoute): string => `${route.polity}:${route.sea ? 1 : 0}:${route.path.join(',')}`;
+  const routePieces = createKeyedCache<RenderRoute, Piece | null, string>(
+    routeId,
+    () => '',
+    (route) => {
+      const course = pathCourse(map, route.path);
+      if (course.points.length < 2) return null;
+      const ribbon = emptyRibbon();
+      appendRibbon(ribbon, resampleCourse(splineCourse(course, 4), SPACING * size), ROUTE_HALF * size, false);
+      const tintOf = polityColors[route.polity] ?? new Color(0xffffff);
+      return buildPiece(ribbon, top, ROUTE_LIFT * size, 0, [tintOf.r, tintOf.g, tintOf.b]);
+    },
+  );
+  /** The pieces of the lines given, each once, in their order. */
+  const piecesOf = <T>(lines: readonly T[], idOf: (line: T) => string, cache: { get(id: string): Piece | null | undefined }): Piece[] => {
+    const pieces: Piece[] = [];
+    const seen = new Set<string>();
+    for (const line of lines) {
+      const id = idOf(line);
+      const piece = cache.get(id);
+      if (piece === undefined || piece === null || seen.has(id)) continue;
+      seen.add(id);
+      pieces.push(piece);
+    }
+    return pieces;
   };
 
   return {
     object,
     counts,
+    get builds() {
+      return roadPieces.builds + routePieces.builds;
+    },
     setRoads(next) {
-      const ribbon = emptyRibbon();
-      const kinds: number[] = [];
-      for (const { course, level } of roadCourses(map, next)) {
-        const before = ribbon.across.length;
-        appendRibbon(
-          ribbon,
-          resampleCourse(splineCourse(course, 4), SPACING * size),
-          (level === 2 ? RAIL_HALF : ROAD_HALF) * size,
-        );
-        for (let v = before; v < ribbon.across.length; v++) kinds.push(level === 2 ? 1 : 0);
-      }
-      counts.roads = ribbon.indices.length / 3;
-      const extras: Extras = { kind: kinds, tint: new Array<number>(kinds.length * 3).fill(1) };
-      swap(roads, toGeometry(ribbon, top, ROAD_LIFT * size, extras), counts.roads);
+      const courses = roadCourses(map, next);
+      const { built, removed } = roadPieces.update(courses);
+      if (built.length === 0 && removed.length === 0) return 0;
+      counts.roads = show(roads, piecesOf(courses, roadId, roadPieces));
+      return built.length;
     },
     setRoutes(next) {
-      const ribbon = emptyRibbon();
-      const tints: number[] = [];
-      for (const route of next) {
-        const course = pathCourse(map, route.path);
-        if (course.points.length < 2) continue;
-        const before = ribbon.across.length;
-        appendRibbon(ribbon, resampleCourse(splineCourse(course, 4), SPACING * size), ROUTE_HALF * size, false);
-        const tintOf = polityColors[route.polity] ?? new Color(0xffffff);
-        for (let v = before; v < ribbon.across.length; v++) tints.push(tintOf.r, tintOf.g, tintOf.b);
-      }
-      counts.routes = ribbon.indices.length / 3;
-      const extras: Extras = { kind: new Array<number>(ribbon.across.length).fill(0), tint: tints };
-      swap(routes, toGeometry(ribbon, top, ROUTE_LIFT * size, extras), counts.routes);
+      const { built, removed } = routePieces.update(next);
+      if (built.length === 0 && removed.length === 0) return 0;
+      counts.routes = show(routes, piecesOf(next, routeId, routePieces));
+      return built.length;
     },
     dispose() {
       for (const mesh of [rivers, roads, routes]) mesh.geometry.dispose();

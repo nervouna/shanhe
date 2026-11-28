@@ -100,6 +100,34 @@ export function shadowRedraw(refit: boolean, changed: ShadowLayers): ShadowLayer
   return { ground: refit || changed.ground, pieces: refit || changed.pieces };
 }
 
+/** A circle on the ground in which something that casts a shadow changed. */
+export interface ShadowArea {
+  readonly x: number;
+  readonly z: number;
+  readonly radius: number;
+}
+
+/**
+ * Whether a cascade's ground map shows any of `areas`: a change of the
+ * ground outside the square a cascade covers needs no new map of it.
+ *
+ * The square lies across the light, so on the ground it is stretched along
+ * the sun's bearing by `1 / sunHeight`; the test takes the circle around
+ * that stretched square, which errs on the side of drawing.
+ *
+ * @param fit the cascade as it is drawn; `null` is a cascade that was never drawn, which sees everything.
+ * @param sunHeight the vertical part of the unit vector towards the sun, 0 to 1.
+ */
+export function cascadeSeesAny(fit: CascadeFit | null, areas: readonly ShadowArea[], sunHeight: number): boolean {
+  if (areas.length === 0) return false;
+  if (fit === null) return true;
+  const reach = (fit.half * Math.SQRT2) / Math.max(sunHeight, 0.1);
+  for (const area of areas) {
+    if (Math.hypot(area.x - fit.x, area.z - fit.z) <= reach + area.radius) return true;
+  }
+  return false;
+}
+
 /**
  * While the view moves, terrain patches change their detail and forests come
  * in, a few in every frame: the ground's shadow maps follow them at this

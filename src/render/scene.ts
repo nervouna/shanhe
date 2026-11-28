@@ -309,6 +309,25 @@ export interface FrameStats {
   readonly textures: number;
   /** Whether terrain or trees were built in the last frame: the view is still coming in. */
   readonly streaming: boolean;
+  /**
+   * What {@link Renderer.setScene} has built since the renderer started. The
+   * numbers only grow, and a scene that changes nothing adds nothing: a city
+   * is generated again only when it changed, a stretch of road or a route
+   * only when its course did. Read through {@link Renderer.getStats} they are
+   * up to date at once, not as of the last frame.
+   */
+  readonly sceneBuilds: SceneBuilds;
+}
+
+export interface SceneBuilds {
+  /** City models generated. */
+  readonly cities: number;
+  /** Hexes whose improvement buildings were generated. */
+  readonly props: number;
+  /** Stretches of road and trade routes laid on the ground. */
+  readonly lines: number;
+  /** Instanced meshes made for cities and improvement buildings: a region's first of a shape, or a larger one. */
+  readonly meshes: number;
 }
 
 /** One piece or stack as it is drawn. */

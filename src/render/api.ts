@@ -39,6 +39,8 @@ import { createClouds } from './clouds.ts';
 import type { Part } from './cityGen.ts';
 import { latitudeTerms } from './climate.ts';
 import { createCameraController } from './controls.ts';
+import { createKeyedCache } from './keyed.ts';
+import type { GroundArea } from './keyed.ts';
 import { createEffects } from './effects.ts';
 import { createSurface, mapWorldRect, surfaceHeightAt, unitsPerMetre } from './heightField.ts';
 import { createGroundLines } from './groundLines.ts';
@@ -60,7 +62,7 @@ import type { PostEffect } from './postEffects.ts';
 import { createPostFx } from './postfx.ts';
 import { QUALITY_SETTINGS, createScaleController, renderPixelRatio } from './renderScale.ts';
 import type { Quality } from './renderScale.ts';
-import type { FrameStats, Renderer, RendererOptions } from './scene.ts';
+import type { FrameStats, Renderer, RendererOptions, SceneBuilds } from './scene.ts';
 import { createMapUniforms } from './shaderLib.ts';
 import { createTerrain } from './terrain.ts';
 import { createTerrainMaterial } from './terrainMaterial.ts';
@@ -162,15 +164,16 @@ export async function createRenderer(
 
   const hexCount = mapData.width * mapData.height;
 
-  /** Draws what stands on hexes besides cities: the buildings of improvements. */
-  const showProps = (improvements: ReadonlyMap<number, number>): void => {
-    const parts: Part[] = [];
-    const place = (hex: number, local: readonly Part[]): void => {
+  /** The buildings of an improvement, where they stand on the board. */
+  const propModels = createKeyedCache<readonly [hex: number, kind: number], Part[]>(
+    ([hex]) => hex,
+    ([, kind]) => String(kind),
+    ([hex, kind]) => {
       const centre = hexToWorld(indexToOffset(hex, mapData.width), layout);
-      for (const part of local) {
+      return improvementParts(kind, hex).map((part) => {
         const x = centre.x + part.x * layout.size;
         const z = centre.z + part.z * layout.size;
-        parts.push({
+        return {
           ...part,
           x,
           y: surfaceHeightAt(surface, x, z) + part.y * layout.size,
@@ -178,15 +181,23 @@ export async function createRenderer(
           w: part.w * layout.size,
           h: part.h * layout.size,
           d: part.d * layout.size,
-        });
-      }
-    };
-    for (const [hex, kind] of improvements) {
-      if (Number.isInteger(hex) && hex >= 0 && hex < hexCount) place(hex, improvementParts(kind, hex));
-    }
-    props.set(parts);
+        };
+      });
+    },
+  );
+  /**
+   * Draws what stands on hexes besides cities: the buildings of improvements.
+   * Only the hexes whose improvement changed are built again.
+   *
+   * @returns the ground on which buildings went or came.
+   */
+  const showProps = (improvements: ReadonlyMap<number, number>): readonly GroundArea[] => {
+    const { built, removed } = propModels.update([...improvements].filter(([hex]) => validHex(hex)));
+    if (built.length === 0 && removed.length === 0) return [];
+    const changes: [number, readonly Part[] | null][] = removed.map((hex) => [hex, null]);
+    for (const hex of built) changes.push([hex, propModels.get(hex) ?? null]);
+    return props.update(changes).areas;
   };
-  showProps(NO_IMPROVEMENTS);
   const validHex = (hex: number): boolean => Number.isInteger(hex) && hex >= 0 && hex < hexCount;
 
   // the owner of every hex as drawn: the map's, the scene's overrides, and what animations changed
@@ -271,6 +282,8 @@ export async function createRenderer(
   const viewHeight = 2 * Math.tan((CAMERA_FOV * Math.PI) / 360);
   /** Something on the ground that casts a shadow changed: the ground's shadow maps are drawn again. */
   let shadowDirty = true;
+  /** Where houses went or came since the last frame: the ground maps of the cascades that cover them are drawn again. */
+  let shadowAreas: GroundArea[] = [];
   /** The state of the pieces their shadow maps were last drawn for. */
   let piecesDrawn = -1;
   /** Drawn time in seconds: what the drifting light and the clouds follow. */
@@ -333,8 +346,10 @@ export async function createRenderer(
       pose.tilt,
       { ground: shadowDirty, pieces: pieces.version !== piecesDrawn },
       seconds,
+      shadowAreas,
     );
     shadowDirty = false;
+    if (shadowAreas.length > 0) shadowAreas = [];
     piecesDrawn = pieces.version;
     uniforms.clock.value = seconds;
     // the cloud that shades a point floats between it and the sun
@@ -405,7 +420,14 @@ export async function createRenderer(
     geometries: 0,
     textures: 0,
     streaming: false,
+    sceneBuilds: { cities: 0, props: 0, lines: 0, meshes: 0 },
   };
+  const sceneBuilds = (): SceneBuilds => ({
+    cities: cities.builds,
+    props: propModels.builds,
+    lines: groundLines.builds,
+    meshes: cities.meshBuilds + props.meshBuilds,
+  });
   const listeners = new Set<(stats: FrameStats) => void>();
   let lastTime: number | null = null;
   let disposed = false;
@@ -475,6 +497,7 @@ export async function createRenderer(
       cityMarkers: cityView.markerShare,
       ...liveCounts(renderer),
       streaming: terrainBuilds > 0 || treeBuilds > 0,
+      sceneBuilds: sceneBuilds(),
     };
     for (const listener of listeners) listener(stats);
   };
@@ -515,11 +538,11 @@ export async function createRenderer(
         textures.setCities(citySites);
       }
       pieces.setUnits(next.units);
-      const cityLabels = cities.setCities(next.cities);
-      if (cityLabels !== null) {
-        labels.setCities(cityLabels);
+      const cityUpdate = cities.setCities(next.cities);
+      if (cityUpdate !== null) {
+        labels.setCities(cityUpdate.labels);
         // the pieces have shadow maps of their own, which follow them by themselves
-        shadowDirty = true;
+        shadowAreas.push(...cityUpdate.areas);
       }
 
       // territory is redrawn only when an owner changed
@@ -541,8 +564,7 @@ export async function createRenderer(
       if (improvementKey !== improvementsKey) {
         improvementsKey = improvementKey;
         textures.setImprovements(improvements);
-        showProps(improvements);
-        shadowDirty = true;
+        shadowAreas.push(...showProps(improvements));
       }
       const roads = next.roads ?? NO_IMPROVEMENTS;
       const roadKey = keyOfMap(roads);
@@ -657,8 +679,8 @@ export async function createRenderer(
       };
     },
     getStats() {
-      // an animation can start and end between two frames
-      return stats.animating === animator.playing ? stats : { ...stats, animating: animator.playing };
+      // an animation can start and end between two frames, and so can a scene be set
+      return { ...stats, animating: animator.playing, sceneBuilds: sceneBuilds() };
     },
     setPaused(value) {
       paused = value;
