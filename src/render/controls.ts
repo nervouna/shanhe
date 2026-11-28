@@ -43,7 +43,13 @@ export function createCameraController(
   initial: CameraState,
   groundY: (x: number, z: number) => number,
 ): CameraController {
-  let goal = clampCamera(initial, limits);
+  /** The state within the limits, and far enough from the map's edges that the view does not show much beyond them. */
+  const fit = (next: CameraState, _limits: CameraLimits = limits): CameraState => {
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    return clampCamera(next, _limits, width > 0 && height > 0 ? width / height : undefined);
+  };
+  let goal = fit(initial, limits);
   let state = goal;
   const pointers = new Map<number, Pointer>();
   const keys = new Set<string>();
@@ -68,16 +74,16 @@ export function createCameraController(
     const a = groundPoint(goal, fromX, fromY);
     const b = groundPoint(goal, toX, toY);
     if (a === null || b === null) return;
-    goal = clampCamera({ ...goal, x: goal.x + a.x - b.x, z: goal.z + a.z - b.z }, limits);
+    goal = fit({ ...goal, x: goal.x + a.x - b.x, z: goal.z + a.z - b.z }, limits);
   };
 
   /** Multiplies the zoom distance, keeping the ground under a client position in place. */
   const zoomAbout = (factor: number, clientX: number, clientY: number): void => {
     const before = groundPoint(goal, clientX, clientY);
-    goal = clampCamera({ ...goal, distance: goal.distance * factor }, limits);
+    goal = fit({ ...goal, distance: goal.distance * factor }, limits);
     const after = groundPoint(goal, clientX, clientY);
     if (before === null || after === null) return;
-    goal = clampCamera({ ...goal, x: goal.x + before.x - after.x, z: goal.z + before.z - after.z }, limits);
+    goal = fit({ ...goal, x: goal.x + before.x - after.x, z: goal.z + before.z - after.z }, limits);
   };
 
   const twoFingers = (): { x: number; y: number; spread: number; angle: number } | null => {
@@ -110,12 +116,12 @@ export function createCameraController(
       let twist = after.angle - before.angle;
       if (twist > Math.PI) twist -= 2 * Math.PI;
       if (twist < -Math.PI) twist += 2 * Math.PI;
-      goal = clampCamera({ ...goal, yaw: goal.yaw + twist }, limits);
+      goal = fit({ ...goal, yaw: goal.yaw + twist }, limits);
       if (before.spread > 0 && after.spread > 0) zoomAbout(before.spread / after.spread, after.x, after.y);
       dragGround(before.x, before.y, after.x, after.y);
     } else if (pointers.size === 1) {
       if (pointer.button === 2) {
-        goal = clampCamera({ ...goal, yaw: goal.yaw - (pointer.x - fromX) * ROTATE_PER_PIXEL }, limits);
+        goal = fit({ ...goal, yaw: goal.yaw - (pointer.x - fromX) * ROTATE_PER_PIXEL }, limits);
       } else {
         dragGround(fromX, fromY, pointer.x, pointer.y);
       }
@@ -175,7 +181,7 @@ export function createCameraController(
     update(seconds) {
       const turn = (keys.has('KeyQ') ? 1 : 0) - (keys.has('KeyE') ? 1 : 0);
       if (turn !== 0) {
-        goal = clampCamera({ ...goal, yaw: goal.yaw + turn * KEY_ROTATE_PER_SECOND * seconds }, limits);
+        goal = fit({ ...goal, yaw: goal.yaw + turn * KEY_ROTATE_PER_SECOND * seconds }, limits);
       }
       const k = 1 - Math.exp(-FOLLOW_RATE * Math.max(0, seconds));
       let turnBy = goal.yaw - state.yaw;
@@ -192,11 +198,11 @@ export function createCameraController(
         Math.abs(goal.x - next.x) + Math.abs(goal.z - next.z) < 1e-5 * goal.distance &&
         Math.abs(goal.distance / next.distance - 1) < 1e-5 &&
         Math.abs(turnBy) < 1e-5;
-      state = settled ? goal : clampCamera(next, limits);
+      state = settled ? goal : fit(next, limits);
       return state;
     },
     moveTo(target, immediate) {
-      goal = clampCamera({ ...goal, ...target }, limits);
+      goal = fit({ ...goal, ...target }, limits);
       if (immediate) state = goal;
     },
     dispose() {
