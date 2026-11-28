@@ -15,7 +15,16 @@ import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import GTAONode from 'three/addons/tsl/display/GTAONode.js';
 import { gaussianBlur } from 'three/addons/tsl/display/GaussianBlurNode.js';
-import { NO_EFFECTS, POST_EFFECTS, tiltShiftStrength } from './postEffects.ts';
+import {
+  BLOOM_PIXELS,
+  BLOOM_RESOLUTION,
+  NO_EFFECTS,
+  OCCLUSION_PIXELS,
+  OCCLUSION_RESOLUTION,
+  POST_EFFECTS,
+  effectResolution,
+  tiltShiftStrength,
+} from './postEffects.ts';
 import type { PostEffectState } from './postEffects.ts';
 
 export interface PostFx {
@@ -30,8 +39,10 @@ export interface PostFx {
    *
    * @param focusDistance from the camera to the point it looks at.
    * @param zoom the zoom fraction, 0 nearest.
+   * @param fullPixels pixels of the picture at render scale 1: sets the
+   *   resolution ambient occlusion and bloom are computed at.
    */
-  update(focusDistance: number, zoom: number): void;
+  update(focusDistance: number, zoom: number, fullPixels: number): void;
   /** Draws the scene with the effects. Call only while `active`. */
   render(): void;
   dispose(): void;
@@ -50,9 +61,19 @@ export function createPostFx(renderer: WebGPURenderer, scene: Scene, labelScene:
   let built = false;
   /** The passes of the pipeline in use, to free with it. */
   let passes: { dispose(): void }[] = [];
+  /** The two effects whose resolution follows the size of the picture. */
+  let occlusionPass: GTAONode | null = null;
+  let glow: { setResolutionScale(scale: number): unknown } | null = null;
+  let fullPixels = 0;
+  const fitResolution = (): void => {
+    if (occlusionPass !== null) occlusionPass.resolutionScale = effectResolution(fullPixels, OCCLUSION_RESOLUTION, OCCLUSION_PIXELS);
+    glow?.setResolutionScale(effectResolution(fullPixels, BLOOM_RESOLUTION, BLOOM_PIXELS));
+  };
   const free = (): void => {
     for (const node of passes) node.dispose();
     passes = [];
+    occlusionPass = null;
+    glow = null;
     pipeline?.dispose();
     pipeline = null;
   };
@@ -75,10 +96,10 @@ export function createPostFx(renderer: WebGPURenderer, scene: Scene, labelScene:
       // normals are rebuilt from the depth, so that the scene needs no second target
       const ao = new GTAONode(scenePass.getTextureNode('depth'), null as never, camera);
       passes.push(ao);
-      ao.resolutionScale = 0.5;
+      occlusionPass = ao;
       ao.radius.value = 0.3;
       ao.thickness.value = 1.2;
-      ao.samples.value = 8;
+      ao.samples.value = 6;
       const occlusion = ao.getTextureNode().r;
       lit = vec3(lit.mul(mix(float(1), occlusion, 0.85)));
     }
@@ -92,9 +113,10 @@ export function createPostFx(renderer: WebGPURenderer, scene: Scene, labelScene:
       lit = vec3(mix(lit, blurred.rgb, circle));
     }
     if (state.bloom) {
-      const glow = bloom(sceneColor, 0.14, 0.35, 1.05);
-      passes.push(glow);
-      lit = vec3(lit.add(glow.rgb));
+      const halo = bloom(sceneColor, 0.14, 0.35, 1.05);
+      passes.push(halo);
+      glow = halo;
+      lit = vec3(lit.add(halo.rgb));
     }
     let output: Node = renderOutput(
       vec4(lit, 1),
@@ -117,6 +139,7 @@ export function createPostFx(renderer: WebGPURenderer, scene: Scene, labelScene:
     const labelColor = renderOutput(vec4(label.rgb.div(max(label.a, 0.0001)), 1), NoToneMapping, SRGBColorSpace);
     output = vec4(mix((output as Node<'vec4'>).rgb, labelColor.rgb, saturate(label.a)), 1);
 
+    fitResolution();
     pipeline = new RenderPipeline(renderer, output);
     // tone mapping and the colour space are applied above, before the anti-aliasing
     pipeline.outputColorTransform = false;
@@ -135,9 +158,13 @@ export function createPostFx(renderer: WebGPURenderer, scene: Scene, labelScene:
       state = { ...next };
       build();
     },
-    update(focusDistance, zoom) {
+    update(focusDistance, zoom, pixels) {
       focus.value = focusDistance;
       strength.value = tiltShiftStrength(zoom);
+      if (pixels !== fullPixels) {
+        fullPixels = pixels;
+        fitResolution();
+      }
     },
     render() {
       pipeline?.render();

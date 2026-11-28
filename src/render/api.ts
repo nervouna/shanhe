@@ -236,6 +236,8 @@ export async function createRenderer(
   const scaleController = createScaleController({ targetMs: TARGET_FRAME_MS });
   let renderScale = settings.scale ?? 1;
   let pixelRatio = 1;
+  /** Pixels of the picture at render scale 1. */
+  let fullPixels = 0;
   terrain.setEdgeFraction(settings.edgeFraction);
 
   const groundY = (x: number, z: number): number => surfaceHeightAt(surface, x, z);
@@ -257,6 +259,8 @@ export async function createRenderer(
     const height = Math.max(1, canvas.clientHeight);
     // the render scale lives here, so that a change of size does not undo it
     pixelRatio = renderPixelRatio(window.devicePixelRatio, settings, renderScale);
+    const fullRatio = renderPixelRatio(window.devicePixelRatio, settings, 1);
+    fullPixels = width * height * fullRatio * fullRatio;
     renderer.setPixelRatio(pixelRatio);
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
@@ -362,7 +366,7 @@ export async function createRenderer(
       cityMarkerShare: cityView.markerShare,
       cityMarkerHalf: cityView.markerHalf,
     });
-    postfx.update(state.distance, zoom);
+    postfx.update(state.distance, zoom, fullPixels);
     cloudLayer = clouds.update(zoom);
   };
 

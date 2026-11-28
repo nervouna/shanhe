@@ -10,7 +10,18 @@ import {
 } from './lightMath.ts';
 import { blurLayer } from './hexRaster.ts';
 import { NOISE_CHANNELS, buildNoiseTile } from './noiseTile.ts';
-import { NO_EFFECTS, POST_EFFECTS, TIER_EFFECTS, resolveEffects, tiltShiftStrength } from './postEffects.ts';
+import {
+  BLOOM_PIXELS,
+  BLOOM_RESOLUTION,
+  NO_EFFECTS,
+  OCCLUSION_PIXELS,
+  OCCLUSION_RESOLUTION,
+  POST_EFFECTS,
+  TIER_EFFECTS,
+  effectResolution,
+  resolveEffects,
+  tiltShiftStrength,
+} from './postEffects.ts';
 import { QUALITY_TIERS } from './renderScale.ts';
 import { ShapeBuilder, rgb } from './shapes.ts';
 
@@ -52,6 +63,35 @@ describe('resolveEffects', () => {
     }
     // the tier's own table is not changed by it
     expect(TIER_EFFECTS.low).toEqual(NO_EFFECTS);
+  });
+});
+
+describe('effectResolution', () => {
+  it('is the full share on a small picture and less on a large one', () => {
+    // a window of 1280 x 720 at pixel ratio 1: half the resolution, as ever
+    expect(effectResolution(1280 * 720, OCCLUSION_RESOLUTION, OCCLUSION_PIXELS)).toBe(0.5);
+    // 2472 x 1200 at pixel ratio 2: the effect has its budget of pixels and no more
+    const large = 2472 * 1200 * 4;
+    const share = effectResolution(large, OCCLUSION_RESOLUTION, OCCLUSION_PIXELS);
+    expect(share).toBeLessThan(0.5);
+    expect(share * share * large).toBeCloseTo(OCCLUSION_PIXELS, 0);
+    expect(effectResolution(large, BLOOM_RESOLUTION, BLOOM_PIXELS) ** 2 * large).toBeCloseTo(BLOOM_PIXELS, 0);
+  });
+
+  it('never grows with the picture and never exceeds its share', () => {
+    let previous = Infinity;
+    for (let pixels = 100_000; pixels < 40_000_000; pixels *= 1.7) {
+      const share = effectResolution(pixels, 0.5, 1_000_000);
+      expect(share).toBeLessThanOrEqual(0.5);
+      expect(share).toBeLessThanOrEqual(previous);
+      expect(share).toBeGreaterThan(0);
+      previous = share;
+    }
+  });
+
+  it('takes the full share for a picture without size', () => {
+    expect(effectResolution(0, 0.5, 1_000_000)).toBe(0.5);
+    expect(effectResolution(Number.NaN, 0.5, 1_000_000)).toBe(0.5);
   });
 });
 

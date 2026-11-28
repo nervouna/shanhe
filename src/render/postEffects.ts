@@ -57,6 +57,28 @@ export function resolveEffects(
 }
 
 /**
+ * Ambient occlusion and bloom are soft: they are computed at a share of the
+ * picture's resolution and stretched over it. The share is at most
+ * `most`, and less on a large picture: at full render scale an effect has
+ * no more than `pixelBudget` pixels to compute, however large the window.
+ * The share is the same at every render scale, so that the cost of the
+ * effect follows the scale like the rest of the frame.
+ *
+ * @param fullPixels pixels of the picture at render scale 1.
+ */
+export function effectResolution(fullPixels: number, most: number, pixelBudget: number): number {
+  if (!(fullPixels > 0)) return most;
+  return Math.min(most, Math.sqrt(pixelBudget / fullPixels));
+}
+
+/** Ambient occlusion: half the picture's resolution, and a million pixels at most. */
+export const OCCLUSION_RESOLUTION = 0.5;
+export const OCCLUSION_PIXELS = 1_000_000;
+/** Bloom starts from half the picture's resolution, and from half a million pixels at most. */
+export const BLOOM_RESOLUTION = 0.5;
+export const BLOOM_PIXELS = 500_000;
+
+/**
  * How strong the tilt-shift blur is at a zoom fraction (0 nearest, 1
  * farthest): strongest close to the ground, gone before the political map.
  */
