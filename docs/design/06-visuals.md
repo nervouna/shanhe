@@ -136,7 +136,7 @@ Land nobody owns is a pale relief map on the political map: tinted by altitude a
 
 ## Camera
 
-The camera's target keeps its distance from the edges of the map, so that at most a tenth of the view, measured inwards from any edge of the screen, shows the table beside the map. The distance follows the zoom, the tilt, the turn of the view and the shape of the window. Where the map is narrower than the view, as it is from east to west at the farthest zoom on a wide screen, the map is centred instead: the whole map still fits into one view.
+The camera's target keeps its distance from the edges of the map, so that at most a tenth of the view, measured inwards from any edge of the screen, shows the table beside the map. The distance follows the zoom, the tilt, the turn of the view and the shape of the window. Where the map is narrower than the view, as it is from east to west at the farthest zoom on a wide screen, the map is centred instead: the whole map still fits into one view. One view is exempt: when a city's zone is framed (the view a game opens on), the camera looks exactly at the city, also near an edge; panning from there leads back in and never farther out.
 
 ## Fog of war
 

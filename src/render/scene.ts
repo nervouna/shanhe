@@ -347,7 +347,10 @@ export interface FocusOptions {
   /**
    * `zone` picks the distance that shows the whole zone the hex belongs to,
    * for example a city and its land. Ignored when `distance` is given, and
-   * for a hex outside every zone.
+   * for a hex outside every zone. A framed zone is centred exactly on its
+   * hex; without a frame the hex is brought into view, and near an edge of
+   * the map it stands off the middle of the view, so that the view does not
+   * show a broad strip of the table beside the map.
    */
   readonly frame?: 'zone';
   /** Jump instead of gliding. */
@@ -368,7 +371,7 @@ export interface Renderer {
    * @param clientY as in `MouseEvent.clientY`.
    */
   pickHex(clientX: number, clientY: number): number | null;
-  /** Moves the camera so that it looks at a hex. */
+  /** Moves the camera so that it looks at a hex, see {@link FocusOptions}. */
   focusHex(hex: number, options?: FocusOptions): void;
   /** Replaces the marked hexes. */
   setHighlights(highlights: readonly HexHighlight[]): void;
@@ -436,7 +439,11 @@ export interface Renderer {
   setGridVisible(visible: boolean): void;
   /** The camera state being drawn. */
   getCamera(): CameraState;
-  /** Moves the camera; missing fields keep their value. Out-of-range values are clamped. */
+  /**
+   * Moves the camera; missing fields keep their value. Out-of-range values
+   * are clamped, and the target keeps the distance from the map's edges at
+   * which at most a tenth of the view shows what lies beyond them.
+   */
   setCamera(state: Partial<CameraState>, immediate?: boolean): void;
   getStats(): FrameStats;
   /** What is drawn for the pieces and where the city labels sit, as of the last frame. */

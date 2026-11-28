@@ -16,8 +16,14 @@ export interface CameraController {
   readonly state: CameraState;
   /** Advances the smoothing by `seconds` and returns the new state. */
   update(seconds: number): CameraState;
-  /** Moves the camera. Missing fields keep their value. */
-  moveTo(target: Partial<CameraState>, immediate: boolean): void;
+  /**
+   * Moves the camera. Missing fields keep their value.
+   *
+   * @param exact look at exactly the point asked for, wherever on the map it
+   *   is; otherwise the target keeps the distance from the map's edges at
+   *   which the view shows little of what lies beyond them.
+   */
+  moveTo(target: Partial<CameraState>, immediate: boolean, exact?: boolean): void;
   dispose(): void;
 }
 
@@ -51,6 +57,23 @@ export function createCameraController(
   };
   let goal = fit(initial, limits);
   let state = goal;
+  /**
+   * Fits a state that panning asks for. A view that was centred on a hex
+   * near the edge of the map ({@link CameraController.moveTo} with `exact`)
+   * stands farther out than panning allows: from there panning leads back
+   * in, never farther out, and does not jump.
+   */
+  const pan = (next: CameraState): CameraState => {
+    const allowed = fit(next, limits);
+    const held = fit(goal, limits);
+    const within = clampCamera(next, limits);
+    const axis = (wanted: number, fitted: number, excursion: number): number => {
+      const over = wanted - fitted;
+      if (over === 0 || excursion === 0 || Math.sign(over) !== Math.sign(excursion)) return fitted;
+      return fitted + Math.sign(over) * Math.min(Math.abs(over), Math.abs(excursion));
+    };
+    return { ...allowed, x: axis(within.x, allowed.x, goal.x - held.x), z: axis(within.z, allowed.z, goal.z - held.z) };
+  };
   const pointers = new Map<number, Pointer>();
   const keys = new Set<string>();
 
@@ -74,7 +97,7 @@ export function createCameraController(
     const a = groundPoint(goal, fromX, fromY);
     const b = groundPoint(goal, toX, toY);
     if (a === null || b === null) return;
-    goal = fit({ ...goal, x: goal.x + a.x - b.x, z: goal.z + a.z - b.z }, limits);
+    goal = pan({ ...goal, x: goal.x + a.x - b.x, z: goal.z + a.z - b.z });
   };
 
   /** Multiplies the zoom distance, keeping the ground under a client position in place. */
@@ -198,11 +221,12 @@ export function createCameraController(
         Math.abs(goal.x - next.x) + Math.abs(goal.z - next.z) < 1e-5 * goal.distance &&
         Math.abs(goal.distance / next.distance - 1) < 1e-5 &&
         Math.abs(turnBy) < 1e-5;
-      state = settled ? goal : fit(next, limits);
+      // (the goal is fitted where it is set: on the way to it the state only has to stay on the map)
+      state = settled ? goal : clampCamera(next, limits);
       return state;
     },
-    moveTo(target, immediate) {
-      goal = fit({ ...goal, ...target }, limits);
+    moveTo(target, immediate, exact = false) {
+      goal = exact ? clampCamera({ ...goal, ...target }, limits) : fit({ ...goal, ...target }, limits);
       if (immediate) state = goal;
     },
     dispose() {

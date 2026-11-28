@@ -576,7 +576,8 @@ export async function createRenderer(
         }
       }
       const to = distance === undefined ? { x: p.x, z: p.z } : { x: p.x, z: p.z, distance };
-      controller.moveTo(to, focus.immediate === true);
+      // a zone that is framed is centred on its hex: the frame was chosen to fit the zone around it
+      controller.moveTo(to, focus.immediate === true, focus.frame === 'zone' && focus.distance === undefined);
     },
     setHighlights(highlights) {
       overlays.setHighlights(highlights);
