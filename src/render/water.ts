@@ -39,6 +39,7 @@ import {
 } from 'three/webgpu';
 import type { Texture } from 'three/webgpu';
 import { hexNeighbor, worldToHex } from '../shared/hex.ts';
+import { Terrain } from '../shared/mapData.ts';
 import { mapWorldRect, sampleHeight } from './heightField.ts';
 import type { Surface } from './heightField.ts';
 import { cloudShade, mapUv, noiseTile, withFogOfWar, withGrid } from './shaderLib.ts';
@@ -51,6 +52,8 @@ export interface Water {
 
 /** Mesh cells across the width of one hex. */
 const CELLS_PER_HEX = 3;
+/** How far past its shore a lake's sheet of water reaches, in hex sizes: within the bank that `heightField.ts` raises. */
+const LAKE_SHEET = 0.95;
 
 function buildGeometry(surface: Surface): BufferGeometry {
   const { map, field, waterLevel } = surface;
@@ -62,11 +65,21 @@ function buildGeometry(surface: Surface): BufferGeometry {
 
   /** Water level at a point: that of its hex, or of a water hex next to it. */
   const levelAt = (x: number, z: number): number => {
+    const { lakes } = surface;
     const hex = worldToHex({ x, z }, layout);
+    const inside = hex.col >= 0 && hex.col < map.width && hex.row >= 0 && hex.row < map.height;
+    const own = inside ? (map.terrain[hex.row * map.width + hex.col] as number) : -1;
+    if (lakes !== undefined && own !== Terrain.Ocean && own !== Terrain.Coast) {
+      // a lake's sheet reaches a mesh cell past its shore, under the bank, so that no cell cuts into the water
+      const lake = lakes.at(x, z);
+      if (lake !== null && lake.distance < LAKE_SHEET * layout.size) return lakes.levels[lake.body] as number;
+    }
     let found = Number.NaN;
     for (let d = -1; d < 6; d++) {
       const h = d < 0 ? hex : hexNeighbor(hex, d);
       if (h.col < 0 || h.col >= map.width || h.row < 0 || h.row >= map.height) continue;
+      // lakes with a shore of their own are done above
+      if (lakes !== undefined && map.terrain[h.row * map.width + h.col] === Terrain.Lake) continue;
       const level = waterLevel[h.row * map.width + h.col] as number;
       if (Number.isNaN(level)) continue;
       if (d < 0) return level;
@@ -132,8 +145,8 @@ function buildGeometry(surface: Surface): BufferGeometry {
   return geometry;
 }
 
-/** Samples across the ground-height texture at most; the heightmap is finer than the water needs. */
-const DEPTH_TEXTURE_WIDTH = 1024;
+/** Samples across the ground-height texture at most: the shore is as fine as this texture. */
+const DEPTH_TEXTURE_WIDTH = 2048;
 
 /** The ground heights as a texture, so that the water knows its depth at every pixel. */
 function createGroundTexture(surface: Surface): DataTexture {
@@ -209,9 +222,11 @@ function createMaterial(u: MapUniforms, surface: Surface, ground: DataTexture, e
 
   const material = new MeshStandardNodeMaterial();
   material.colorNode = vec3(shaded);
+  // nothing at all where the ground is not under the water: the sheet also lies over low banks
+  const wet = smoothstep(0, 0.5, depthMetres);
   material.opacityNode = saturate(
     smoothstep(0, 4, depthMetres).mul(mix(float(0.55), float(0.97), max(deep, shelf.mul(0.6)))).add(foam.mul(0.6)),
-  );
+  ).mul(wet);
   material.normalNode = transformNormalToView(normal);
   material.roughnessNode = mix(float(0.1), float(0.55), saturate(foam.add(caps)));
   material.metalness = 0;
@@ -219,6 +234,11 @@ function createMaterial(u: MapUniforms, surface: Surface, ground: DataTexture, e
   material.envMapIntensity = 0.06;
   material.transparent = true;
   material.depthWrite = false;
+  // drawn a touch nearer than it lies: over ground that a coarse mesh puts a metre or two above the
+  // water. Where there really is ground, the depth read above leaves the water clear
+  material.polygonOffset = true;
+  material.polygonOffsetFactor = -1;
+  material.polygonOffsetUnits = -80;
   return material;
 }
 

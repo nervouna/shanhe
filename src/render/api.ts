@@ -19,7 +19,7 @@ import {
 import { hexToWorld, indexToOffset, worldToHex } from '../shared/hex.ts';
 import { getLanguage } from '../shared/i18n.ts';
 import type { Language } from '../shared/i18n.ts';
-import { Feature, NO_ZONE } from '../shared/mapData.ts';
+import { NO_ZONE } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
 import type { RenderBackend } from '../shared/types.ts';
 import { createAnimator } from './animator.ts';
@@ -53,7 +53,7 @@ import { pickHexOnRay, pickMarkerOnRay } from './picking.ts';
 import { pieceFit, steppedScale } from './pieceLayout.ts';
 import { createPieces } from './pieces.ts';
 import { placePoliticalNames } from './politicalNames.ts';
-import { improvementParts, volcanoParts } from './props.ts';
+import { improvementParts } from './props.ts';
 import { resolveEffects } from './postEffects.ts';
 import type { PostEffect } from './postEffects.ts';
 import { createPostFx } from './postfx.ts';
@@ -161,7 +161,7 @@ export async function createRenderer(
 
   const hexCount = mapData.width * mapData.height;
 
-  /** Draws what stands on hexes besides cities: volcano cones and the buildings of improvements. */
+  /** Draws what stands on hexes besides cities: the buildings of improvements. */
   const showProps = (improvements: ReadonlyMap<number, number>): void => {
     const parts: Part[] = [];
     const place = (hex: number, local: readonly Part[]): void => {
@@ -180,9 +180,6 @@ export async function createRenderer(
         });
       }
     };
-    for (let hex = 0; hex < hexCount; hex++) {
-      if (mapData.feature[hex] === Feature.Volcano) place(hex, volcanoParts(hex));
-    }
     for (const [hex, kind] of improvements) {
       if (Number.isInteger(hex) && hex >= 0 && hex < hexCount) place(hex, improvementParts(kind, hex));
     }

@@ -12,6 +12,7 @@
 
 import {
   abs,
+  atan,
   attribute,
   cameraPosition,
   color,
@@ -35,6 +36,7 @@ import {
 import { MeshStandardNodeMaterial } from 'three/webgpu';
 import { SNOW_LINE_DROP, SNOW_LINE_FROM, SNOW_LINE_TOP } from './climate.ts';
 import { CITY_DEEP, CITY_NORTH, CITY_WIDE, cityDrawnRadius } from './cityLayout.ts';
+import { VOLCANO_CRATER } from './heightField.ts';
 import { GARRISON_OFFSET } from './pieceLayout.ts';
 import {
   bumpedNormal,
@@ -86,7 +88,12 @@ export function createTerrainMaterial(u: MapUniforms): MeshStandardNodeMaterial 
   const viewDistance = cameraPosition.sub(positionWorld).length().div(u.hexSize);
   const nearby = float(1).sub(smoothstep(8, 40, viewDistance));
 
-  const plains = mix(color(0x8f9455), color(0xa9a468), broad);
+  // open plains: broad swells of colour, drier and greener stretches, and scrub close by
+  const scrub = smoothstep(0.74, 0.86, small.g).mul(nearby);
+  let plains = mix(color(0x8a9152), color(0xaba568), broad);
+  plains = mix(plains, color(0x6f8a45), smoothstep(0.45, 0.8, wider.b).mul(0.45));
+  plains = mix(plains, color(0xb9ad78), smoothstep(0.55, 0.85, mid.a).mul(0.3));
+  plains = mix(plains.mul(mix(float(0.92), float(1.06), fine)), color(0x556f38), scrub.mul(0.4));
   const grass = mix(color(0x3f6d2c), color(0x6f9440), broad);
   const dunes = sin(p.x.mul(9).add(p.y.mul(5)).add(broad.mul(9))).mul(0.5).add(0.5);
   const desert = mix(color(0xc9a66b), color(0xe3c88c), dunes.mul(0.5).add(fine.mul(0.5)));
@@ -94,21 +101,32 @@ export function createTerrainMaterial(u: MapUniforms): MeshStandardNodeMaterial 
   const snow = mix(color(0xdfe8f2), color(0xffffff), fine);
   const forest = mix(color(0x1f4a22), color(0x3a6a2e), grain);
   const jungle = mix(color(0x12401f), color(0x2b6a2c), grain);
-  const marsh = mix(color(0x4a5a3a), color(0x6d7a4c), fine);
-  const rock = mix(color(0x5f5950), color(0x978d7f), fine.mul(0.65).add(grain.mul(0.35)));
+  const marsh = mix(color(0x41603a), color(0x74904e), fine.mul(0.6).add(grain.mul(0.4)));
+  // warm grey with a trace of olive: no violet in it under any territory tint
+  const rock = mix(color(0x5d5b50), color(0x9c9884), fine.mul(0.65).add(grain.mul(0.35)));
   const sand = mix(color(0xcdbb8d), color(0xe6d7ac), fine);
 
   let ground = mix(plains, grass, coverA.r);
   ground = mix(ground, desert, coverA.g);
-  ground = mix(ground, tundra, coverA.b);
+  // the ground under the snow of the snow fields is bare and cold, and shows through where the snow is thin
+  ground = mix(ground, tundra, saturate(coverA.b.add(coverA.a)));
   // forest stands in patches, not as a flat coat
   const patches = smoothstep(0.3, 0.55, fine.add(broad.mul(0.4)));
   ground = mix(ground, forest, coverB.r.mul(patches.mul(0.75).add(0.25)));
   ground = mix(ground, jungle, coverB.g.mul(patches.mul(0.4).add(0.6)));
   ground = mix(ground, marsh, coverB.a);
-  // marsh: pools of dark standing water between the reeds
-  const pools = smoothstep(0.56, 0.68, mid.g).mul(coverB.a);
-  ground = mix(ground, color(0x2f4a44), pools.mul(0.7));
+  // marsh: winding pools of dark standing water between the reeds, large and small
+  const pooling = mid.g.mul(0.55).add(wide.a.mul(0.25)).add(small.r.mul(0.2));
+  const pools = smoothstep(0.5, 0.58, pooling).mul(coverB.a);
+  ground = mix(ground, color(0x2a4a48), pools.mul(0.8));
+  // low ground by the sea and in the deltas: lush and wet, threaded by creeks
+  const lowland = float(1)
+    .sub(smoothstep(3, 16, metres))
+    .mul(smoothstep(0.3, 1.5, metres))
+    .mul(float(1).sub(saturate(coverA.g.add(coverA.b).add(coverA.a))));
+  ground = mix(ground, mix(color(0x3d7a36), color(0x6ea046), fine), lowland.mul(0.5));
+  const creeks = float(1).sub(smoothstep(0.012, 0.035, abs(mid.b.sub(0.5)))).mul(lowland).mul(nearby.mul(0.6).add(0.4));
+  ground = mix(ground, color(0x2f5f5c), creeks.mul(0.55));
 
   // farmland: a patchwork of small fields, each with its own crop and its
   // furrows in its own direction; on slopes the furrows follow the contours
@@ -160,14 +178,27 @@ export function createTerrainMaterial(u: MapUniforms): MeshStandardNodeMaterial 
   const rocky = saturate(steep.add(coverB.b.mul(smoothstep(0.02, 0.12, slope).mul(0.8).add(0.2))));
   ground = mix(ground, rock, rocky.mul(float(1).sub(max(farmed, grazed).mul(0.8))));
 
-  // a mine: grey spoil tipped around the pit head
-  const spoil = improved.b.mul(float(1).sub(smoothstep(0.35, 0.75, edge.add(fine.sub(0.5).mul(0.3)))));
-  ground = mix(ground, mix(color(0x4b4741), color(0x7d735f), grain), spoil.mul(0.9));
+  // a mine: tipped earth and broken rock around the pit head, a ragged patch and not a disc
+  // from the middle distances on it is only a trace: a hill is read by its relief, not by a patch per hex
+  const spoil = improved.b
+    .mul(float(1).sub(smoothstep(0.12, 0.42, edge.add(fine.sub(0.5).mul(0.6)).add(mid.a.sub(0.5).mul(0.3)))))
+    .mul(mix(float(0.25), float(1), nearby));
+  ground = mix(ground, mix(color(0x5f553f), color(0x8c7c5c), grain), spoil.mul(0.75));
 
-  // a volcano: dark lava fields around a glowing crater
-  const lava = feature.r.mul(float(1).sub(smoothstep(0.45, 0.95, edge.add(fine.sub(0.5).mul(0.25)))));
-  ground = mix(ground, mix(color(0x231f1e), color(0x4a3d38), grain), lava.mul(0.85));
-  const crater = feature.r.mul(float(1).sub(smoothstep(0.06, 0.2, edge.add(mid.g.sub(0.5).mul(0.08)))));
+  // a volcano (its cone and crater are in the height field): tongues of dark lava run
+  // down from the rim and spread into a field of basalt, a few of them still glowing
+  const fromVent = within.length();
+  const bearing = atan(within.y, within.x);
+  const tongues = sin(bearing.mul(7).add(fine.mul(5)).add(wide.r.mul(9))).mul(0.5).add(0.5);
+  const lavaReach = mix(float(0.55), float(1.05), tongues).add(fine.sub(0.5).mul(0.25));
+  const lava = feature.r.mul(float(1).sub(smoothstep(lavaReach.sub(0.18), lavaReach, fromVent)));
+  ground = mix(ground, mix(color(0x1f1c1b), color(0x4a403a), grain.mul(0.6).add(fine.mul(0.4))), lava.mul(0.9));
+  const crater = feature.r.mul(float(1).sub(smoothstep(VOLCANO_CRATER * 0.55, VOLCANO_CRATER * 0.95, fromVent.add(mid.g.sub(0.5).mul(0.04)))));
+  const flows = feature.r
+    .mul(smoothstep(0.86, 0.97, tongues))
+    .mul(float(1).sub(smoothstep(0.2, 0.62, fromVent)))
+    .mul(smoothstep(VOLCANO_CRATER * 0.8, VOLCANO_CRATER * 1.3, fromVent))
+    .mul(smoothstep(0.35, 0.6, mid.r));
 
   // an oasis: a pond in a ring of green
   const lush = feature.g.mul(float(1).sub(smoothstep(0.5, 0.8, edge.add(fine.sub(0.5).mul(0.2)))));
@@ -180,26 +211,39 @@ export function createTerrainMaterial(u: MapUniforms): MeshStandardNodeMaterial 
   const snowLine = float(SNOW_LINE_TOP)
     .sub(max(sinLatitude(u, xz).sub(SNOW_LINE_FROM), 0).mul(SNOW_LINE_DROP))
     .add(broad.sub(0.5).mul(900));
-  const high = smoothstep(snowLine, snowLine.add(500), metres);
-  const snowy = saturate(coverA.a.add(high))
-    .mul(float(1).sub(smoothstep(0.3, 0.55, slope)))
-    .mul(float(1).sub(crater));
+  const high = smoothstep(snowLine.sub(350), snowLine.add(650), metres);
+  // snow lies where the relief lets it: thick on gentle ground, thin and broken on
+  // steep faces, with a ragged edge that gives way to bare ground little by little
+  const snowfall = coverA.a
+    .mul(0.72)
+    .add(high.mul(1.1))
+    .sub(smoothstep(0.06, 0.45, slope).mul(0.8))
+    .add(fine.sub(0.5).mul(0.5))
+    .add(grain.sub(0.5).mul(0.24))
+    .add(broad.sub(0.5).mul(0.55))
+    .add(wider.r.sub(0.5).mul(0.4));
+  const snowy = smoothstep(0.3, 0.8, snowfall).mul(float(1).sub(max(crater, lava.mul(0.6))));
   ground = mix(ground, snow, snowy);
 
   // a strip of sand at sea level, and paler ground under water
-  const beach = float(1).sub(smoothstep(1, 7, metres)).mul(float(1).sub(saturate(coverA.a.add(coverB.b))));
+  const beach = float(1)
+    .sub(smoothstep(0.3, 2.4, metres.add(fine.sub(0.5).mul(1.2))))
+    .mul(float(1).sub(saturate(coverA.a.add(coverB.b).add(coverB.a))));
   ground = mix(ground, sand, beach);
   ground = ground.mul(mix(float(0.86), float(1.08), grain));
 
   const territory = texture(u.textures.territory, hereUv);
   // the tint stays off the sea floor and is weaker on rock and snow
-  const tintable = smoothstep(-2, 2, metres).mul(float(1).sub(saturate(rocky.add(snowy)).mul(0.6)));
+  const tintable = smoothstep(-2, 2, metres).mul(float(1).sub(saturate(rocky.add(snowy)).mul(0.8)));
   let surface = mix(ground, territory.rgb, territory.a.mul(u.tintStrength).mul(tintable));
   // the political map: every polity filled with its colour, land nobody owns
   // pale; the relief still shows through the lighting and a trace of the ground
   const brightness = dot(ground, vec3(0.2126, 0.7152, 0.0722));
   const filled = mix(territory.rgb, vec3(brightness), 0.16);
-  const unclaimed = mix(vec3(brightness), color(0xb9b3a2), 0.6);
+  // land nobody owns: a pale relief map, tinted by altitude and shaded by slope
+  const altitude = mix(mix(color(0xaab59a), color(0xcbbf9c), smoothstep(150, 1600, metres)), color(0xe2dccd), smoothstep(2200, 4800, metres));
+  const hillshade = float(1).sub(smoothstep(0.004, 0.16, slope).mul(0.42)).mul(mix(float(0.9), float(1.06), broad));
+  const unclaimed = mix(vec3(brightness), altitude, 0.72).mul(hillshade);
   const politicalColor = mix(unclaimed, filled, territory.a);
   surface = mix(surface, politicalColor, u.political.mul(smoothstep(-2, 2, metres)));
   // clouds shade the terrain, and only faintly the political map
@@ -217,12 +261,14 @@ export function createTerrainMaterial(u: MapUniforms): MeshStandardNodeMaterial 
     .add(rows.mul(farmed).mul(0.12))
     .mul(float(1).sub(saturate(snowy.add(beach).add(pond))));
 
-  const wet = saturate(pools.add(pond));
+  const wet = saturate(pools.add(pond).add(creeks.mul(0.7)));
   const material = new MeshStandardNodeMaterial();
   material.colorNode = vec3(surface);
   material.normalNode = bumpedNormal(float(relief.mul(nearby).mul(u.hexSize).mul(0.035)));
   material.roughnessNode = mix(mix(float(0.95), float(0.55), snowy), float(0.12), wet);
-  material.emissiveNode = vec3(color(0xff5a14).mul(crater.mul(abs(mid.r.sub(0.5)).mul(2).add(0.6)).mul(2.2)));
+  material.emissiveNode = vec3(
+    color(0xff5a14).mul(crater.mul(abs(mid.r.sub(0.5)).mul(2).add(0.6)).mul(2.2).add(flows.mul(1.6))),
+  );
   material.metalness = 0;
   return material;
 }
