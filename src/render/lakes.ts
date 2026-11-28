@@ -58,10 +58,15 @@ interface Shape {
 /** Radii of the shapes a lake is made of, as fractions of the hex size. */
 const HEX_DISC = 0.9;
 const NECK = 0.74;
-const CHANNEL = 0.42;
-/** How far the noise moves the shore in and out, as fractions of the hex size. */
-const SHORE_WANDER = 0.34;
-const SHORE_RIPPLE = 0.1;
+const CHANNEL = 0.46;
+/**
+ * How far the noise moves the shore in and out, as fractions of the hex
+ * size, at three scales: bays a hex across, coves half that, ripples. The
+ * straight sides of the shapes are lost in them.
+ */
+const SHORE_WANDER = 0.3;
+const SHORE_COVES = 0.14;
+const SHORE_RIPPLE = 0.06;
 
 function hash2(x: number, y: number): number {
   let h = Math.imul(x, 0x27d4eb2d) ^ Math.imul(y, 0x165667b1);
@@ -224,7 +229,10 @@ export function createLakeField(map: MapData): LakeField {
     // the shore wanders: bays and headlands a good part of a hex across, with ripples on them
     const u = x / size;
     const v = z / size;
-    const wander = (valueNoise(u * 0.9 + 17.3, v * 0.9 - 4.1) - 0.5) * 2 * SHORE_WANDER + (valueNoise(u * 3.1 - 9.2, v * 3.1 + 2.7) - 0.5) * 2 * SHORE_RIPPLE;
+    const wander =
+      (valueNoise(u * 0.9 + 17.3, v * 0.9 - 4.1) - 0.5) * 2 * SHORE_WANDER +
+      (valueNoise(u * 1.9 + 3.7, v * 1.9 + 11.9) - 0.5) * 2 * SHORE_COVES +
+      (valueNoise(u * 4.3 - 9.2, v * 4.3 + 2.7) - 0.5) * 2 * SHORE_RIPPLE;
     return { body, distance: nearest + wander * size };
   };
 
