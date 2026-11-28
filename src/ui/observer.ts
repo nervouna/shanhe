@@ -26,23 +26,85 @@ export function followTarget(
   return hex;
 }
 
-/** A view of the camera, as far as coming back to it goes. */
-export interface CameraView {
-  readonly x: number;
-  readonly z: number;
-  readonly distance: number;
+/** What the observer's watch needs of the camera. `T` is a view: whatever the camera can be sent back to. */
+export interface WatchCamera<T> {
+  /** The view being drawn now. */
+  view(): T;
+  /** True while that view is changing: the camera is in flight, or a drag has not come to rest. */
+  moving(): boolean;
+  /** Flies to a hex, close enough to show its city and land. */
+  goTo(hex: number): void;
+  /** Flies back to a view. */
+  restore(view: T): void;
 }
 
-/** The observer's camera away at an event: `hex` is where it went, `home` the view it left and goes back to. */
-export interface Away<T extends CameraView = CameraView> {
-  readonly hex: number;
-  readonly home: T;
+/** The timers the watch runs on: the window's, or a test's. */
+export interface WatchTimers {
+  set(callback: () => void, ms: number): number;
+  clear(id: number): void;
+}
+
+/** Observer mode's camera going to events by itself and coming back. */
+export interface Watcher {
+  /** The hex the camera went to and has not come back from, or null. */
+  readonly watching: number | null;
+  /** The times it went back to the view it had left. */
+  readonly returns: number;
+  /**
+   * Sends the camera to an event at `hex`, to stay {@link FOLLOW_MS} and go
+   * back. Returns false if it does not go: the observer is moving the camera
+   * themselves just now, and it is theirs.
+   */
+  follow(hex: number): boolean;
+  /** The observer has taken the camera: it is not brought back, and the view it left is forgotten. */
+  take(): void;
 }
 
 /**
- * The camera goes to an event. If it is already away at another one it has
- * not been home since: the view to come back to stays the one it first left.
+ * The observer's own view is the home the camera returns to. It is recorded
+ * when the camera leaves for an event, and only from a camera at rest: never
+ * from one in flight, whose view is nobody's choice. From then on it is kept
+ * (through the stay, through the flight back and after it) until the observer
+ * moves the camera themselves. An event that comes while the camera is away,
+ * or on its way back, therefore returns to the same home, however many chain.
  */
-export function goTo<T extends CameraView>(away: Away<T> | null, hex: number, current: T): Away<T> {
-  return { hex, home: away?.home ?? current };
+export function createWatcher<T>(camera: WatchCamera<T>, timers: WatchTimers, stay: number = FOLLOW_MS): Watcher {
+  let home: T | null = null;
+  let hex: number | null = null;
+  let timer: number | null = null;
+  let returns = 0;
+  const stop = (): void => {
+    if (timer !== null) timers.clear(timer);
+    timer = null;
+  };
+  return {
+    get watching() {
+      return hex;
+    },
+    get returns() {
+      return returns;
+    },
+    follow(target) {
+      if (home === null) {
+        if (camera.moving()) return false;
+        home = camera.view();
+      }
+      stop();
+      hex = target;
+      camera.goTo(target);
+      const back = home;
+      timer = timers.set(() => {
+        timer = null;
+        hex = null;
+        returns++;
+        camera.restore(back);
+      }, stay);
+      return true;
+    },
+    take() {
+      stop();
+      hex = null;
+      home = null;
+    },
+  };
 }

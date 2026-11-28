@@ -54,8 +54,7 @@ import {
   yieldName,
 } from './names.ts';
 import { canPoint, keepNotes, noteDrafts, pendingDrafts } from './notes.ts';
-import { FOLLOW_MS, followTarget, goTo } from './observer.ts';
-import type { Away } from './observer.ts';
+import { createWatcher, followTarget } from './observer.ts';
 import type { NoteOffer } from './notes.ts';
 import { policyOverlay, politiesOverlay, standingName, techOverlay, victoryOverlay } from './overlays.ts';
 import type { OverlayKind, PolicyOverlayState, PolitiesOverlayState } from './overlays.ts';
@@ -305,6 +304,11 @@ const VIEW_SAMPLES = 5;
 /** Observer mode's camera has this many hexes around its target in view once it has moved there. */
 const FOLLOW_RADIUS = 8;
 
+/** True if two camera states show the same view. */
+function sameView(a: ReturnType<Renderer['getCamera']>, b: ReturnType<Renderer['getCamera']>): boolean {
+  return a.x === b.x && a.z === b.z && a.distance === b.distance && a.yaw === b.yaw;
+}
+
 export function createApp(options: AppOptions): App {
   const { root } = options;
   const settings = createSettingsStore(browserStorage());
@@ -369,9 +373,9 @@ export function createApp(options: AppOptions): App {
   let paused = false;
   let speed: (typeof SPEEDS)[number] = 1;
   let observerTimer: number | null = null;
-  /** Observer mode's camera, away at an event, with the timer that brings it back. */
-  let away: (Away<ReturnType<Renderer['getCamera']>> & { readonly timer: number }) | null = null;
-  let cameraReturns = 0;
+  /** The camera as the last frame drew it, and whether that differed from the frame before: it is moving. */
+  let lastCamera: ReturnType<Renderer['getCamera']> | null = null;
+  let cameraMoving = false;
   /** Turns are being run by a caller of {@link App.runTurns}: observer mode's own clock stands still. */
   let automated = false;
   let hoverHex: number | null = null;
@@ -473,24 +477,34 @@ export function createApp(options: AppOptions): App {
   };
 
   /**
-   * Ends the stay of observer mode's camera at an event.
-   *
-   * @param back true to go back to the view it left; false when the observer has taken the camera themselves.
+   * Observer mode's camera at the events (see {@link createWatcher}). The
+   * board is read at each call: another map brings another renderer.
    */
-  const endWatch = (back: boolean): void => {
-    if (away === null) return;
-    window.clearTimeout(away.timer);
-    const { home } = away;
-    away = null;
-    if (!back) return;
-    cameraReturns++;
-    board.renderer.setCamera(home);
+  const watcher = createWatcher<ReturnType<Renderer['getCamera']>>(
+    {
+      view: () => board.renderer.getCamera(),
+      // a paused renderer draws no frame and its camera stands still
+      moving: () => cameraMoving && !board.renderer.paused,
+      goTo(hex) {
+        board.renderer.focusHex(hex, { frame: 'zone' });
+      },
+      restore(view) {
+        board.renderer.setCamera(view);
+      },
+    },
+    { set: (callback, ms) => window.setTimeout(callback, ms), clear: (id) => window.clearTimeout(id) },
+  );
+
+  /** The viewer moves the camera themselves: observer mode does not take it back from there. */
+  const takeCamera = (): void => {
+    watcher.take();
+    // on its way from the next frame on: until it has come to rest, its view is not one to return to
+    cameraMoving = true;
   };
 
   const flyTo = (hex: number): void => {
     if (hex < 0) return;
-    // where the camera goes now is the viewer's choice: it is not taken back from there
-    endWatch(false);
+    takeCamera();
     board.renderer.focusHex(hex);
   };
 
@@ -642,21 +656,12 @@ export function createApp(options: AppOptions): App {
    * Observer mode's camera follows the action: it goes to where a city fell,
    * or else where a war began, close enough to show the city and its land,
    * stays a moment and goes back to the view it left. Returns the hex it
-   * went to, or -1.
+   * went to, or -1: also while the observer is moving the camera themselves,
+   * which is then left to them.
    */
   const followEvents = (events: readonly GameEvent[]): number => {
     const hex = followTarget(events, siteOf, capitalHex);
-    if (hex < 0) return -1;
-    if (away !== null) window.clearTimeout(away.timer);
-    const next = goTo(away, hex, board.renderer.getCamera());
-    board.renderer.focusHex(hex, { frame: 'zone' });
-    away = {
-      ...next,
-      timer: window.setTimeout(() => {
-        endWatch(true);
-      }, FOLLOW_MS),
-    };
-    return hex;
+    return hex >= 0 && watcher.follow(hex) ? hex : -1;
   };
 
   // --------------------------------------------------------------- scene
@@ -1693,7 +1698,7 @@ export function createApp(options: AppOptions): App {
   };
 
   const enterGame = (): void => {
-    endWatch(false);
+    takeCamera();
     screen = state().result === null ? 'game' : 'end';
     select(null);
     cityPanel = null;
@@ -1726,7 +1731,7 @@ export function createApp(options: AppOptions): App {
   };
 
   const leaveGame = (): void => {
-    endWatch(false);
+    takeCamera();
     host.reset();
     screen = 'start';
     chosenNation = null;
@@ -2367,7 +2372,7 @@ export function createApp(options: AppOptions): App {
     };
 
     canvas.addEventListener('pointerdown', (event) => {
-      endWatch(false);
+      takeCamera();
       // a second finger makes it a pinch or a twist: no tap, no long press
       const second = press !== null && press.pointer !== event.pointerId;
       endPress();
@@ -2442,7 +2447,7 @@ export function createApp(options: AppOptions): App {
     }, { signal });
     canvas.addEventListener('wheel', () => {
       hideCard();
-      endWatch(false);
+      takeCamera();
     }, { signal, passive: true });
 
     minimap = createMinimap(board.map, (hex) => {
@@ -2453,12 +2458,16 @@ export function createApp(options: AppOptions): App {
     const stopFrames = renderer.onFrame(() => {
       const camera = renderer.getCamera();
       small.setCamera(camera.x, camera.z);
+      cameraMoving = lastCamera !== null && !sameView(lastCamera, camera);
+      lastCamera = camera;
     });
     const unsubscribe = host.subscribe(onChange);
     // a new board has a new renderer: quality, language and animation speed go onto it
     applySettings();
     boardState = null;
     lastState = null;
+    lastCamera = null;
+    cameraMoving = false;
     playToken++;
     animating = false;
     detach = () => {
@@ -2484,7 +2493,7 @@ export function createApp(options: AppOptions): App {
   async function startGame(start: StartOptions = {}): Promise<void> {
     const wanted: MapSource | undefined = start.map === undefined ? undefined : start.map === 'fixture' ? 'fixture' : 'file';
     // the camera of the game that ends is not brought back: its renderer may be gone by then
-    endWatch(false);
+    takeCamera();
     hideCard();
     if (wanted !== undefined && wanted !== board.source) {
       if (observerTimer !== null) window.clearTimeout(observerTimer);
@@ -2570,6 +2579,8 @@ export function createApp(options: AppOptions): App {
     'keydown',
     (event) => {
       if (hidden || typing(event) || screen !== 'game') return;
+      // Q and E turn the camera (the renderer's own keys): the observer has taken it
+      if (event.code === 'KeyQ' || event.code === 'KeyE') takeCamera();
       if ((event.key === 'Enter' || event.key === ' ') && onControl()) return;
       if (event.key === 'Enter') {
         // Enter is the main button wherever the mouse left the focus, and only once per press
@@ -2664,7 +2675,7 @@ export function createApp(options: AppOptions): App {
         polity: polityPanel,
         selectedUnit: selection,
         busy: host.busy,
-        observer: screen === 'game' && observing() ? { paused, speed, watching: away?.hex ?? null, returns: cameraReturns } : null,
+        observer: screen === 'game' && observing() ? { paused, speed, watching: watcher.watching, returns: watcher.returns } : null,
         mainButton: { kind: current.kind, label: current.label },
         notifications: notes.length,
         map: board.source,
