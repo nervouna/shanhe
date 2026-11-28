@@ -1086,12 +1086,6 @@ export const FAVOUR = {
   dealBroken: -15,
   /** Gold of a gift per point of favour. */
   goldPerPoint: 10,
-  /**
-   * The embargo: at this favour or less a nation's cities are closed to the
-   * other's trade routes. No route can be opened to them and those that run
-   * end.
-   */
-  embargo: -20,
 } as const;
 
 /**

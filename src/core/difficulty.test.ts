@@ -19,13 +19,17 @@ const game = (difficulty?: DifficultyLevel): GameState =>
   createGame(map, difficulty === undefined ? { seed: 3, player: 'jia', majors: ['yi'] } : { seed: 3, player: 'jia', majors: ['yi'], difficulty });
 const ctxOf = (state: GameState): Ctx => createCtx(cloneState(state));
 
-/** Percentage on each city yield, and the factors on a unit's and the capital's strength, of `polity`. */
+/**
+ * What the level adds for `polity`: the percentage on each city yield of its capital beyond what the same city
+ * has at the middle level, and the factors on a unit's and the capital's strength.
+ */
 function measured(state: GameState, polity: number): { yields: number[]; unit: number; city: number } {
   const ctx = ctxOf(state);
   const city = ctx.state.cities[map.polities[polity]!.capitalZone]!;
   const unit = ctx.state.units.find((entry) => entry.owner === polity)!;
   const plain = ctxOf(game('standard'));
-  const yields = YIELD_KEYS.map((key) => cityYieldParts(ctx, city).percent[key]);
+  const plainCity = plain.state.cities[city.zone]!;
+  const yields = YIELD_KEYS.map((key) => cityYieldParts(ctx, city).percent[key] - cityYieldParts(plain, plainCity).percent[key]);
   const factor = combatFactor(ctx, unit, -1);
   // The city's own strength, without what a garrison adds to it.
   ctx.unitAt.clear();

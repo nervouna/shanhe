@@ -24,7 +24,7 @@ import { endDeal, processDiplomacy } from './diplomacy.ts';
 import { rememberSight } from './fog.ts';
 import { hexMatches, modsOf, percentOf, unitMatches } from './modifiers.ts';
 import { followWorld, processResearch, worldEra } from './tech.ts';
-import { processEmbargoes, processRoads, processRoutes } from './trade.ts';
+import { processRoads, processRoutes } from './trade.ts';
 import { NO_POLITY } from './types.ts';
 import type { GameResult, Unit } from './types.ts';
 
@@ -274,7 +274,6 @@ export function endRound(ctx: Ctx): void {
 
   // Diplomacy, city-states, roads, and improvements that have been repaired.
   processDiplomacy(ctx);
-  processEmbargoes(ctx);
   processInfluence(ctx);
   processRoads(ctx);
   for (const key of Object.keys(state.pillaged)) {

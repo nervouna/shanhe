@@ -4,7 +4,7 @@ import { productionTowards } from './cities.ts';
 import { combatFactor } from './combat.ts';
 import { cloneState, createCtx } from './context.ts';
 import type { Ctx } from './context.ts';
-import { CITY_STATE, DIPLOMACY, POLICIES, POLICY, POLICY_IDS, policyCost } from './data.ts';
+import { CITY_STATE, DIPLOMACY, POLICIES, POLICY, POLICY_IDS, policyCost, supplyLimitFor, supplySurcharge } from './data.ts';
 import type { PolicyId } from './data.ts';
 import { applyAction, createGame, endTurn } from './game.ts';
 import type { Action, BuildItem, City, GameEvent, GameState, TradeRoute, Unit } from './game.ts';
@@ -271,8 +271,9 @@ const CARD_CHECKS: Record<PolicyId, (card: PolicyId) => void> = {
     expect(carded.cultureProgress).toBe(5);
   },
   hundredSchools: (card) => {
+    // Two science, raised by the 50% of the capital.
     const state = grown(base, JIADU, 4, ['academy']);
-    expect(yieldsOf(withPolicy(state, JIA, card), JIADU).science).toBe(yieldsOf(state, JIADU).science + 2);
+    expect(yieldsOf(withPolicy(state, JIA, card), JIADU).science).toBe(yieldsOf(state, JIADU).science + 3);
     expect(yieldsOf(withPolicy(base, JIA, card), JIADU).science).toBe(yieldsOf(base, JIADU).science);
   },
   alliances: (card) => {
@@ -293,7 +294,8 @@ const CARD_CHECKS: Record<PolicyId, (card: PolicyId) => void> = {
     expect(yieldsOf(withPolicy(state, JIA, card), JIADU).gold).toBe(Math.floor((without * 110) / 100));
   },
   paidArmy: (card) => {
-    // One city keeps two units for free; ten more cost one gold each.
+    // One city keeps two units for free; ten more cost one gold each. Nine of the twelve are beyond its supply
+    // limit, and what they cost on top no card lowers.
     const armed = edit(base, (draft) => {
       draft.polities[JIA]!.gold = 1000;
       const free = topo.zoneHexes[JIADU]!.filter(
@@ -301,8 +303,11 @@ const CARD_CHECKS: Record<PolicyId, (card: PolicyId) => void> = {
       );
       for (let i = 0; i < 11; i++) put(draft, 'warrior', JIA, free[i]!);
     });
-    expect(endTurn(armed).state.polities[JIA]!.upkeep).toBe(10);
-    expect(endTurn(withPolicy(armed, JIA, card)).state.polities[JIA]!.upkeep).toBe(8);
+    const limit = supplyLimitFor(1, armed.cities[JIADU]!.pop);
+    const beyond = supplySurcharge(12 - limit);
+    expect(limit).toBe(3);
+    expect(endTurn(armed).state.polities[JIA]!.upkeep).toBe(10 + beyond);
+    expect(endTurn(withPolicy(armed, JIA, card)).state.polities[JIA]!.upkeep).toBe(8 + beyond);
   },
   imperialExam: (card) => {
     const state = grown(base, JIADU, 4, ['academy', 'printShop']);
@@ -321,9 +326,9 @@ const CARD_CHECKS: Record<PolicyId, (card: PolicyId) => void> = {
     expect(carded.polities[YI]!.tributePaid).toBe(Math.floor((yiIncome * 30) / 100));
   },
   singleWhip: (card) => {
-    // Two gold for each, raised by the 50% the two buildings give.
+    // Two gold for each, raised by the 50% the two buildings give and the 50% of the capital.
     const state = grown(base, JIADU, 4, ['market', 'bank']);
-    expect(yieldsOf(withPolicy(state, JIA, card), JIADU).gold).toBe(yieldsOf(state, JIADU).gold + 6);
+    expect(yieldsOf(withPolicy(state, JIA, card), JIADU).gold).toBe(yieldsOf(state, JIADU).gold + 8);
     expect(yieldsOf(withPolicy(base, JIA, card), JIADU).gold).toBe(yieldsOf(base, JIADU).gold);
   },
   firearmsCorps: (card) => {
@@ -337,9 +342,9 @@ const CARD_CHECKS: Record<PolicyId, (card: PolicyId) => void> = {
   academyLectures: (card) => {
     const state = grown(base, JIADU, 4, ['university']);
     const gain = yieldsOf(withPolicy(state, JIA, card), JIADU).science - yieldsOf(state, JIADU).science;
-    // Three science, raised by the university's own 25%.
-    expect(gain).toBeGreaterThanOrEqual(3);
-    expect(gain).toBeLessThanOrEqual(4);
+    // Three science, raised by the university's own 25% and the 50% of the capital.
+    expect(gain).toBeGreaterThanOrEqual(5);
+    expect(gain).toBeLessThanOrEqual(6);
     expect(yieldsOf(withPolicy(base, JIA, card), JIADU).science).toBe(yieldsOf(base, JIADU).science);
   },
   openSeas: (card) => {
@@ -364,8 +369,9 @@ const CARD_CHECKS: Record<PolicyId, (card: PolicyId) => void> = {
     expect(production(state, JIADU, { kind: 'unit', unit: 'ironclad' })).toBe(100);
   },
   newSchools: (card) => {
+    // Two science, raised by the 50% of the capital.
     const state = grown(base, JIADU, 10);
-    expect(yieldsOf(withPolicy(state, JIA, card), JIADU).science).toBe(yieldsOf(state, JIADU).science + 2);
+    expect(yieldsOf(withPolicy(state, JIA, card), JIADU).science).toBe(yieldsOf(state, JIADU).science + 3);
   },
   treatyPorts: (card) => {
     const big = grown(grown(base, JIADU, 18, [], 'gold'), YIDU, 18, [], 'gold');

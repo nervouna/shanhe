@@ -3,7 +3,7 @@ import { createFixtureMap } from '../shared/fixtureMap.ts';
 import { Terrain } from '../shared/mapData.ts';
 import { itemCost } from './cities.ts';
 import { createCtx } from './context.ts';
-import { BUILDINGS, CITY, FREE_UNITS_PER_CITY, GENERIC_BUILDING_IDS, GENERIC_IMPROVEMENT_IDS, UNITS } from './data.ts';
+import { BUILDINGS, CITY, FREE_UNITS_PER_CITY, GENERIC_BUILDING_IDS, GENERIC_IMPROVEMENT_IDS, UNITS, supplyLimitFor, supplySurcharge } from './data.ts';
 import { NO_POLITY, applyAction, createGame, endTurn, hexOwner } from './game.ts';
 import type { BuildItem, GameEvent, GameState, MutableGameState } from './game.ts';
 import { apply, around, edit, isPlainGround, learn, oneUnitPerHex, put } from './testUtil.ts';
@@ -271,7 +271,10 @@ describe('gold', () => {
     const units = state.units.filter((unit) => unit.owner === JIA).length;
     const next = endTurn(state).state;
     const polity = next.polities[JIA]!;
-    const upkeep = BUILDINGS.granary.upkeep + BUILDINGS.temple.upkeep + (units - FREE_UNITS_PER_CITY);
+    // Five units in a city that supplies three: the two beyond the limit cost more on top.
+    const beyond = supplySurcharge(units - supplyLimitFor(1, state.cities[0]!.pop));
+    expect(beyond).toBeGreaterThan(0);
+    const upkeep = BUILDINGS.granary.upkeep + BUILDINGS.temple.upkeep + (units - FREE_UNITS_PER_CITY) + beyond;
     expect(polity.upkeep).toBe(upkeep);
     expect(polity.grossIncome).toBe(polity.yields.gold);
     expect(polity.gold).toBe(100 + polity.yields.gold - upkeep);
