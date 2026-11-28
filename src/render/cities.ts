@@ -21,6 +21,7 @@ import type { CityLabel } from './labels.ts';
 import { generateLandmark, placeParts } from './landmarks.ts';
 import { createPartBatch } from './partBatch.ts';
 import { KEYLINE_DARK, KEYLINE_PALE, KEYLINE_SWITCH } from './pieceStyle.ts';
+import { releaseMesh } from './release.ts';
 import type { RenderCity } from './scene.ts';
 import type { MapUniforms } from './shaderLib.ts';
 
@@ -103,9 +104,7 @@ export function createCities(surface: Surface, u: MapUniforms): Cities {
   const tint = new Color();
   const showMarkers = (sites: readonly MarkerSite[]): void => {
     if (markers !== null) {
-      object.remove(markers);
-      markers.geometry.dispose();
-      markers.dispose();
+      releaseMesh(markers);
       markers = null;
     }
     if (sites.length === 0) return;
@@ -221,10 +220,7 @@ export function createCities(surface: Surface, u: MapUniforms): Cities {
     },
     dispose() {
       batch.dispose();
-      if (markers !== null) {
-        markers.geometry.dispose();
-        markers.dispose();
-      }
+      if (markers !== null) releaseMesh(markers);
       markerGeometry.dispose();
       markerMaterial.dispose();
     },

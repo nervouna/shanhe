@@ -22,6 +22,7 @@ import {
 } from 'three/webgpu';
 import { PART_SHAPE_COUNT, PartShape } from './cityGen.ts';
 import type { Part, PartShapeId } from './cityGen.ts';
+import { releaseMesh } from './release.ts';
 import { cloudShade, mapUv, noiseTile, withFogOfWar } from './shaderLib.ts';
 import type { MapUniforms } from './shaderLib.ts';
 import { castGroundShadow } from './shadowLayers.ts';
@@ -113,11 +114,7 @@ export function createPartBatch(u: MapUniforms, hexSize: number, name: string): 
   let meshes: InstancedMesh[] = [];
   let count = 0;
   const clear = (): void => {
-    for (const mesh of meshes) {
-      object.remove(mesh);
-      mesh.geometry.dispose();
-      mesh.dispose();
-    }
+    for (const mesh of meshes) releaseMesh(mesh);
     meshes = [];
   };
 

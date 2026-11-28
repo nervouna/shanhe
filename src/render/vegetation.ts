@@ -11,6 +11,7 @@ import { BufferAttribute, BufferGeometry, Group, Mesh, MeshStandardNodeMaterial,
 import { hexToWorld } from '../shared/hex.ts';
 import { latitudeTerms, sinLatitudeAt, snowLineMetres } from './climate.ts';
 import { sampleHeight, unitsPerMetre } from './heightField.ts';
+import { releaseMesh } from './release.ts';
 import type { Surface } from './heightField.ts';
 import { cloudShade, mapUv, withFogOfWar } from './shaderLib.ts';
 import type { MapUniforms } from './shaderLib.ts';
@@ -189,8 +190,8 @@ export function createVegetation(surface: Surface, u: MapUniforms): Vegetation {
 
   const free = (mesh: Mesh | null): void => {
     if (mesh === null) return;
-    object.remove(mesh);
-    mesh.geometry.dispose();
+    // the mesh's own dispose event is what frees the renderer's render objects for it
+    releaseMesh(mesh);
   };
 
   const show = (mesh: Mesh | null, wanted: boolean): boolean => {

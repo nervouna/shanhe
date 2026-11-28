@@ -296,6 +296,19 @@ export interface FrameStats {
   readonly pieceStacks: number;
   /** How far the cities have turned from models into markers: 0 near, 1 from far away. */
   readonly cityMarkers: number;
+  /**
+   * Render objects the renderer holds, as Three.js counts them in its own
+   * registry: one per mesh that has been drawn and pass it was drawn in.
+   * The number follows what is in view and returns to where it was when the
+   * view does: meshes that left the scene for good are not in it.
+   */
+  readonly renderObjects: number;
+  /** Geometries with buffers on the GPU, as Three.js counts them. Bounded like {@link renderObjects}. */
+  readonly geometries: number;
+  /** Textures on the GPU, render targets and shadow maps included, as Three.js counts them. */
+  readonly textures: number;
+  /** Whether terrain or trees were built in the last frame: the view is still coming in. */
+  readonly streaming: boolean;
 }
 
 /** One piece or stack as it is drawn. */

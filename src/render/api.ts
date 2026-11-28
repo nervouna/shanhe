@@ -54,6 +54,7 @@ import { pieceFit, steppedScale } from './pieceLayout.ts';
 import { createPieces } from './pieces.ts';
 import { placePoliticalNames } from './politicalNames.ts';
 import { improvementParts } from './props.ts';
+import { liveCounts } from './release.ts';
 import { resolveEffects } from './postEffects.ts';
 import type { PostEffect } from './postEffects.ts';
 import { createPostFx } from './postfx.ts';
@@ -400,6 +401,10 @@ export async function createRenderer(
     pieceMarkers: 0,
     pieceStacks: 0,
     cityMarkers: 0,
+    renderObjects: 0,
+    geometries: 0,
+    textures: 0,
+    streaming: false,
   };
   const listeners = new Set<(stats: FrameStats) => void>();
   let lastTime: number | null = null;
@@ -468,6 +473,8 @@ export async function createRenderer(
       pieceMarkers: pieces.markers.length,
       pieceStacks: pieces.stacks,
       cityMarkers: cityView.markerShare,
+      ...liveCounts(renderer),
+      streaming: terrainBuilds > 0 || treeBuilds > 0,
     };
     for (const listener of listeners) listener(stats);
   };
