@@ -1,10 +1,12 @@
 /**
  * Smoke tests in headless Chromium: the render demo and the default page
  * must start without any console error and draw frames. The demo also
- * shows its gallery, switches every effect of the finish and the fog of war,
+ * shows its gallery, with a garrison before a city's gate and the city's
+ * label off both, switches every effect of the finish and the fog of war,
  * plays a move and a melee animation to their end, which draws the shadow
  * maps of the pieces again, and is the political map, under clouds, at the
- * far zoom.
+ * far zoom, where the pieces are markers that have grown and merged into
+ * stacks and the cities are markers too.
  *
  * A software renderer on a small machine can take seconds per frame, so
  * nothing here waits for a moment to be caught: the checks read promises,
@@ -124,6 +126,8 @@ test('the render demo draws frames without console errors', async ({ page }) => 
   const gallery = JSON.parse((await page.getAttribute('#demo-controls', 'data-gallery')) ?? 'null') as {
     cities: number;
     firstCity: number | null;
+    garrisons: number;
+    garrisonedCity: number | null;
     units: number;
     improvements: number;
     roads: number;
@@ -135,6 +139,57 @@ test('the render demo draws frames without console errors', async ({ page }) => 
   expect(gallery?.improvements).toBeGreaterThanOrEqual(12);
   expect(gallery?.roads).toBeGreaterThan(0);
   expect(gallery?.routes).toBeGreaterThanOrEqual(2);
+  expect(gallery?.garrisons).toBe(21);
+  expect(gallery?.garrisonedCity).not.toBeNull();
+
+  // near a garrisoned city: every piece is drawn by itself at its size on the board, the garrison
+  // stands south of the middle of the city's hex and smaller than a piece in the field, the city
+  // is a model, and its label has a place beside or below the two
+  await page.evaluate((hex) => {
+    window.__shanhe?.render.renderer.focusHex(hex, { distance: 0, immediate: true });
+  }, gallery?.garrisonedCity as number);
+  await drawFrames(page, 2);
+  const board = await page.evaluate((hex) => {
+    const shanhe = window.__shanhe;
+    if (shanhe === undefined) throw new Error('window.__shanhe is not set');
+    const layout = shanhe.render.renderer.getBoardLayout();
+    const map = shanhe.state.map;
+    const { size, originX, originZ } = map.projection.hexLayout;
+    const col = hex % map.width;
+    const row = Math.floor(hex / map.width);
+    const garrison = layout.markers.find((marker) => marker.hex === hex);
+    return {
+      size,
+      scale: layout.pieceScale,
+      markers: layout.markers.length,
+      units: layout.markers.reduce((sum, marker) => sum + marker.count, 0),
+      widest: Math.max(...layout.markers.map((marker) => marker.radius)),
+      garrison:
+        garrison === undefined
+          ? null
+          : {
+              east: garrison.x - (originX + Math.sqrt(3) * size * (col + 0.5 * (row & 1))),
+              south: garrison.z - (originZ + 1.5 * size * row),
+              radius: garrison.radius,
+              count: garrison.count,
+            },
+      label: layout.cityLabels.find((label) => label.hex === hex)?.side ?? null,
+      stats: shanhe.render.renderer.getStats(),
+    };
+  }, gallery?.garrisonedCity as number);
+  expect(board.scale).toBe(1);
+  expect(board.stats.pieceScale).toBe(1);
+  expect(board.markers).toBe(board.units);
+  expect(board.stats.pieceMarkers).toBe(board.markers);
+  expect(board.stats.pieceStacks).toBe(0);
+  expect(board.stats.cityMarkers).toBe(0);
+  expect(board.garrison).not.toBeNull();
+  expect(board.garrison?.count).toBe(1);
+  expect(Math.abs(board.garrison?.east ?? 1)).toBeLessThan(1e-6);
+  expect(board.garrison?.south).toBeGreaterThan(0.3 * board.size);
+  expect(board.garrison?.south).toBeLessThan(0.8 * board.size);
+  expect(board.garrison?.radius).toBeLessThan(board.widest);
+  expect(['below', 'right', 'left', 'above']).toContain(board.label);
 
   // every effect has a switch: it turns the effect off and on again, except where the backend keeps it off
   const effectsShown = async (): Promise<Record<string, boolean>> =>
@@ -294,6 +349,29 @@ test('the render demo draws frames without console errors', async ({ page }) => 
   // from up here the clouds are in view and the forests are colour and relief only
   expect(far?.cloudLayer).toBeGreaterThan(0);
   expect(far?.trees).toBe(0);
+  // the pieces have grown into markers, some of them stacks, and no unit is lost in them; the cities are markers
+  const farBoard = await page.evaluate(() => {
+    const layout = window.__shanhe?.render.renderer.getBoardLayout();
+    if (layout === undefined) throw new Error('window.__shanhe is not set');
+    return {
+      scale: layout.pieceScale,
+      markers: layout.markers.length,
+      stacks: layout.markers.filter((marker) => marker.count > 1).length,
+      units: layout.markers.reduce((sum, marker) => sum + marker.count, 0),
+      cityLabels: layout.cityLabels.length,
+    };
+  });
+  expect(far?.pieceScale).toBeGreaterThan(1);
+  expect(farBoard.scale).toBe(far?.pieceScale);
+  expect(farBoard.units).toBe(board.units);
+  expect(farBoard.markers).toBeLessThan(farBoard.units);
+  expect(farBoard.stacks).toBeGreaterThan(0);
+  expect(far?.pieceMarkers).toBe(farBoard.markers);
+  expect(far?.pieceStacks).toBe(farBoard.stacks);
+  expect(far?.cityMarkers).toBe(1);
+  // the names of the polities have taken the place of the cities' names
+  expect(farBoard.cityLabels).toBe(0);
+  console.log(`far board: pieces ×${farBoard.scale.toFixed(2)}, ${farBoard.units} units as ${farBoard.markers} markers, ${farBoard.stacks} of them stacks`);
   console.log(`political map: ${far?.labels} labels, ${far?.drawCalls} draw calls, ${far?.triangles} triangles`);
   await capture('political');
 
@@ -305,6 +383,9 @@ test('the render demo draws frames without console errors', async ({ page }) => 
   const near = await page.evaluate(() => window.__shanhe?.render.stats);
   expect(near?.politicalMap).toBe(false);
   expect(near?.cloudLayer).toBe(0);
+  expect(near?.pieceScale).toBe(1);
+  expect(near?.pieceStacks).toBe(0);
+  expect(near?.cityMarkers).toBe(0);
 
   expect(errors).toEqual([]);
 });

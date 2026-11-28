@@ -557,6 +557,23 @@ export function createPieces(surface: Surface, environment: Texture): Pieces {
     shade(slot.index, pose.x, pose.z, own * zoom);
   };
 
+  /** A piece that an animation holds, as it is drawn; `null` while it is hidden. */
+  const markerOfPose = (slot: Slot, pose: PiecePose): DrawnMarker | null => {
+    const own = pose.scale ?? 1;
+    if (own <= 0) return null;
+    const height = HEIGHT * layout.size * pieceHeightScale(zoom) * own;
+    return {
+      id: slot.unit.id,
+      hex: slot.unit.hex,
+      x: pose.x,
+      y: pose.y + height,
+      z: pose.z,
+      radius: RADIUS * layout.size * zoom * own,
+      height,
+      count: 1,
+    };
+  };
+
   /** Lays every piece out for the current zoom: stacks, the room markers make, heights. */
   const relayout = (): void => {
     version++;
@@ -614,6 +631,8 @@ export function createPieces(surface: Surface, environment: Texture): Pieces {
       if (slot.pose === null) continue;
       place(slot, slot.pose);
       effects.setZ(slot.index, -1);
+      const posed = markerOfPose(slot, slot.pose);
+      if (posed !== null) next.push(posed);
     }
     drawn = next;
     mesh.instanceMatrix.needsUpdate = true;
@@ -710,7 +729,10 @@ export function createPieces(surface: Surface, environment: Texture): Pieces {
         return;
       }
       version++;
-      if (wasStanding) drawn = drawn.filter((marker) => marker.id !== id);
+      // it is drawn where the animation holds it, and counts there for labels and picking
+      const posed = markerOfPose(slot, pose);
+      drawn = drawn.filter((marker) => marker.id !== id);
+      if (posed !== null) drawn.push(posed);
       place(slot, pose);
       mesh.instanceMatrix.needsUpdate = true;
     },
