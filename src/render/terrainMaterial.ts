@@ -34,17 +34,24 @@ import {
 } from 'three/tsl';
 import { MeshStandardNodeMaterial } from 'three/webgpu';
 import { SNOW_LINE_DROP, SNOW_LINE_FROM, SNOW_LINE_TOP } from './climate.ts';
+import { CITY_DEEP, CITY_NORTH, CITY_WIDE, cityDrawnRadius } from './cityLayout.ts';
+import { GARRISON_OFFSET } from './pieceLayout.ts';
 import {
   bumpedNormal,
   cloudShade,
   gridLineAt,
   hexEdgeDistance,
+  hexLocal,
   mapUv,
   noiseTile,
   sinLatitude,
   withFogOfWar,
 } from './shaderLib.ts';
 import type { MapUniforms } from './shaderLib.ts';
+
+/** The built-up ground of a city of middling size, in hex sizes. */
+const TOWN_HALF_WIDTH = cityDrawnRadius(6) * CITY_WIDE;
+const TOWN_HALF_DEPTH = cityDrawnRadius(6) * CITY_DEEP;
 
 export function createTerrainMaterial(u: MapUniforms): MeshStandardNodeMaterial {
   const xz = positionWorld.xz;
@@ -72,8 +79,9 @@ export function createTerrainMaterial(u: MapUniforms): MeshStandardNodeMaterial 
   const hereUv = mapUv(u, xz);
   const improved = texture(u.textures.improvement, hereUv);
   const feature = texture(u.textures.feature, hereUv);
-  // 0 in the middle of the hex, 1 on its edge
-  const edge = hexEdgeDistance(u, xz);
+  // where the point lies in its hex; 0 in the middle of the hex, 1 on its edge
+  const within = hexLocal(u, xz);
+  const edge = hexEdgeDistance(u, xz, within);
 
   const viewDistance = cameraPosition.sub(positionWorld).length().div(u.hexSize);
   const nearby = float(1).sub(smoothstep(8, 40, viewDistance));
@@ -119,8 +127,8 @@ export function createTerrainMaterial(u: MapUniforms): MeshStandardNodeMaterial 
   const balk = float(1).sub(smoothstep(0.03, 0.07, fieldEdge));
   let farmland = crop.mul(mix(float(0.78), float(1.08), rows));
   farmland = mix(farmland, color(0x6e6442), balk.mul(0.7));
-  const within = float(1).sub(smoothstep(0.86, 1, edge.add(fine.sub(0.5).mul(0.12))));
-  const farmed = improved.r.mul(within);
+  const inside = float(1).sub(smoothstep(0.86, 1, edge.add(fine.sub(0.5).mul(0.12))));
+  const farmed = improved.r.mul(inside);
   ground = mix(ground, farmland, farmed.mul(0.92));
 
   // pasture: cropped grass inside fences, with a herd as pale dots
@@ -131,8 +139,21 @@ export function createTerrainMaterial(u: MapUniforms): MeshStandardNodeMaterial 
   let pastureGround = mix(color(0x7fa24c), color(0xa3b866), fine);
   pastureGround = mix(pastureGround, color(0x5a4630), fence.mul(0.8));
   pastureGround = mix(pastureGround, color(0xe9e4d6), herd.mul(0.85));
-  const grazed = improved.g.mul(within);
+  const grazed = improved.g.mul(inside);
   ground = mix(ground, pastureGround, grazed.mul(0.9));
+
+  // a city: trodden, built-up ground under the houses, cut by lanes, and a
+  // bare yard before the gate where the garrison stands (`cityLayout.ts`)
+  const fromTown = vec2(within.x.div(TOWN_HALF_WIDTH), within.y.add(CITY_NORTH).div(TOWN_HALF_DEPTH)).length();
+  const town = feature.b.mul(float(1).sub(smoothstep(0.82, 1.12, fromTown.add(fine.sub(0.5).mul(0.3)))));
+  const fromYard = vec2(within.x, within.y.sub(GARRISON_OFFSET)).length();
+  const yard = feature.b.mul(float(1).sub(smoothstep(0.34, 0.6, fromYard.add(fine.sub(0.5).mul(0.25))))).mul(0.55);
+  const lanes = abs(fract(within.mul(6.5).add(vec2(mid.g, mid.b).mul(0.6))).sub(0.5));
+  const lane = float(1).sub(smoothstep(0.03, 0.09, min(lanes.x, lanes.y)));
+  let townGround = mix(color(0x9d8f76), color(0xb7a98c), fine);
+  townGround = mix(townGround, color(0x6f6452), lane.mul(0.55).mul(nearby.mul(0.7).add(0.3)));
+  const built = max(town, yard);
+  ground = mix(ground, townGround, built.mul(0.9));
 
   // rock on steep ground and on mountains
   const steep = smoothstep(0.1, 0.32, slope.add(fine.sub(0.5).mul(0.08)));

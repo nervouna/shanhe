@@ -191,3 +191,33 @@ export function rayAtHeight(ray: Ray, y: number): { x: number; z: number } | nul
   if (t <= 0) return null;
   return { x: ray.origin[0] + ray.direction[0] * t, z: ray.origin[2] + ray.direction[2] * t };
 }
+
+/**
+ * Where a world point appears in a view: the inverse of {@link screenRay}.
+ *
+ * @param width of the view in pixels.
+ * @param height of the view in pixels.
+ * @returns the point in pixels from the top left corner and its distance in front of the camera, or `null` behind it.
+ */
+export function screenPoint(
+  pose: CameraPose,
+  fovDegrees: number,
+  width: number,
+  height: number,
+  point: Vec3,
+): { x: number; y: number; depth: number } | null {
+  const forward = normalize([
+    pose.target[0] - pose.position[0],
+    pose.target[1] - pose.position[1],
+    pose.target[2] - pose.position[2],
+  ]);
+  const right = normalize(cross(forward, [0, 1, 0]));
+  const up = cross(right, forward);
+  const d: Vec3 = [point[0] - pose.position[0], point[1] - pose.position[1], point[2] - pose.position[2]];
+  const depth = d[0] * forward[0] + d[1] * forward[1] + d[2] * forward[2];
+  if (depth <= 1e-9) return null;
+  const halfHeight = Math.tan((fovDegrees * Math.PI) / 360);
+  const sx = (d[0] * right[0] + d[1] * right[1] + d[2] * right[2]) / depth / (halfHeight * (width / height));
+  const sy = (d[0] * up[0] + d[1] * up[1] + d[2] * up[2]) / depth / halfHeight;
+  return { x: (sx * 0.5 + 0.5) * width, y: (0.5 - sy * 0.5) * height, depth };
+}

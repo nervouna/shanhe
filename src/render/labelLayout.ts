@@ -96,3 +96,130 @@ export const PRIORITY_POLITICAL = 2000;
 export function cityLabelPriority(tier: CityTierId, population: number): number {
   return tier * 200 + Math.min(Math.max(population, 0), 199);
 }
+
+/** A rectangle on screen, in CSS pixels. */
+export interface ScreenRect {
+  readonly minX: number;
+  readonly minY: number;
+  readonly maxX: number;
+  readonly maxY: number;
+}
+
+export function rectsOverlap(a: ScreenRect, b: ScreenRect): boolean {
+  return a.minX < b.maxX && a.maxX > b.minX && a.minY < b.maxY && a.maxY > b.minY;
+}
+
+/** Where a city's label may sit relative to the city, in the order in which the places are tried. */
+export const LABEL_SIDES = ['below', 'right', 'left', 'above'] as const;
+export type LabelSide = (typeof LABEL_SIDES)[number];
+
+/** The rectangle of a label of a size on one side of what it names, `gap` pixels off it. */
+export function labelRectAt(around: ScreenRect, width: number, height: number, side: LabelSide, gap: number): ScreenRect {
+  const midX = (around.minX + around.maxX) / 2;
+  const midY = (around.minY + around.maxY) / 2;
+  switch (side) {
+    case 'below':
+      return { minX: midX - width / 2, maxX: midX + width / 2, minY: around.maxY + gap, maxY: around.maxY + gap + height };
+    case 'right':
+      return { minX: around.maxX + gap, maxX: around.maxX + gap + width, minY: midY - height / 2, maxY: midY + height / 2 };
+    case 'left':
+      return { minX: around.minX - gap - width, maxX: around.minX - gap, minY: midY - height / 2, maxY: midY + height / 2 };
+    case 'above':
+      return { minX: midX - width / 2, maxX: midX + width / 2, minY: around.minY - gap - height, maxY: around.minY - gap };
+  }
+}
+
+/**
+ * Finds the place of a city's label: below the city and its garrison, else
+ * beside them, else above, never on them and never on the character of any
+ * piece. Where every place would cover a character the city goes without a
+ * label.
+ *
+ * @param around what the label names, on screen: the city together with the piece before its gate.
+ * @param characters the squares that hold the characters of the pieces in view.
+ * @returns the label's rectangle and its side, or `null`.
+ */
+export function placeCityLabel(
+  around: ScreenRect,
+  width: number,
+  height: number,
+  characters: readonly ScreenRect[],
+  gap = 3,
+): { readonly rect: ScreenRect; readonly side: LabelSide } | null {
+  for (const side of LABEL_SIDES) {
+    const rect = labelRectAt(around, width, height, side, gap);
+    let free = true;
+    for (const character of characters) {
+      if (rectsOverlap(rect, character)) {
+        free = false;
+        break;
+      }
+    }
+    if (free) return { rect, side };
+  }
+  return null;
+}
+
+/** A world point on screen, in CSS pixels, with its distance in front of the camera; `null` behind the camera. */
+export type ProjectPoint = (x: number, y: number, z: number) => { readonly x: number; readonly y: number; readonly depth: number } | null;
+
+/** The share of a piece's radius within which its character lies, with a little air: the label keeps off this square. */
+export const CHARACTER_REACH = 0.52;
+
+/**
+ * The square on screen that holds the character of a piece.
+ *
+ * @param top the middle of the piece's top face and its radius as drawn, in world units.
+ * @param pixelsPerUnit CSS pixels per world unit at distance 1 from the camera.
+ */
+export function characterRect(
+  project: ProjectPoint,
+  pixelsPerUnit: number,
+  top: { readonly x: number; readonly y: number; readonly z: number; readonly radius: number },
+): ScreenRect | null {
+  const at = project(top.x, top.y, top.z);
+  if (at === null) return null;
+  // the face lies flat and is seen at an angle: its square on screen is at most this large
+  const half = (top.radius * CHARACTER_REACH * pixelsPerUnit) / at.depth;
+  return { minX: at.x - half, maxX: at.x + half, minY: at.y - half, maxY: at.y + half };
+}
+
+/**
+ * The rectangle on screen around a disc that lies on the ground or floats
+ * level, and around a point above its middle: a city with its tallest
+ * roof, or a piece.
+ *
+ * @param height of the point above the disc; 0 for a flat disc.
+ */
+export function discRect(
+  project: ProjectPoint,
+  disc: { readonly x: number; readonly y: number; readonly z: number; readonly radius: number; /** Its radius from north to south, if that differs. */ readonly radiusZ?: number },
+  height = 0,
+): ScreenRect | null {
+  const radiusZ = disc.radiusZ ?? disc.radius;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const take = (x: number, y: number, z: number): boolean => {
+    const at = project(x, y, z);
+    if (at === null) return false;
+    minX = Math.min(minX, at.x);
+    maxX = Math.max(maxX, at.x);
+    minY = Math.min(minY, at.y);
+    maxY = Math.max(maxY, at.y);
+    return true;
+  };
+  for (let k = 0; k < 8; k++) {
+    const angle = (k / 8) * Math.PI * 2;
+    if (!take(disc.x + Math.cos(angle) * disc.radius, disc.y, disc.z + Math.sin(angle) * radiusZ)) return null;
+  }
+  if (height > 0 && !take(disc.x, disc.y + height, disc.z)) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+/** The smallest rectangle around two. */
+export function unionRect(a: ScreenRect, b: ScreenRect | null): ScreenRect {
+  if (b === null) return a;
+  return { minX: Math.min(a.minX, b.minX), minY: Math.min(a.minY, b.minY), maxX: Math.max(a.maxX, b.maxX), maxY: Math.max(a.maxY, b.maxY) };
+}
