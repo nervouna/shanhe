@@ -1001,9 +1001,17 @@
         flex-direction: column;
         gap: var(--s1);
         width: 236px;
+        /* on a small window at a large interface size the menu is taller than the window: it scrolls */
+        max-height: calc(100% - var(--bar) - var(--s3));
+        overflow-y: auto;
+        scrollbar-width: thin;
+        scrollbar-color: var(--line) transparent;
         padding: var(--s3);
         box-sizing: border-box;
         z-index: 3;
+      }
+      #menu > * {
+        flex-shrink: 0;
       }
       #ui #menu h3 {
         margin: var(--s2) 0 0;
