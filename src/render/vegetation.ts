@@ -14,6 +14,7 @@ import { sampleHeight, unitsPerMetre } from './heightField.ts';
 import type { Surface } from './heightField.ts';
 import { cloudShade, mapUv, withFogOfWar } from './shaderLib.ts';
 import type { MapUniforms } from './shaderLib.ts';
+import { castGroundShadow } from './shadowLayers.ts';
 import { TREE_FAMILY_COUNT, createTreePlacer } from './treePlacement.ts';
 import type { TreeFamilyId } from './treePlacement.ts';
 import { buildTreeShape } from './treeShapes.ts';
@@ -177,7 +178,7 @@ export function createVegetation(surface: Surface, u: MapUniforms): Vegetation {
     geometry.setIndex(indices);
     geometry.computeBoundingSphere();
     const mesh = new Mesh(geometry, material);
-    mesh.castShadow = true;
+    castGroundShadow(mesh);
     mesh.receiveShadow = true;
     mesh.visible = false;
     object.add(mesh);
