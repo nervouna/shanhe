@@ -5,8 +5,8 @@
  * state that comes back.
  */
 
-import { BUILDINGS, FOCUSES, IMPROVEMENTS, PROJECT, SETTLER, unitDef } from '../core/data.ts';
-import type { Yields } from '../core/data.ts';
+import { BUILDINGS, DEFAULT_DIFFICULTY, DIFFICULTY_LEVELS, FOCUSES, IMPROVEMENTS, PROJECT, SETTLER, unitDef } from '../core/data.ts';
+import type { DifficultyLevel, Yields } from '../core/data.ts';
 import { NO_POLITY, currentEra, hexOwner, nextPolicyCost } from '../core/game.ts';
 import type { Action, GameEvent, GameState, Unit } from '../core/game.ts';
 import { buyCostOf, hexDistance } from '../core/query.ts';
@@ -20,7 +20,8 @@ import { playSpeed, visualEvents } from './animation.ts';
 import { pieceOf, remember, sceneOf, wholeMapView } from './board.ts';
 import type { BoardMemory, BoardView } from './board.ts';
 import { createTradeSection } from './cityTrade.ts';
-import { standingWith } from './diplomacy.ts';
+import { levelEffect, levelName } from './difficulty.ts';
+import { standingWith, vassalRoomText } from './diplomacy.ts';
 import { button, el, fill, fillWhen, iconButton, iconOnly, stat } from './dom.ts';
 import { createHost } from './host.ts';
 import type { Host, HostChange, RunReport } from './host.ts';
@@ -124,6 +125,8 @@ export interface StartOptions {
   readonly seed?: number;
   /** The map to play on. Default: the one that is loaded. */
   readonly map?: 'real' | 'fixture';
+  /** The difficulty level. Default: the one chosen on the start screen, which starts at the middle one. */
+  readonly difficulty?: DifficultyLevel;
 }
 
 export type MainButtonKind = 'none' | 'busy' | 'observer' | 'nextTurn' | PendingKind;
@@ -167,12 +170,17 @@ export interface UiSnapshot {
    * view, or in the panel of another nation. Null if none is shown.
    */
   readonly kit: { readonly nation: string; readonly where: 'start' | 'own' | 'polity' } | null;
-  /** Nation select: the region filter, the order and the nations listed. Null away from the start screen. */
+  /**
+   * Nation select: the region filter, the order, the nations listed, the
+   * highlighted one and the difficulty level a game would start at. Null
+   * away from the start screen.
+   */
   readonly start: {
     readonly region: Region | 'all';
     readonly sort: NationSort;
     readonly nations: readonly string[];
     readonly chosen: string | null;
+    readonly difficulty: DifficultyLevel;
   } | null;
   /** The settings in force. */
   readonly settings: Settings;
@@ -191,10 +199,11 @@ export interface UiSnapshot {
   } | null;
   /**
    * Fog of war on the board as the renderer has it: whether the scene has
-   * fog (a player's game; never the observer's), and how many units of the
-   * state it leaves out because the player does not see them.
+   * fog (a player's game; never the observer's), how many units of the
+   * state it leaves out because the player does not see them, and how many
+   * units of other polities are on it.
    */
-  readonly fog: { readonly on: boolean; readonly hiddenUnits: number };
+  readonly fog: { readonly on: boolean; readonly hiddenUnits: number; readonly foreignUnits: number };
 }
 
 export interface App {
@@ -269,6 +278,8 @@ export function createApp(options: AppOptions): App {
   let chosenNation: string | null = null;
   let startRegion: Region | 'all' = 'all';
   let startSort: NationSort = 'region';
+  /** The difficulty level picked on the start screen. */
+  let startLevel: DifficultyLevel = DEFAULT_DIFFICULTY;
   /** The player's own kit view. */
   let kitOpen = false;
   /** True while the player moves through the controls with the keyboard: Enter and Space then press the control in focus. */
@@ -291,7 +302,7 @@ export function createApp(options: AppOptions): App {
   /** What the player remembers of the board out of their sight; null until they have looked, and for the observer. */
   let memory: BoardMemory | null = null;
   /** The scene the renderer was last given: whether it had fog, and how many units of its state it left out. */
-  let shown = { fog: false, hidden: 0 };
+  let shown = { fog: false, hidden: 0, foreign: 0 };
   /** The state as of the last change the host reported: what the next change's events start from. */
   let lastState: GameState | null = null;
   let animating = false;
@@ -555,7 +566,12 @@ export function createApp(options: AppOptions): App {
     boardState = s;
     boardLanguage = getLanguage();
     const scene = sceneOf(s, boardLanguage, viewOf(s));
-    shown = { fog: scene.fog !== null, hidden: s.units.length - scene.units.length };
+    shown = {
+      fog: scene.fog !== null,
+      hidden: s.units.length - scene.units.length,
+      // to the observer every unit is somebody else's, the tribes included
+      foreign: scene.units.filter((unit) => s.player === NO_POLITY || unit.polity !== s.player).length,
+    };
     board.renderer.setScene(scene);
   };
 
@@ -1054,7 +1070,8 @@ export function createApp(options: AppOptions): App {
     const pillage = pillageAction(state(), unit.id);
     if (pillage !== null) add('pillage', t('action.pillage'), pillage, 'pillage');
     const gates = demandAction(state(), unit.id);
-    if (gates !== null) add('demandVassalage', t('action.demandVassalage'), gates, 'leader');
+    // a vassal takes one of the places the era allows: the button says how many are taken
+    if (gates !== null) add('demandVassalage', `${t('action.demandVassalage')} · ${vassalRoomText(state(), me)}`, gates, 'leader');
     fill(selectionBox, piece, facts, actions);
   };
 
@@ -1545,11 +1562,13 @@ export function createApp(options: AppOptions): App {
     const now = settings.current;
     // rebuilt only when what it shows changed: an observer's clock redraws the page while the menu is open,
     // and the volume slider must stay under the pointer
-    const signature = [now.quality, now.scale, now.language, now.animationSpeed, now.muted, scale, board.renderer.backend].join('|');
+    const signature = [
+      now.quality, now.scale, now.language, now.animationSpeed, now.muted, scale, board.renderer.backend, state().difficulty, observing(),
+    ].join('|');
     fillWhen(menuBox, signature, () => menuNodes());
   };
 
-  const menuNodes = (): HTMLElement[] => {
+  const menuNodes = (): (HTMLElement | false)[] => {
     const now = settings.current;
     const volume = el('input', { id: 'menu-volume', label: t('menu.volume'), data: { value: now.volume } });
     volume.type = 'range';
@@ -1580,6 +1599,15 @@ export function createApp(options: AppOptions): App {
         }, { id: 'menu-import' }),
         iconButton('play', t('menu.newGame'), leaveGame, { id: 'menu-new-game' }),
       ),
+      // the level the game was started at; an observer's game has none to speak of
+      !observing() && el('h3', { text: t('menu.difficulty') }),
+      !observing() &&
+        el(
+          'div',
+          { id: 'menu-level', data: { level: state().difficulty } },
+          el('div', { text: levelName(state().difficulty) }),
+          el('div', { class: 'footnote', text: levelEffect(state().difficulty) }),
+        ),
       el('h3', { text: t('menu.quality') }),
       choice('menu-quality', 'quality', QUALITY_OPTIONS, now.quality, (value) => {
         const key: TranslationKey = `quality.${value}`;
@@ -1759,6 +1787,15 @@ export function createApp(options: AppOptions): App {
             chosen.major && el('span', { class: 'tag', id: 'kit-major', text: t('kit.major') }),
           ),
         kit !== null && el('div', { class: 'scroll' }, kitRows(kit, false)),
+        el(
+          'div',
+          { id: 'levels' },
+          choice('level-picker', 'level', DIFFICULTY_LEVELS, startLevel, levelName, (value) => {
+            startLevel = value;
+            refresh();
+          }),
+          el('div', { class: 'footnote', id: 'level-effect', text: levelEffect(startLevel) }),
+        ),
         el(
           'footer',
           {},
@@ -2127,7 +2164,9 @@ export function createApp(options: AppOptions): App {
     }
     const observe = start.observe === true || start.nation === undefined || start.nation === null;
     const seed = start.seed ?? Math.floor(Math.random() * 0x7fffffff);
-    host.start({ seed, player: observe ? null : (start.nation ?? null) });
+    // the levels help the player or hold them back: with nobody playing, the middle one
+    const difficulty = start.difficulty ?? (observe ? DEFAULT_DIFFICULTY : startLevel);
+    host.start({ seed, player: observe ? null : (start.nation ?? null), difficulty });
     enterGame();
   }
 
@@ -2295,6 +2334,7 @@ export function createApp(options: AppOptions): App {
                 sort: startSort,
                 nations: listNations(nationEntries(map(), state().majors), startRegion, startSort).map((entry) => entry.id),
                 chosen: chosenNation,
+                difficulty: startLevel,
               },
         settings: settings.current,
         sound: (() => {
@@ -2302,7 +2342,7 @@ export function createApp(options: AppOptions): App {
           return { silent, unlocked, volume, muted, era };
         })(),
         aids: screen === 'game' ? aidsShown : null,
-        fog: { on: shown.fog, hiddenUnits: shown.hidden },
+        fog: { on: shown.fog, hiddenUnits: shown.hidden, foreignUnits: shown.foreign },
       };
     },
     startGame,
