@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createGame, endTurn, hashState, saveGame } from '../core/game.ts';
+import { createGame, endTurn, hashState, rememberedBy, saveGame, visibleTo } from '../core/game.ts';
 import type { GameState } from '../core/game.ts';
 import { LAND, LAND2, labMap } from '../core/kitLab.ts';
 import { apply, edit, put } from '../core/testUtil.ts';
@@ -47,6 +47,22 @@ describe('exportSave and importSave', () => {
     const result = importSave(exportSave(state), map);
     if (!result.ok) throw new Error(result.error);
     expect(result.state.result).toEqual(state.result);
+  });
+
+  it('keeps the difficulty level and what every polity has seen', () => {
+    let state = createGame(map, { seed: 5, player: 'jia', difficulty: 'hard' });
+    for (let i = 0; i < 20; i++) state = endTurn(state).state;
+    expect(state.explored.filter((entry) => entry !== '').length).toBeGreaterThan(1);
+    // The city-state is neither a major nor the player: it keeps no memory.
+    expect(state.explored[4]).toBe('');
+    const result = importSave(exportSave(state), map);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.state.difficulty).toBe('hard');
+    expect(result.state.explored).toEqual(state.explored);
+    expect(rememberedBy(result.state, 0)).toEqual(rememberedBy(state, 0));
+    expect(visibleTo(result.state, 0)).toEqual(visibleTo(state, 0));
+    expect(hashState(result.state)).toBe(hashState(state));
+    expect(hashState(endTurn(result.state).state)).toBe(hashState(endTurn(state).state));
   });
 
   it('rejects text that is not JSON, not a save, or too large', () => {
@@ -113,6 +129,17 @@ describe('exportSave and importSave', () => {
       'stats missing': (data) => (data.stats = {}),
       'next unit id below an existing id': (data) => (data.nextUnitId = 1),
       'rng not an integer': (data) => (data.rng = 0.5),
+      'difficulty missing': (data) => delete data.difficulty,
+      'difficulty of an unknown level': (data) => (data.difficulty = 'nightmare'),
+      'explored missing': (data) => delete data.explored,
+      'explored not a list': (data) => (data.explored = 'AAAA'),
+      'explored with too few polities': (data) => (data.explored as string[]).pop(),
+      'explored set not text': (data) => ((data.explored as unknown[])[0] = [1, 2, 3]),
+      'explored set with an unknown character': (data) => ((data.explored as string[])[0] = '?'),
+      'explored set with an empty tail': (data) => ((data.explored as string[])[0] += 'A'),
+      'explored set past the end of the map': (data) =>
+        ((data.explored as string[])[0] = 'B'.repeat(Math.ceil((map.width * map.height) / 6) + 1)),
+      'explored set of a polity that keeps none': (data) => ((data.explored as string[])[4] = 'B'),
     };
     for (const [name, change] of Object.entries(cases)) {
       expect(importSave(tampered(state, change), map), name).toEqual({ ok: false, error: 'corrupt' });

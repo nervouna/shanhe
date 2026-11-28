@@ -4,7 +4,7 @@
  * {@link addFavour}; signing and ending agreements is in `diplomacy.ts`.
  */
 
-import { FAVOUR } from './data.ts';
+import { DIPLOMACY, FAVOUR } from './data.ts';
 import type { AgreementKind } from './data.ts';
 import { at, polityOf, relationKey } from './context.ts';
 import type { Ctx } from './context.ts';
@@ -73,6 +73,12 @@ export function vassalsOf(ctx: Ctx, polity: number): number[] {
     if (other.alive && other.overlord === polity) list.push(index);
   });
   return list;
+}
+
+/** True if `polity` holds as many vassals as its era lets it (`DIPLOMACY.vassalsByEra`). */
+export function vassalsFull(ctx: Ctx, polity: number): boolean {
+  const era = polityOf(ctx, polity).era;
+  return vassalsOf(ctx, polity).length >= (DIPLOMACY.vassalsByEra[era] ?? 0);
 }
 
 /** The polities `polity` is at war with, ascending. */

@@ -32,6 +32,10 @@ export interface Ctx {
   readonly seaLevel: Uint8Array;
   /** Per polity: its modifiers by type, kept by `modsOf` in `modifiers.ts`. */
   readonly mods: Map<number, ModIndex>;
+  /** Per polity: the hexes it sees (1 per hex), kept by `sightOf` in `fog.ts`. */
+  readonly sight: Map<number, Uint8Array>;
+  /** Per polity: the working copy of its entry in `GameState.explored`, kept by `fog.ts`. */
+  readonly explored: Map<number, { flags: Uint8Array; dirty: boolean }>;
 }
 
 /** The agreements that let each side's units into the other's land. */
@@ -85,6 +89,8 @@ export function createCtx(state: MutableGameState): Ctx {
     open: new Uint8Array(n * n),
     seaLevel: Uint8Array.from(state.polities, seaLevelOf),
     mods: new Map(),
+    sight: new Map(),
+    explored: new Map(),
   };
   for (const agreement of state.agreements) {
     if (BORDER_OPENING.includes(agreement.kind)) setOpenFlag(ctx, agreement.a, agreement.b, true);

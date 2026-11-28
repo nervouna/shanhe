@@ -116,6 +116,67 @@ export const PERSONALITIES: Readonly<Record<PersonalityId, Personality>> = {
   },
 };
 
+// ---------------------------------------------------------------- ambitions
+
+/**
+ * What a leader sets out to win in one game. A leader's personality stays
+ * the same from game to game; its ambition is drawn anew for every game from
+ * the game's seed, so that the same nation plays differently in different
+ * games. `balanced` is the all-rounder a polity without a kit always is.
+ */
+export const AMBITIONS = ['balanced', 'conquest', 'learning', 'wealth'] as const;
+export type Ambition = (typeof AMBITIONS)[number];
+
+/** How an ambition bends the AI's weights, on top of the personality. */
+export interface AmbitionStyle {
+  /** Multiplies the strength ratio at which it declares war. */
+  readonly warRatio: number;
+  /** Multiplies the share of its spare income it keeps for the army. */
+  readonly armyShare: number;
+  /** The buildings (by generic kind) its cities build first, before those of the personality. */
+  readonly buildFirst: readonly string[];
+  /** Added to how much it wants a tech and a policy card of each kind. */
+  readonly research: Readonly<Partial<Record<'economy' | 'military' | 'science' | 'naval', number>>>;
+  readonly policy: Readonly<Partial<Record<'economy' | 'military' | 'civil' | 'diplomacy', number>>>;
+  /** False for a leader that starts no wars: it fights when it is attacked or an ally is. */
+  readonly startsWars: boolean;
+  /** The focus its cities take when they have food to spare. */
+  readonly surplusFocus: 'production' | 'gold';
+}
+
+export const AMBITION_STYLES: Readonly<Record<Ambition, AmbitionStyle>> = {
+  balanced: {
+    warRatio: 1, armyShare: 1, buildFirst: [], research: {}, policy: {}, startsWars: true, surplusFocus: 'production',
+  },
+  conquest: {
+    warRatio: 0.8, armyShare: 1.4, buildFirst: ['workshop'], research: { military: 2 }, policy: { military: 2 },
+    startsWars: true, surplusFocus: 'production',
+  },
+  learning: {
+    warRatio: 1, armyShare: 1, buildFirst: ['academy', 'university'], research: { science: 2 }, policy: { civil: 2 },
+    startsWars: false, surplusFocus: 'production',
+  },
+  wealth: {
+    warRatio: 1, armyShare: 1, buildFirst: ['market', 'bank'], research: { economy: 2 }, policy: { economy: 2 },
+    startsWars: false, surplusFocus: 'gold',
+  },
+};
+
+/**
+ * How likely each ambition is for a leader of each personality, as weights.
+ * A leader with a kit always sets out for one of the three victories.
+ */
+export const AMBITION_WEIGHTS: Readonly<Record<PersonalityId, Readonly<Record<Ambition, number>>>> = {
+  balanced: { balanced: 0, conquest: 2, learning: 2, wealth: 2 },
+  warlike: { balanced: 0, conquest: 3, learning: 1, wealth: 2 },
+  mercantile: { balanced: 0, conquest: 1, learning: 2, wealth: 3 },
+  defensive: { balanced: 0, conquest: 1, learning: 3, wealth: 2 },
+  scholarly: { balanced: 0, conquest: 1, learning: 3, wealth: 2 },
+  expansionist: { balanced: 0, conquest: 3, learning: 1, wealth: 2 },
+  seafaring: { balanced: 0, conquest: 2, learning: 1, wealth: 3 },
+  diplomatic: { balanced: 0, conquest: 1, learning: 2, wealth: 3 },
+};
+
 // --------------------------------------------------------------------- kits
 
 export const DIFFICULTIES = ['easy', 'normal', 'hard', 'veryHard'] as const;
@@ -231,7 +292,7 @@ const KIT_TABLE = {
   shu: {
     // 天府之国: cities ringed by mountains gain food and defence.
     trait: [
-      { type: 'cityYield', yields: { food: 2 }, city: { mountainsNear: 2 } },
+      { type: 'cityYield', yields: { food: 1 }, city: { mountainsNear: 2 } },
       { type: 'cityStrength', percent: 20, city: { mountainsNear: 2 } },
     ],
     unit: 'repeatingCrossbowman', building: 'dujiangyan', buildingKind: 'improvement', specialty: 'shu-brocade',
@@ -588,6 +649,60 @@ export function kitOfNation(nation: string): Kit | null {
 /** The personality of the nation's leader; `balanced` for a polity without a kit. */
 export function personalityOf(nation: string): Personality {
   return PERSONALITIES[kitOfNation(nation)?.personality ?? 'balanced'];
+}
+
+/** A number in [0, 1) that depends on the seed and the index alone. */
+function seededDraw(seed: number, index: number): number {
+  let t = ((seed >>> 0) ^ Math.imul(index + 1, 0x9e3779b1)) >>> 0;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+/**
+ * The ambition of the leader of `nation` (the polity with index `polity`) in
+ * the game with the seed: drawn by the seed, weighted by the personality. A
+ * polity without a kit is always `balanced`.
+ */
+export function ambitionOf(seed: number, polity: number, nation: string): Ambition {
+  const kit = kitOfNation(nation);
+  if (kit === null) return 'balanced';
+  const weights = AMBITION_WEIGHTS[kit.personality];
+  let total = 0;
+  for (const ambition of AMBITIONS) total += weights[ambition];
+  let roll = seededDraw(seed, polity) * total;
+  for (const ambition of AMBITIONS) {
+    roll -= weights[ambition];
+    if (roll < 0) return ambition;
+  }
+  return 'balanced';
+}
+
+const styleCache = new Map<string, Personality>();
+
+/** The style the AI plays `nation` with in a game: its leader's personality, bent by the ambition. */
+export function styleFor(nation: string, ambition: Ambition): Personality {
+  const key = `${nation}:${ambition}`;
+  let style = styleCache.get(key);
+  if (style === undefined) {
+    const person = personalityOf(nation);
+    const bent = AMBITION_STYLES[ambition];
+    const sum = <K extends string>(a: Partial<Record<K, number>>, b: Partial<Record<K, number>>): Partial<Record<K, number>> => {
+      const out: Partial<Record<K, number>> = { ...a };
+      for (const key of Object.keys(b) as K[]) out[key] = (out[key] ?? 0) + (b[key] ?? 0);
+      return out;
+    };
+    style = {
+      ...person,
+      warRatio: person.warRatio * bent.warRatio,
+      armyShare: person.armyShare * bent.armyShare,
+      buildFirst: [...new Set([...bent.buildFirst, ...person.buildFirst])],
+      research: sum(person.research, bent.research),
+      policy: sum(person.policy, bent.policy),
+    };
+    styleCache.set(key, style);
+  }
+  return style;
 }
 
 /** The nation whose routes alone may use the off-map port (`MapOffMapPort.nameEn`), or null. */

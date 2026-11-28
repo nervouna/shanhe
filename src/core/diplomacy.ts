@@ -32,6 +32,7 @@ import {
   hasAgreement,
   isCityState,
   isNation,
+  vassalsFull,
   vassalsOf,
 } from './relations.ts';
 import { hasResource, isStrategic, knows, ownsResource, specialtiesOf } from './tech.ts';
@@ -102,6 +103,7 @@ export function checkAgreement(ctx: Ctx, polity: number, target: number, kind: A
   }
   if (kind === 'vassalage' && (self.overlord !== NO_POLITY || other.overlord !== NO_POLITY)) return 'vassal';
   if (kind === 'vassalage' && modsOf(ctx, target, 'noVassal').length > 0) return 'refused';
+  if (kind === 'vassalage' && vassalsFull(ctx, polity)) return 'refused';
   return null;
 }
 
@@ -278,6 +280,25 @@ export function endWar(ctx: Ctx, a: number, b: number): void {
 }
 
 // --------------------------------------------------------------- vassalage
+
+/**
+ * True if the AI-run nation `weak` pays for peace with `strong` by becoming
+ * its vassal: it has lost a city since their war began, the other is
+ * `AI.submitRatio` times as strong, and nothing stands in the way of the
+ * vassalage. The player never submits this way: a human decides for
+ * themselves.
+ */
+export function submits(ctx: Ctx, weak: number, strong: number): boolean {
+  const { state } = ctx;
+  if (weak === state.player || !isNation(ctx, weak) || !isNation(ctx, strong)) return false;
+  const relation = relationOf(ctx, weak, strong);
+  if (relation === undefined || !relation.atWar) return false;
+  const loser = polityOf(ctx, weak);
+  if (loser.overlord !== NO_POLITY || polityOf(ctx, strong).overlord !== NO_POLITY) return false;
+  if (modsOf(ctx, weak, 'noVassal').length > 0 || vassalsFull(ctx, strong)) return false;
+  if (loser.cityLostOn < relation.since) return false;
+  return militaryStrength(ctx, strong) >= militaryStrength(ctx, weak) * AI.submitRatio;
+}
 
 /**
  * `vassal` becomes the vassal of `overlord`. It lets its own vassals and

@@ -12,12 +12,13 @@ Accepted for now; revisit after playtesting.
 
 2. **Southeast Asian naval overlap.** Six of the thirteen Southeast Asian unique units are ships and may play alike.
 3. **Late-era unique units.** Four unique units fall in the Industrial era and none in the Modern era, so staggered power peaks hold only for the first four eras.
-4. **Fog of war.** The rules know how far a unit sees, but hide nothing yet, so the two vision bonuses of the kits (三佛齐's trait, 率宾's leader) have nothing to act on.
+4. **Two nations win most AI games.** In 60 AI-only games on the real map 蜀 and 暹罗 win about three in four between them: 蜀 has the richest land of the four-city nations and 暹罗 the safest corner of the map, and each is the best at whatever its leader sets out for. Kit numbers move the lead from one to the other, not away from both.
+5. **Air power comes late.** Airfields need the Modern era, which starts on turn 126, and a conquering nation with many cities seldom gets there. Air strikes happen in few games.
 
 ## Numbers
 
-5. All yields, costs, strengths and percentages in the docs are directions, not balanced values. The kits of [02-nations.md](02-nations.md) have their numbers, sized against a policy card but not balanced against each other; with them the first nation reaches each era earlier than [03-gameplay.md](03-gameplay.md) aims at.
-6. Exact hex counts per nation and the city zones of each province come out of the map data pipeline.
+6. All yields, costs, strengths and percentages in the docs are directions, not balanced values. The kits of [02-nations.md](02-nations.md) have their numbers, sized against a policy card but not balanced against each other.
+7. Exact hex counts per nation and the city zones of each province come out of the map data pipeline.
 
 ## Technology
 

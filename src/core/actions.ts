@@ -76,10 +76,13 @@ import {
   offerPending,
   signAgreement,
   signDeal,
+  submits,
 } from './diplomacy.ts';
-import { inHomeWaters, nationOf, percentOf, unitMatches, unitMods } from './modifiers.ts';
+import { canSee, knowsCity, lookAround } from './fog.ts';
+import { KIT, ambitionOf } from './kits.ts';
+import { inHomeWaters, nationOf, percentOf, unitMatches, unitMods, visionRange } from './modifiers.ts';
 import { checkSlot, checkUnlock, openPolicies, slotPolicy, unlockPolicy } from './policies.ts';
-import { addFavour, findAgreement, hasAgreement, isCityState } from './relations.ts';
+import { addFavour, findAgreement, hasAgreement, isCityState, vassalsOf } from './relations.ts';
 import { checkResearch, openTechs, ownsResource, upgradeTargetFor } from './tech.ts';
 import {
   checkPillage,
@@ -91,6 +94,7 @@ import {
   routeSlots,
   routesOf,
 } from './trade.ts';
+import { capitalsHeld } from './turn.ts';
 import { NO_POLITY } from './types.ts';
 import type { Action, BuildItem, City, RejectReason, Unit } from './types.ts';
 
@@ -212,6 +216,8 @@ function checkAirStrike(ctx: Ctx, city: City, target: unknown): RejectReason | n
         ? defender.owner
         : city.owner;
   if (victim === city.owner) return 'noTarget';
+  // Fog of war: a city it does not know of and a unit it cannot see are no targets.
+  if (!(enemyCity !== null ? knowsCity(ctx, city.owner, enemyCity) : canSee(ctx, city.owner, target))) return 'noTarget';
   return atWar(ctx, city.owner, victim) ? null : 'atPeace';
 }
 
@@ -240,8 +246,20 @@ export function acceptsPeace(ctx: Ctx, polity: number, proposer: number): boolea
   // Only a major nation fights on; everybody else is glad of peace.
   if (!ctx.state.majors.includes(polity)) return true;
   const self = polityOf(ctx, polity);
-  if (self.warWeariness >= AI.peaceWeariness) return true;
-  if (ctx.state.turn - relation.since >= AI.stalemateTurns) return true;
+  // A peace that makes the other its vassal is a victory: it takes it while it has room for vassals,
+  // and a leader out for conquest always takes a holder of a major nation's capital.
+  if (submits(ctx, proposer, polity)) {
+    const conquering = ambitionOf(ctx.state.seed, polity, nationOf(ctx, polity)) === 'conquest';
+    if (conquering && capitalsHeld(ctx, proposer) > 0) return true;
+    // A leader out for conquest keeps its last place for a holder of a capital.
+    const room = (DIPLOMACY.vassalsByEra[self.era] ?? 0) - vassalsOf(ctx, polity).length;
+    if (vassalsOf(ctx, polity).length < AI.maxVassals && room > (conquering ? 1 : 0)) return true;
+  }
+  // A leader out for conquest holds out longer, and a war in which the enemy keeps losing cities is no stalemate.
+  const conquering = ambitionOf(ctx.state.seed, polity, nationOf(ctx, polity)) === 'conquest';
+  if (self.warWeariness >= (conquering ? AI.conquestPeaceWeariness : AI.peaceWeariness)) return true;
+  const progress = Math.max(relation.since, polityOf(ctx, proposer).cityLostOn);
+  if (ctx.state.turn - progress >= AI.stalemateTurns) return true;
   return militaryStrength(ctx, polity) < militaryStrength(ctx, proposer) * AI.warStrengthRatio;
 }
 
@@ -260,7 +278,12 @@ function checkAttack(ctx: Ctx, unit: Unit, target: unknown): RejectReason | null
   const victim = enemyCity !== null ? enemyCity.owner : defender !== undefined ? defender.owner : unit.owner;
   if (victim === unit.owner) return 'noTarget';
   if (!atWar(ctx, unit.owner, victim)) return 'atPeace';
-  if (def.range > 0) return hexesApart(ctx, unit.hex, target) <= def.range ? null : 'outOfRange';
+  if (def.range > 0) {
+    if (hexesApart(ctx, unit.hex, target) > def.range) return 'outOfRange';
+    // Fog of war: a shot needs a city its owner knows of or a unit it can see.
+    const known = enemyCity !== null ? knowsCity(ctx, unit.owner, enemyCity) : canSee(ctx, unit.owner, target);
+    return known ? null : 'noTarget';
+  }
   if (!isAdjacent(ctx, unit.hex, target)) return 'notAdjacent';
   // Melee land units fight on land; ships reach anything next to them.
   if (def.domain === 'land' && ctx.topo.water[target] === 1) return 'cannotAttack';
@@ -449,6 +472,15 @@ export function isSettleSite(ctx: Ctx, hex: number): boolean {
 
 /** Carries out an action that {@link validate} has passed. Appends to `ctx.events`. */
 export function execute(ctx: Ctx, action: Action): void {
+  perform(ctx, action);
+  // Fog of war: a unit that has acted looks around from where it now stands.
+  if ('unit' in action && typeof action.unit === 'number') {
+    const unit = ctx.unitById.get(action.unit);
+    if (unit !== undefined) lookAround(ctx, unit.owner, unit.hex, visionRange(ctx, unit));
+  }
+}
+
+function perform(ctx: Ctx, action: Action): void {
   const { state } = ctx;
   switch (action.type) {
     case 'move': {
@@ -486,6 +518,7 @@ export function execute(ctx: Ctx, action: Action): void {
       const zone = ctx.topo.siteZone[unit.hex] as number;
       removeUnit(ctx, unit);
       foundCity(ctx, zone, action.polity);
+      lookAround(ctx, action.polity, at(ctx.map.zones, zone).siteHex, KIT.cityVision);
       return;
     }
     case 'setFocus': {
@@ -529,7 +562,11 @@ export function execute(ctx: Ctx, action: Action): void {
         ctx.events.push({ type: 'peaceOffered', from: action.polity, to: action.target });
         return;
       }
-      endWar(ctx, action.polity, action.target);
+      // Whoever asked for the peace may have to pay for it with its freedom.
+      const asker = theirOffer > 0 ? action.target : action.polity;
+      const other = asker === action.polity ? action.target : action.polity;
+      if (submits(ctx, asker, other)) makeVassal(ctx, asker, other, true);
+      else endWar(ctx, action.polity, action.target);
       return;
     }
     case 'unlockPolicy':
@@ -540,7 +577,7 @@ export function execute(ctx: Ctx, action: Action): void {
       return;
     case 'propose': {
       if (action.agreement === 'truce') {
-        execute(ctx, { type: 'makePeace', polity: action.polity, target: action.target });
+        perform(ctx, { type: 'makePeace', polity: action.polity, target: action.target });
       } else if (action.target === state.player) {
         makeOffer(ctx, {
           id: state.nextId++,

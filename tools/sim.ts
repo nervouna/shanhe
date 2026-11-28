@@ -3,6 +3,7 @@
  *
  *     npm run sim -- --map <fixture|synthetic|path to map.json> --turns 150 --seed N
  *     npm run sim -- --map <...> --turns 150 --seeds 1-10
+ *     npm run sim -- --map <...> --turns 150 --seeds 1-10 --report
  *
  * `fixture` is the small test map, `synthetic` a generated 160 x 110 map with
  * 64 polities, and a path loads a map written by the pipeline (the `.bin`
@@ -13,7 +14,12 @@
  * (alliances formed, vassals made, trade routes at the end, policies unlocked
  * by the winner), and how much of the fighting crossed the sea (sea
  * invasions: cities taken on a landmass where the captor held none; naval
- * battles: fights with a ship on either side).
+ * battles: fights with a ship on either side), the winner table and the
+ * earliest end of a game.
+ *
+ * `--report` adds the balance report of `report.ts`: per major nation and per
+ * era its cities, population, yields, techs, army and wars, and what it spent
+ * production and gold on, as the mean over the games played.
  */
 
 import { readFileSync } from 'node:fs';
@@ -26,9 +32,11 @@ import { createFixtureMap } from '../src/shared/fixtureMap.ts';
 import { parseMapData } from '../src/shared/mapData.ts';
 import type { MapData } from '../src/shared/mapData.ts';
 import { createSyntheticMap } from '../src/shared/syntheticMap.ts';
+import { createCollector, formatReport } from './report.ts';
+import type { GameReport } from './report.ts';
 
 const USAGE =
-  'usage: npm run sim -- --map <fixture|synthetic|path to map.json> --turns 150 (--seed N | --seeds A-B | --seeds A,B,C)';
+  'usage: npm run sim -- --map <fixture|synthetic|path to map.json> --turns 150 (--seed N | --seeds A-B | --seeds A,B,C) [--report]';
 const ERA_NAMES = ['Ancient', 'Classical', 'Medieval', 'Early Modern', 'Industrial', 'Modern'];
 const VICTORIES: readonly GameResult['kind'][] = ['conquest', 'science', 'economic'];
 /** The window the design aims at for the first major nation's entry into the Modern era. */
@@ -71,6 +79,7 @@ function loadMap(source: string): MapData {
 const source = option('map') ?? 'fixture';
 const turns = Number(option('turns') ?? '150');
 const seeds = parseSeeds();
+const withReport = process.argv.includes('--report');
 if (!Number.isInteger(turns) || turns < 1 || seeds.length === 0 || seeds.some((seed) => !Number.isInteger(seed))) fail();
 
 const map = loadMap(source);
@@ -97,6 +106,13 @@ interface Outcome {
   seaInvasions: number;
   /** Fights with a ship on either side. */
   navalBattles: number;
+  /** The winner's English name alone, for the winner table. */
+  winnerName: string;
+  /** The turn the game ended. */
+  turn: number;
+  /** Seconds the game took. */
+  seconds: number;
+  report: GameReport | null;
 }
 
 function playGame(seed: number, announce: boolean): Outcome {
@@ -111,6 +127,7 @@ function playGame(seed: number, announce: boolean): Outcome {
   let played = 0;
   let worst = 0;
   const started = performance.now();
+  const collector = withReport ? createCollector(state) : null;
   while (state.result === null) {
     const turn = state.turn;
     const before = performance.now();
@@ -121,6 +138,7 @@ function playGame(seed: number, announce: boolean): Outcome {
         eraTurns[event.era] = turn;
       }
     }
+    collector?.observe(state, step.state, step.events);
     state = step.state;
     played++;
   }
@@ -157,6 +175,10 @@ function playGame(seed: number, announce: boolean): Outcome {
     winner: winner === undefined ? '?' : `${winner.nameEn} ${winner.nameZh}`,
     seaInvasions: state.stats.seaInvasions,
     navalBattles: state.stats.navalBattles,
+    winnerName: winner?.nameEn ?? '?',
+    turn: result.turn,
+    seconds: total / 1000,
+    report: collector?.finish(state) ?? null,
   };
 }
 
@@ -167,6 +189,20 @@ console.log(
     VICTORIES.map((kind) => `${kind} ${outcomes.filter((outcome) => outcome.kind === kind).length}`).join(', '),
 );
 console.log(`winners: ${outcomes.map((outcome) => `seed ${outcome.seed} ${outcome.winner} (${outcome.kind})`).join('; ')}`);
+// The winner table: one line per winner, most wins first.
+const winnerNames = [...new Set(outcomes.map((outcome) => outcome.winner))];
+const wins = (name: string, kind?: GameResult['kind']): number =>
+  outcomes.filter((outcome) => outcome.winner === name && (kind === undefined || outcome.kind === kind)).length;
+winnerNames.sort((a, b) => wins(b) - wins(a) || a.localeCompare(b));
+console.log(`winner table: ${winnerNames.length} different winner(s) in ${outcomes.length} game(s)`);
+for (const name of winnerNames) {
+  console.log(`  ${name}: ${wins(name)} (${VICTORIES.map((kind) => `${kind} ${wins(name, kind)}`).join(', ')})`);
+}
+const ends = outcomes.map((outcome) => outcome.turn);
+console.log(
+  `games end on turns ${Math.min(...ends)} to ${Math.max(...ends)}; ` +
+    `all games together took ${outcomes.reduce((sum, outcome) => sum + outcome.seconds, 0).toFixed(1)} s`,
+);
 const spans: string[] = [];
 for (let era = 1; era < ERAS.length; era++) {
   const reached = outcomes.map((outcome) => outcome.eraTurns[era] ?? 0).filter((turn) => turn > 0).sort((a, b) => a - b);
@@ -197,3 +233,9 @@ console.log(
 );
 const lively = outcomes.filter((outcome) => outcome.alliances > 0 && outcome.vassals > 0 && outcome.routes > 0).length;
 console.log(`games with alliances, vassals and trade routes all above zero: ${lively} of ${outcomes.length}`);
+
+if (withReport) {
+  const reports = outcomes.flatMap((outcome) => (outcome.report === null ? [] : [outcome.report]));
+  console.log('');
+  for (const text of formatReport(reports, (polity) => map.polities[polity]?.nameEn ?? String(polity))) console.log(text);
+}
