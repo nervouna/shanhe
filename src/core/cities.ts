@@ -308,6 +308,8 @@ export function productionTowards(ctx: Ctx, city: City, item: BuildItem): number
 /** Percentage modifiers add to the city's production while it builds `item`. */
 export function productionPercent(ctx: Ctx, city: City, item: BuildItem): number {
   let percent = 0;
+  // A city project is no building: what speeds up buildings does not speed it up.
+  if (cityProjectOf(item) !== null) return 0;
   for (const modifier of cityMods(ctx, city, 'production')) {
     if (modifier.item !== item.kind) continue;
     if (item.kind === 'unit') {
@@ -323,6 +325,36 @@ export function productionPercent(ctx: Ctx, city: City, item: BuildItem): number
 }
 
 // ----------------------------------------------------------- build items
+
+/** What the item's city project turns production into, or null if the item is no city project. */
+export function cityProjectOf(item: BuildItem): NonNullable<BuildingDef['converts']> | null {
+  return item.kind === 'building' ? (buildingDef(item.building)?.converts ?? null) : null;
+}
+
+/**
+ * One turn of a city project: the production the city has stored becomes
+ * gold, science or culture for its owner at the project's rate, in whole
+ * points; the rest stays stored. Minted gold is income like any other: it counts for the Economic
+ * victory. Science goes to the current research and culture towards the
+ * next policy card.
+ */
+function convertProduction(ctx: Ctx, city: City, converts: NonNullable<BuildingDef['converts']>): void {
+  const amount = Math.floor((city.progress * converts.percent) / 100);
+  if (amount <= 0) return;
+  // What does not make a whole point yet stays stored for the next turn.
+  city.progress -= (amount * 100) / converts.percent;
+  const owner = polityOf(ctx, city.owner);
+  if (converts.to === 'gold') {
+    owner.gold += amount;
+    owner.grossIncome += amount;
+  } else if (converts.to === 'science') {
+    owner.science += amount;
+    owner.researchProgress += amount;
+  } else {
+    owner.culture += amount;
+    if (at(ctx.map.polities, city.owner).kind === 'nation') owner.cultureProgress += amount;
+  }
+}
 
 /** Production cost of an item for this city. */
 export function itemCost(ctx: Ctx, city: City, item: BuildItem): number {
@@ -519,6 +551,7 @@ export function foundCity(ctx: Ctx, zone: number, owner: number): City {
     buildings: [],
     queue: [],
     progress: 0,
+    repeat: false,
     unrest: 0,
     morale: 100,
     struck: false,
@@ -598,6 +631,8 @@ export function deliverItem(ctx: Ctx, city: City, item: BuildItem): boolean {
       return true;
     }
     case 'building':
+      // A city project is never built.
+      if (cityProjectOf(item) !== null) return false;
       city.buildings.push(item.building);
       return true;
     case 'improvement':
@@ -656,10 +691,17 @@ export function processCity(ctx: Ctx, city: City): void {
   if (item !== undefined) {
     city.progress += productionTowards(ctx, city, item);
     const cost = itemCost(ctx, city, item);
-    if (city.progress >= cost && deliverItem(ctx, city, item)) {
+    const converts = cityProjectOf(item);
+    if (converts !== null) {
+      // A city project goes on turn after turn until something else waits behind it.
+      convertProduction(ctx, city, converts);
+      if (city.queue.length > 1) city.queue.shift();
+    } else if (city.progress >= cost && deliverItem(ctx, city, item)) {
       city.progress -= cost;
       city.queue.shift();
       ctx.events.push({ type: 'cityBuilt', city: city.zone, item });
+      // "Repeat last item": the same again, if the queue is empty and the city may still build it.
+      if (city.repeat && city.queue.length === 0 && checkItem(ctx, city, item) === null) city.queue.push(item);
     }
   }
 

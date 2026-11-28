@@ -24,8 +24,7 @@ import {
   GAME_TURNS,
   HEXES_PER_TRIBE,
   MAJOR_COUNT,
-  ROSTER,
-  unitFor,
+  startingGarrison,
   TRIBE,
   noYields,
   policyCost,
@@ -60,7 +59,7 @@ export type * from './types.ts';
 export { NO_POLITY } from './types.ts';
 
 /** Version of the state format. `loadGame` rejects any other. */
-export const STATE_VERSION = 5;
+export const STATE_VERSION = 6;
 
 function polityIndex(map: MapData, id: string): number {
   const index = map.polities.findIndex((polity) => polity.id === id);
@@ -107,6 +106,7 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
     slots: polity.kind === 'nation' ? Array.from({ length: policySlotsFor(polity.id, 0) }, () => null) : [],
     freeSwaps: 0,
     swapReadyOn: 0,
+    slotFreedOn: polity.kind === 'nation' ? Array.from({ length: policySlotsFor(polity.id, 0) }, () => 0) : [],
     overlord: NO_POLITY,
     cityStateType:
       polity.kind === 'cityState'
@@ -183,7 +183,7 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
     if (polity.kind === 'wastelandRegion' || polity.capitalZone === NO_ZONE) return;
     const city = foundCity(ctx, polity.capitalZone, index);
     if (polity.kind === 'cityState') city.buildings.push('walls');
-    const garrison = addUnit(ctx, unitFor(polity.id, at(ROSTER.infantry, 0)), index, at(map.zones, polity.capitalZone).siteHex);
+    const garrison = addUnit(ctx, startingGarrison(polity.id), index, at(map.zones, polity.capitalZone).siteHex);
     garrison.status = 'fortified';
     assignCitizens(ctx, city);
   });

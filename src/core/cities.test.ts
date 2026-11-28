@@ -3,7 +3,7 @@ import { createFixtureMap } from '../shared/fixtureMap.ts';
 import { Terrain } from '../shared/mapData.ts';
 import { itemCost } from './cities.ts';
 import { createCtx } from './context.ts';
-import { BUILDINGS, CITY, FREE_UNITS_PER_CITY, GENERIC_BUILDING_IDS, GENERIC_IMPROVEMENT_IDS, UNITS, supplyLimitFor, supplySurcharge } from './data.ts';
+import { BUILDINGS, CITY, FREE_UNITS_PER_CITY, GENERIC_BUILDING_IDS, GENERIC_IMPROVEMENT_IDS, isCityProject, UNITS, supplyLimitFor, supplySurcharge } from './data.ts';
 import { NO_POLITY, applyAction, createGame, endTurn, hexOwner } from './game.ts';
 import type { BuildItem, GameEvent, GameState, MutableGameState } from './game.ts';
 import { apply, around, edit, isPlainGround, learn, oneUnitPerHex, put } from './testUtil.ts';
@@ -150,7 +150,7 @@ describe('build queue', () => {
     ).state;
     expect(withGranary.cities[0]!.yields.food).toBe(plain.cities[0]!.yields.food + 2);
     expect(withGranary.polities[JIA]!.upkeep).toBe(plain.polities[JIA]!.upkeep + BUILDINGS.granary.upkeep);
-    expect(GENERIC_BUILDING_IDS).toHaveLength(16);
+    expect(GENERIC_BUILDING_IDS.filter((id) => !isCityProject(id))).toHaveLength(16);
   });
 
   it('places an improvement on a chosen hex of the city\'s zone', () => {

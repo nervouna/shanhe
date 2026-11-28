@@ -10,10 +10,10 @@ Rules:
 - Every tech after the Ancient era has 1–2 prerequisites, all from earlier eras (see [Prerequisites](#prerequisites)). Ancient techs have none. Within an era the order is free.
 - A tech can be researched once its era has been entered. Entering the next era requires at least 4 techs of the current era; a nation's era is the highest it has entered, and each nation has its own.
 - **Catch-up**: a tech already known by any other living nation or city-state costs 20% less. If one of those who know it is a nation the researcher fears (the balance of power in [03-gameplay.md](03-gameplay.md)), it costs 1% less again for each point of that fear, up to 50%: what a leader knows does not stay its own.
-- Cost per tech by era: 9, 37, 110, 270, 640, 1150 science, before the percentages below, which add up.
+- Cost per tech by era: 18, 46, 132, 280, 600, 1400 science, before the percentages below, which add up. Above the middle difficulty level an AI major pays 25% (Hard) or 60% (Severe) more ("Difficulty" in [03-gameplay.md](03-gameplay.md)).
 - **The calendar.** The game's calendar gives every era 25 turns (Ancient on turns 1–25, Modern from turn 126). A tech of an era the calendar has not reached yet is ahead of its time and costs 100% more for each era it is ahead. A tech of an era the calendar has left behind is common knowledge and costs 30% less for each era, up to two eras. This is what keeps the leader near the pace of 25 turns an era and lets the others catch up.
 - **The size of the realm.** Every city beyond a nation's first adds 15% to the cost of its techs, up to ten cities beyond the first. A large realm learns slowly; a nation of one city pays the plain cost.
-- With these the first major nation enters the Modern era on turns 112–128 in most games, and no nation knows all 40 techs when the game ends.
+- With these the first major nation leaves the Ancient era on turn 20 or 21 and enters the Modern era on turns 110–128, and no nation knows all 40 techs when the game ends. The pace hangs on these costs more than on anything else: with every city beyond the first adding 20% instead of 15% and nothing else changed, no game in 30 ended by science where 13 had.
 - **Simplified-AI nations and city-states do not research.** They know a tech once half of the researching nations (the living major nations and the player) know it, and their era follows from what they know.
 - A unit, building or improvement is available only with its tech. The settler needs no tech: it needs the Classical era.
 
@@ -26,15 +26,15 @@ Rules:
 | 采矿 Mining | Mine |
 | 弓矢 Archery | Archer |
 | 筑城 Fortification | Walls, battering ram |
-| 祭祀 Ritual | Temple |
+| 祭祀 Ritual | Temple, city project 庆典 Festival |
 | 舟楫 Boats | Fishery, galley, land units can embark on coastal water |
 
 ### Classical (古典)
 
 | Tech | Unlocks |
 |---|---|
-| 文字 Writing | Academy |
-| 货币 Currency | Market, +1 trade route, off-map land ports |
+| 文字 Writing | Academy, city project 修书 Compilation |
+| 货币 Currency | Market, city project 铸钱 Minting, +1 trade route, off-map land ports |
 | 冶铁 Ironworking | Reveals iron, swordsman |
 | 骑术 Riding | Horseman |
 | 水利 Irrigation | Irrigation canal, canal (available to every nation) |
@@ -63,7 +63,7 @@ Rules:
 | 远洋航海 Ocean Navigation | Ship of the line, off-map sea exits |
 | 银行 Banking | Bank, +1 trade route |
 | 天文历算 Astronomy | Observatory |
-| 新作物 New Crops | Extra food from farms on hills |
+| 新作物 New Crops | Farms may be built on hills |
 
 ### Industrial (工业)
 
@@ -149,7 +149,7 @@ Ancient techs have no prerequisite.
 | Industrial | Rifleman 步 | Machine gun 机 | Mounted rifleman 骠 | Howitzer 榴 | Ironclad 铁 |
 | Modern | Mechanised infantry 装 | Rocket artillery 箭 | Tank 坦 | Missile launcher 弹 | Destroyer 驱 |
 
-The settler is not a combat unit: it can be built from the Classical era and founds a city on a wasteland city site.
+The settler is not a combat unit: it can be built from the Classical era and founds a city on a wasteland city site. It costs 50 production, half as much again for every settler its nation has built before, and moves 4.
 
 Strategic resources gate units as follows: horses for cavalry up to the Industrial era, iron for swordsmen and heavy infantry, coal for ironclads, oil for tanks, mechanised infantry and destroyers, rare earths for missile launchers.
 
@@ -180,6 +180,16 @@ Each building needs the tech named in the tech tree. Cost is in production, upke
 | Airfield | Aviation | 240 | 3 | One air strike per turn |
 | Research institute | Electronics | 270 | 3 | +6 science, +25% science |
 
+### City projects
+
+Three items are listed with the buildings but are none: a city never has them, and they are never finished (see "Cities" in [03-gameplay.md](03-gameplay.md)).
+
+| City project | Tech | Cost | Upkeep | Effect |
+|---|---|---|---|---|
+| 庆典 Festival | Ritual | — | 0 | The city's production becomes culture, 1 for every 4 |
+| 铸钱 Minting | Currency | — | 0 | The city's production becomes gold, 1 for every 2 |
+| 修书 Compilation | Writing | — | 0 | The city's production becomes science, 1 for every 4 |
+
 **Air strike.** Once per turn a city with an airfield strikes an enemy unit or city within 6 hexes, with the strength of a modern ranged unit (76). Nothing strikes back. A city is worn down to 0 HP but still has to be entered by a melee unit.
 
 ## Policies
@@ -195,9 +205,9 @@ Rules:
 
 In detail:
 
-- **Unlocking.** A nation's culture of each turn is added to a store. The card after `n` unlocked ones costs `6 + 0.85 × n²` culture, rounded (6, 7, 9, 14, 20, 27, …, 456 for the last). The nation chooses which card to unlock among those of the eras it has entered. With this the leading major nation holds 20–23 cards when the game ends, about one every 6 turns; a nation that neglects culture gets about half as many.
+- **Unlocking.** A nation's culture of each turn is added to a store. The card after `n` unlocked ones costs `6 + 0.85 × n²` culture, rounded (6, 7, 9, 14, 20, 27, …, 456 for the last). The nation chooses which card to unlock among those of the eras it has entered. With this the winner of an AI game holds 16–24 cards when the game ends, all 24 in about a third of the games (festivals in idle cities add to that); a nation that neglects culture gets about half as many.
 - **Slots by era**: 2, 3, 4, 5, 6, 6. Only slotted cards have an effect.
-- **Swaps.** Putting a card into an empty slot, or emptying a slot, is always allowed. Replacing a card is a swap: it uses a free swap if the nation has one (each card unlocked grants one, and they add up), and otherwise it is allowed only when no cooldown runs and starts a cooldown of 5 turns.
+- **Swaps.** Emptying a slot is always allowed, and so is putting a card into a slot that has never held one or has stood empty for 5 turns. Replacing a card is a swap: it uses a free swap if the nation has one (each card unlocked grants one, and they add up), and otherwise it is allowed only when no cooldown runs and starts a cooldown of 5 turns. Taking a card out and putting another into the same slot within 5 turns is the same swap in two steps: the second step counts as the swap, so the cooldown cannot be walked round.
 - City-states have no policy cards.
 
 What the wording of some cards means:

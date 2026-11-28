@@ -79,7 +79,7 @@ export interface TechDef {
 }
 
 /** Science cost of a tech of each era. */
-export const TECH_ERA_COST: readonly number[] = [9, 37, 110, 270, 640, 1150];
+export const TECH_ERA_COST: readonly number[] = [18, 46, 132, 280, 600, 1400];
 
 export const RESEARCH = {
   /** A tech known by any other living polity costs this much less. */
@@ -365,9 +365,16 @@ export interface BuildingDef {
   readonly capitalOnly: boolean;
   /** What it does beyond the fields above, for its city. */
   readonly modifiers: readonly Modifier[];
+  /**
+   * For a city project: what the city's production turns into while it is
+   * the city's current item, and at what rate. Null for a real building. A
+   * city project is never finished and never stands in the city.
+   */
+  readonly converts: { readonly to: 'gold' | 'science' | 'culture'; readonly percent: number } | null;
 }
 
 const BUILDING_BASE = {
+  converts: null,
   yields: {},
   percent: {},
   coastal: false,
@@ -422,7 +429,27 @@ const GENERIC_BUILDINGS = {
     yields: { science: 6 }, percent: { science: 25 },
   },
 } as const satisfies Record<string, BuildingDef>;
-export type GenericBuildingId = keyof typeof GENERIC_BUILDINGS;
+
+/**
+ * The city projects: what a city with nothing left to build does with its
+ * production. They are queued like buildings, cost nothing, are never
+ * finished and can be queued again and again: every turn in which one is the
+ * city's current item the city's production of the turn becomes gold, science
+ * or culture for its owner at the project's rate.
+ */
+const CITY_PROJECTS = {
+  /** 庆典: culture. */
+  festival: { ...BUILDING_BASE, tech: 'ritual', cost: 0, upkeep: 0, era: 0, converts: { to: 'culture', percent: 25 } },
+  /** 铸钱: gold. */
+  minting: { ...BUILDING_BASE, tech: 'currency', cost: 0, upkeep: 0, era: 1, converts: { to: 'gold', percent: 50 } },
+  /** 修书: science. */
+  compilation: { ...BUILDING_BASE, tech: 'writing', cost: 0, upkeep: 0, era: 1, converts: { to: 'science', percent: 25 } },
+} as const satisfies Record<string, BuildingDef>;
+export type CityProjectId = keyof typeof CITY_PROJECTS;
+/** The three city projects, in the order of doc 04. */
+export const CITY_PROJECT_IDS = Object.keys(CITY_PROJECTS) as CityProjectId[];
+
+export type GenericBuildingId = keyof typeof GENERIC_BUILDINGS | CityProjectId;
 export type BuildingId = GenericBuildingId | keyof typeof UNIQUE_BUILDINGS;
 
 /**
@@ -456,13 +483,19 @@ function uniqueBuilding(spec: UniqueBuildingSpec): BuildingDef {
 /** Every building by id: the generic ones, then the unique ones of the nations (`uniques.ts`). */
 export const BUILDINGS: Readonly<Record<BuildingId, BuildingDef>> = {
   ...GENERIC_BUILDINGS,
+  ...CITY_PROJECTS,
   ...(Object.fromEntries(
     Object.entries(UNIQUE_BUILDINGS as Record<string, UniqueBuildingSpec>).map(([id, spec]) => [id, uniqueBuilding(spec)]),
   ) as Record<keyof typeof UNIQUE_BUILDINGS, BuildingDef>),
 };
 export const BUILDING_IDS = Object.keys(BUILDINGS) as BuildingId[];
-/** The buildings every nation can build. */
-export const GENERIC_BUILDING_IDS = Object.keys(GENERIC_BUILDINGS) as GenericBuildingId[];
+/** What every nation can build in a city: the generic buildings, then the city projects. */
+export const GENERIC_BUILDING_IDS = [...Object.keys(GENERIC_BUILDINGS), ...CITY_PROJECT_IDS] as GenericBuildingId[];
+
+/** True for a city project: an entry of {@link BUILDINGS} that turns production into another yield and is never built. */
+export function isCityProject(id: string): id is CityProjectId {
+  return Object.hasOwn(CITY_PROJECTS, id);
+}
 
 /** The generic kind a building is or replaces: what cards, traits and slots that name a kind go by. */
 export function baseBuilding(id: BuildingId): BuildingId {
@@ -687,8 +720,8 @@ function buildUnits(): Record<string, UnitDef> {
     strength: 0,
     rangedStrength: 0,
     range: 0,
-    moves: 2,
-    cost: 70,
+    moves: 4,
+    cost: 50,
     upkeep: UNIT_UPKEEP,
     domain: 'land',
     cityAttackPercent: 0,
@@ -756,6 +789,19 @@ export function buildingFor(nation: string, id: BuildingId): BuildingId {
 /** The improvement the nation builds where others build `id`: its unique improvement, or `id` itself. */
 export function improvementFor(nation: string, id: ImprovementId): ImprovementId {
   return IMPROVEMENT_REPLACEMENTS.get(`${nation}:${id}`) ?? id;
+}
+
+/**
+ * The unit a nation (`MapPolity.id`) starts the game with as the garrison of
+ * its capital: its unique unit if that is a land unit of the Ancient era,
+ * whatever its class, and the warrior otherwise.
+ */
+export function startingGarrison(nation: string): string {
+  for (const id of UNIQUE_UNIT_IDS) {
+    const def = UNITS[id] as UnitDef;
+    if (def.nation === nation && def.era === 0 && def.domain === 'land' && def.strength > 0) return id;
+  }
+  return ROSTER.infantry[0] as string;
 }
 
 /** The roster of a class as the nation builds it, eras in order: its unique unit stands where it replaces one. */
@@ -1052,7 +1098,7 @@ export const DIPLOMACY = {
   /** Share of its income (city gold and trade routes) a vassal pays its overlord, in percent. */
   vassalTributePercent: 20,
   /** Vassals a nation can hold, by its era: a wider realm needs the means of a later age. */
-  vassalsByEra: [1, 2, 2, 3, 5, 5],
+  vassalsByEra: [1, 2, 2, 3, 4, 5],
 } as const;
 
 /** Favour between two nations runs from `-max` to `max` and starts at 0. */
@@ -1263,21 +1309,47 @@ export const DEFAULT_DIFFICULTY: DifficultyLevel = 'standard';
 
 /** What a level gives one side: a percentage on every city yield, and on the strength of its units and cities. */
 export interface DifficultyBonus {
+  /** On the food, production, gold and culture of every city. */
   readonly yieldPercent: number;
+  /**
+   * On the science of every city; left out, science gets `yieldPercent` like
+   * the other yields. The player's bonus is on all five; the AI's sets 0: a
+   * harder AI is richer and stronger, but it does not learn faster, so that
+   * a higher level does not bring the Science victory forward.
+   */
+  readonly sciencePercent?: number;
   readonly strengthPercent: number;
+  /**
+   * On the cost of its techs; left out, nothing. A richer AI has more people, more buildings
+   * and more production to turn into science; what it learns costs it that
+   * much more, so that it keeps to the pace of the calendar.
+   */
+  readonly techCostPercent?: number;
+}
+
+/** The percentage a difficulty bonus puts on the science of a city: its own figure, or that of the other yields. */
+export function scienceBonus(bonus: DifficultyBonus): number {
+  return bonus.sciencePercent ?? bonus.yieldPercent;
+}
+
+/** The percentage a difficulty bonus puts on the cost of techs: nothing unless it says so. */
+export function techCostBonus(bonus: DifficultyBonus): number {
+  return bonus.techCostPercent ?? 0;
 }
 
 /**
  * What each level gives the player and what it gives the AI's major nations.
  * Below the middle level the player is helped, above it the AI majors are;
- * nobody else is ever touched.
+ * nobody else is ever touched. The AI's bonus leaves science out.
  */
+const NO_BONUS: DifficultyBonus = { yieldPercent: 0, strengthPercent: 0 };
+
 export const DIFFICULTY: Readonly<Record<DifficultyLevel, { readonly player: DifficultyBonus; readonly ai: DifficultyBonus }>> = {
-  relaxed: { player: { yieldPercent: 30, strengthPercent: 20 }, ai: { yieldPercent: 0, strengthPercent: 0 } },
-  easy: { player: { yieldPercent: 15, strengthPercent: 10 }, ai: { yieldPercent: 0, strengthPercent: 0 } },
-  standard: { player: { yieldPercent: 0, strengthPercent: 0 }, ai: { yieldPercent: 0, strengthPercent: 0 } },
-  hard: { player: { yieldPercent: 0, strengthPercent: 0 }, ai: { yieldPercent: 15, strengthPercent: 10 } },
-  severe: { player: { yieldPercent: 0, strengthPercent: 0 }, ai: { yieldPercent: 30, strengthPercent: 20 } },
+  relaxed: { player: { yieldPercent: 30, strengthPercent: 20 }, ai: NO_BONUS },
+  easy: { player: { yieldPercent: 15, strengthPercent: 10 }, ai: NO_BONUS },
+  standard: { player: NO_BONUS, ai: NO_BONUS },
+  hard: { player: NO_BONUS, ai: { yieldPercent: 15, sciencePercent: 0, strengthPercent: 10, techCostPercent: 25 } },
+  severe: { player: NO_BONUS, ai: { yieldPercent: 30, sciencePercent: 0, strengthPercent: 20, techCostPercent: 60 } },
 };
 
 export function isDifficultyLevel(value: unknown): value is DifficultyLevel {
@@ -1287,7 +1359,7 @@ export function isDifficultyLevel(value: unknown): value is DifficultyLevel {
 // ----------------------------------------------------------------- tribes
 
 /** One tribe per this many hexes of a wasteland zone, at least one per zone. */
-export const HEXES_PER_TRIBE = 60;
+export const HEXES_PER_TRIBE = 80;
 
 // --------------------------------------------------------------------- AI
 
@@ -1320,14 +1392,30 @@ export const AI = {
   peaceStrengthRatio: 0.6,
   /** Sues for peace at this war weariness. */
   peaceWeariness: 35,
-  /** Sues for peace after this many turns of war without progress. */
-  stalemateTurns: 30,
+  /** Gives up a war after this many turns in which the enemy has lost no city. */
+  stalemateTurns: 24,
+  /** A leader out for conquest gives it up later: a siege takes its time. */
+  conquestStalemateTurns: 36,
+  /** It declares a war only on a nation one of whose cities lies within this path cost of one of its own by land, ... */
+  warReachLand: 36,
+  /** ...or within this path cost with a crossing (a water hex counts 3), ... */
+  warReachSea: 60,
+  /** ...looking at this many of the target's cities nearest to its own. */
+  warReachCities: 3,
+  /** A war it can only carry over the sea needs this many warships to carry and escort the army, ... */
+  seaWarShips: 2,
+  /** ...and this many times the strength a war by land would need: units fight at half strength from the water. */
+  seaWarRatio: 2,
   /** A unit below this HP rests instead of attacking. */
   restHp: 40,
   /** Gold kept back when upgrading. */
   upgradeReserve: 20,
   /** A wasteland site this close to one of its cities is worth a settler. */
-  settleRange: 10,
+  settleRange: 24,
+  /** Settlers a nation has on the way or in the making at most. */
+  settlersAtOnce: 2,
+  /** At peace a city sends a settler once it has this many buildings. */
+  settleAfterBuildings: 1,
   /** Smallest city that builds a settler or founds a city. */
   expandPop: 2,
   /** A city gets this many of its first buildings before it adds to the peacetime army. */
@@ -1377,6 +1465,14 @@ export const AI = {
    * as strong as itself for peace submits: the peace makes it a vassal.
    */
   submitRatio: 1.5,
+  /** A leader out for conquest mints in its idle cities until its treasury holds this many turns of its income. */
+  mintTreasuryTurns: 4,
+  /** A major gives away what it holds beyond this many turns of its income (and its reserve): see `spendSurplus` in `ai.ts`. */
+  treasuryTurns: 1.5,
+  /** Its surplus goes to a neighbour for favour until favour with it has reached this, ... */
+  giftFavour: 60,
+  /** ...in at most this many rounds of gifts a look. */
+  giftRounds: 4,
   /** Gold kept back before gifts, and before buying when nothing threatens. */
   goldReserve: 80,
   /** A major also keeps this many turns of its upkeep before it buys what its cities are building. */

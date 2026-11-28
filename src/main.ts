@@ -31,7 +31,8 @@ declare global {
       /**
        * What the interface shows: screen, open panel and overlay, main button, minimap lens, interface size,
        * the kit on screen, nation select with its difficulty level, the settings, the sound engine, the aids
-       * for an order and the fog of war on the board.
+       * for an order, the fog of war on the board, the details card of a hex, the target a tap left pending
+       * and the city sites marked for a selected settler.
        */
       readonly ui: UiSnapshot;
       /** Starts a new game; without a nation, or with `observe`, in observer mode. */

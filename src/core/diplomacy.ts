@@ -321,6 +321,11 @@ export function makeVassal(ctx: Ctx, vassal: number, overlord: number, forced: b
     if (enemy === overlord || !atWar(ctx, overlord, enemy)) closeWar(ctx, vassal, enemy);
   }
   polityOf(ctx, vassal).overlord = overlord;
+  // A nation brought to heel by war lifts the victor's mood, at the gates of its capital or in a peace.
+  if (forced) {
+    const victor = polityOf(ctx, overlord);
+    victor.warWeariness = Math.max(0, victor.warWeariness - WAR.wearinessPerVassalMade);
+  }
   addAgreement(ctx, 'vassalage', overlord, vassal, 0);
   state.stats.vassalsMade++;
   ctx.events.push({ type: 'vassalized', vassal, overlord, forced });
@@ -654,6 +659,13 @@ export function processDiplomacy(ctx: Ctx): void {
   }
   for (const offer of [...state.offers]) {
     if (state.turn - offer.turn >= DIPLOMACY.offerTurns - 1) dropOffer(ctx, offer);
+  }
+  // A peace offer lapses like any other. The turn it lapsed is kept, negated, so that it is not made again at once.
+  for (const key of Object.keys(state.relations)) {
+    const relation = state.relations[key];
+    if (relation === undefined || !relation.atWar) continue;
+    if (relation.offerA > 0 && state.turn - relation.offerA >= DIPLOMACY.offerTurns - 1) relation.offerA = -state.turn;
+    if (relation.offerB > 0 && state.turn - relation.offerB >= DIPLOMACY.offerTurns - 1) relation.offerB = -state.turn;
   }
 
   for (const key of Object.keys(state.favour)) {

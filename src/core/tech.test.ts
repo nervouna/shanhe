@@ -7,6 +7,7 @@ import {
   AIR_STRIKE,
   BUILDINGS,
   GENERIC_BUILDING_IDS,
+  isCityProject,
   GENERIC_IMPROVEMENT_IDS,
   UNIT_IDS,
   ERAS,
@@ -111,10 +112,10 @@ describe('tech table', () => {
       mining: ['mine'],
       archery: ['archer'],
       fortification: ['walls', 'batteringRam'],
-      ritual: ['temple'],
+      ritual: ['temple', 'festival'],
       boats: ['fishery', 'galley'],
-      writing: ['academy'],
-      currency: ['market'],
+      writing: ['academy', 'compilation'],
+      currency: ['market', 'minting'],
       ironworking: ['swordsman'],
       riding: ['horseman'],
       irrigation: ['irrigationCanal', 'canal'],
@@ -181,11 +182,14 @@ describe('tech table', () => {
   });
 
   it('has the 16 generic buildings, each with an effect, an upkeep and a tech of its era', () => {
-    expect([...GENERIC_BUILDING_IDS].sort()).toEqual([
+    // The city projects are listed with the buildings but are none: they have their own test.
+    const buildings = GENERIC_BUILDING_IDS.filter((id) => !isCityProject(id));
+    expect([...buildings].sort()).toEqual([
       'academy', 'airfield', 'bank', 'factory', 'granary', 'harbour', 'hospital', 'market', 'observatory', 'powerPlant',
       'printShop', 'researchInstitute', 'temple', 'university', 'walls', 'workshop',
     ]);
-    for (const id of GENERIC_BUILDING_IDS) {
+    expect(GENERIC_BUILDING_IDS.filter(isCityProject).sort()).toEqual(['compilation', 'festival', 'minting']);
+    for (const id of buildings) {
       const def = BUILDINGS[id];
       const effects =
         Object.keys(def.yields).length + Object.keys(def.percent).length + Object.keys(def.waterYields).length +

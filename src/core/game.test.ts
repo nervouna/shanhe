@@ -313,7 +313,7 @@ describe('legal actions', () => {
     const state = createGame(map, { player: 'jia' });
     const kinds = new Set(getLegalActions(state, JIA).map((action) => action.type));
     expect([...kinds].sort()).toEqual([
-      'declareWar', 'establishRoute', 'move', 'propose', 'queueBuild', 'setFocus', 'setResearch', 'sleep',
+      'declareWar', 'establishRoute', 'move', 'propose', 'queueBuild', 'setFocus', 'setRepeat', 'setResearch', 'sleep',
     ]);
   });
 });
