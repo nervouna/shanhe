@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createGame, endTurn, hashState, rememberedBy, saveGame, visibleTo } from '../core/game.ts';
+import { maxCityHp } from '../core/cities.ts';
+import { createGame, endTurn, hashState, rememberedBy, saveGame, supplyStatus, visibleTo } from '../core/game.ts';
 import type { GameState } from '../core/game.ts';
 import { LAND, LAND2, labMap } from '../core/kitLab.ts';
-import { apply, edit, put } from '../core/testUtil.ts';
+import { favourStanding } from '../core/query.ts';
+import { apply, edit, isPlainGround, put } from '../core/testUtil.ts';
+import { topologyOf } from '../core/topology.ts';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
 import { createSyntheticMap } from '../shared/syntheticMap.ts';
 import { MAX_SAVE_BYTES, exportSave, importSave } from './saves.ts';
@@ -39,6 +42,48 @@ describe('exportSave and importSave', () => {
     expect(hashState(result.state)).toBe(hashState(state));
     // and the game goes on from it exactly as from the original
     expect(hashState(endTurn(result.state).state)).toBe(hashState(endTurn(state).state));
+  });
+
+  it('round-trips a game with the supply limit and the balance of power at work', () => {
+    // Every nation is in the race, armies are past their limits, and one nation is far ahead: nothing of that
+    // is kept in a field of its own, so the save needs no new field and the format keeps its version.
+    let state = createGame(map, { seed: 7, majors: ['jia', 'yi', 'bing', 'ding'] });
+    for (let i = 0; i < 40; i++) state = endTurn(state).state;
+    state = edit(state, (draft) => {
+      draft.polities[0]!.grossIncome += 5000;
+      const free = topologyOf(map).zoneHexes[map.polities[1]!.capitalZone]!.filter(
+        (hex) => isPlainGround(map, hex) && !draft.units.some((unit) => unit.hex === hex),
+      );
+      for (const hex of free.slice(0, 6)) put(draft, 'warrior', 1, hex);
+    });
+    expect(supplyStatus(state, 1).surcharge).toBeGreaterThan(0);
+    expect(favourStanding(state, 0, 1)!.power.length).toBeGreaterThan(0);
+    const result = importSave(exportSave(state), map);
+    if (!result.ok) throw new Error(result.error);
+    expect(hashState(result.state)).toBe(hashState(state));
+    expect(supplyStatus(result.state, 1)).toEqual(supplyStatus(state, 1));
+    expect(favourStanding(result.state, 0, 1)).toEqual(favourStanding(state, 0, 1));
+    let loaded = result.state;
+    for (let i = 0; i < 10; i++) {
+      state = endTurn(state).state;
+      loaded = endTurn(loaded).state;
+    }
+    expect(hashState(loaded)).toBe(hashState(state));
+  });
+
+  it('loads a save made when cities had more HP, and the next turn brings them down to what they can have now', () => {
+    const state = played(5);
+    const zone = map.polities[0]!.capitalZone;
+    const limit = maxCityHp(state.cities[zone]!);
+    const result = importSave(
+      tampered(state, (data) => {
+        (data.cities as ({ hp: number } | null)[])[zone]!.hp = limit + 70;
+      }),
+      map,
+    );
+    if (!result.ok) throw new Error(result.error);
+    expect(result.state.cities[zone]!.hp).toBe(limit + 70);
+    expect(endTurn(result.state).state.cities[zone]!.hp).toBe(limit);
   });
 
   it('round-trips a finished game', () => {

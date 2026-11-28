@@ -24,6 +24,7 @@ import type { MapData } from '../shared/mapData.ts';
 import {
   AI,
   AIR_STRIKE,
+  BALANCE,
   BUILDINGS,
   BUILDING_IDS,
   buildingFor,
@@ -39,6 +40,8 @@ import {
   PROJECT,
   ROSTER,
   SETTLER,
+  supplyLimitFor,
+  supplySurcharge,
   TRADE,
   UNIT_UPKEEP,
   WAR,
@@ -61,6 +64,7 @@ import type { Ctx } from './context.ts';
 import { dealPriceFrom, wantsResource } from './diplomacy.ts';
 import { canSee, knowsCity } from './fog.ts';
 import { AMBITION_STYLES, ambitionOf, styleFor } from './kits.ts';
+import { balanceOfPower, boundTo } from './power.ts';
 import type { Ambition, Personality } from './kits.ts';
 import { nationOf } from './modifiers.ts';
 import { openPolicies } from './policies.ts';
@@ -69,7 +73,7 @@ import { bestUnit, knows, ownsResource, pursuesScience, researches, suggestResea
 import { checkPillage, checkRouteTarget, routeIncome, routeSlots, routesOf } from './trade.ts';
 import { capitalsHeld } from './turn.ts';
 import { NO_POLITY } from './types.ts';
-import type { Action, BuildItem, City, RouteTarget, Unit } from './types.ts';
+import type { Action, BuildItem, City, RejectReason, RouteTarget, Unit } from './types.ts';
 
 /** Applies an action if it is legal and says whether it was. */
 export type Act = (action: Action) => boolean;
@@ -286,7 +290,72 @@ function diplomacy(ctx: Ctx, polity: number, major: boolean, cities: City[], act
   }
 
   if (!major || state.turn < AI.firstWarTurn || enemiesOf(ctx, polity).length > 0) return;
-  // A leader out for learning or wealth starts no wars.
+  if (self.overlord !== NO_POLITY) return;
+
+  // Whoever it could march on: the nations whose land its armies can reach, with war on a vassal declared on its overlord.
+  const vassals = vassalsOf(ctx, polity);
+  const reach = (through: readonly number[]): Set<number> => {
+    const neighbours = new Set<number>();
+    for (const city of state.cities) {
+      if (city === null || !through.includes(city.owner)) continue;
+      for (const zone of at(topo.zoneNeighbors, city.zone)) {
+        const owner = at(state.zoneOwner, zone);
+        if (owner !== NO_POLITY) neighbours.add(owner);
+      }
+    }
+    // Once its units can embark, the cities across the water are neighbours too.
+    const seaLevel = ctx.seaLevel[polity] as number;
+    if (seaLevel >= 1) {
+      for (const city of cities) {
+        if (topo.coastal[city.zone] !== true) continue;
+        for (const zone of seaNeighbours(ctx, city.zone, seaLevel >= 2)) {
+          const owner = at(state.zoneOwner, zone);
+          if (owner !== NO_POLITY && state.cities[zone] !== null) neighbours.add(owner);
+        }
+      }
+    }
+    const foes = new Set<number>();
+    for (const other of neighbours) {
+      const lord = overlordOf(ctx, other);
+      const foe = lord === NO_POLITY ? other : lord;
+      if (foe !== polity && !vassals.includes(foe)) foes.add(foe);
+    }
+    return foes;
+  };
+  /** What stands against an attack on `other`: its army, those of its allies and vassals, and its cities. */
+  const defenceOf = (other: number): number => {
+    let defence = militaryStrength(ctx, other);
+    for (const friend of [...alliesOf(ctx, other), ...vassalsOf(ctx, other)]) defence += militaryStrength(ctx, friend);
+    for (const city of state.cities) if (city !== null && city.owner === other) defence += cityStrength(ctx, city) / 2;
+    return defence;
+  };
+
+  // The balance of power: whatever its ambition, it joins the war on a leader the world has come to fear,
+  // once it dislikes it enough and the leader's enemies are together strong enough. Its allies' land is open to it.
+  const balance = balanceOfPower(ctx);
+  if (self.warWeariness <= AI.containmentWeariness) {
+    const within = reach([polity, ...vassals, ...alliesOf(ctx, polity)]);
+    let threat = -1;
+    for (const other of [...within].sort((a, b) => a - b)) {
+      if (at(balance.fear, other) < BALANCE.warAt || at(balance.fear, other) <= at(balance.fear, polity)) continue;
+      if (boundTo(ctx, polity, other) || favourOf(ctx, polity, other) > BALANCE.warFavour) continue;
+      if (validate(ctx, { type: 'declareWar', polity, target: other }) !== null) continue;
+      if (threat < 0 || at(balance.fear, other) > at(balance.fear, threat)) threat = other;
+    }
+    if (threat >= 0) {
+      let side = strength;
+      for (const friend of [...alliesOf(ctx, polity), ...vassals]) side += militaryStrength(ctx, friend);
+      for (const enemy of enemiesOf(ctx, threat)) {
+        if (enemy !== polity && !vassals.includes(enemy) && !alliesOf(ctx, polity).includes(enemy)) side += militaryStrength(ctx, enemy);
+      }
+      if (side >= defenceOf(threat) * BALANCE.warRatio) {
+        act({ type: 'declareWar', polity, target: threat });
+        return;
+      }
+    }
+  }
+
+  // A leader out for learning or wealth starts no other wars.
   if (!AMBITION_STYLES[ambition(ctx, polity)].startsWars) return;
   // A leader out for conquest goes from one war to the next; an all-rounder waits until the last one is forgotten.
   const conqueror = ambition(ctx, polity) === 'conquest';
@@ -296,33 +365,7 @@ function diplomacy(ctx: Ctx, polity: number, major: boolean, cities: City[], act
   if (field < AI.minFieldUnits) return;
 
   // Its neighbours: whoever borders its land or that of its vassals, whose land its armies may cross.
-  const neighbours = new Set<number>();
-  const vassals = vassalsOf(ctx, polity);
-  for (const city of state.cities) {
-    if (city === null || (city.owner !== polity && !vassals.includes(city.owner))) continue;
-    for (const zone of at(topo.zoneNeighbors, city.zone)) {
-      const owner = at(state.zoneOwner, zone);
-      if (owner !== NO_POLITY) neighbours.add(owner);
-    }
-  }
-  // Once its units can embark, the cities across the water are neighbours too.
-  const seaLevel = ctx.seaLevel[polity] as number;
-  if (seaLevel >= 1) {
-    for (const city of cities) {
-      if (topo.coastal[city.zone] !== true) continue;
-      for (const zone of seaNeighbours(ctx, city.zone, seaLevel >= 2)) {
-        const owner = at(state.zoneOwner, zone);
-        if (owner !== NO_POLITY && state.cities[zone] !== null) neighbours.add(owner);
-      }
-    }
-  }
-  // War on a vassal is declared on its overlord.
-  const foes = new Set<number>();
-  for (const other of neighbours) {
-    const lord = overlordOf(ctx, other);
-    const foe = lord === NO_POLITY ? other : lord;
-    if (foe !== polity && !vassals.includes(foe)) foes.add(foe);
-  }
+  const foes = reach([polity, ...vassals]);
   const ratio = AI.warStrengthRatio * styleOf(ctx, polity).warRatio;
   /** How far the nearest capital of a major nation that `foe` holds lies from the polity's cities; Infinity if it holds none. */
   const prizeDistance = (foe: number): number => {
@@ -339,17 +382,19 @@ function diplomacy(ctx: Ctx, polity: number, major: boolean, cities: City[], act
   let target = -1;
   let weakest = Infinity;
   let nearest = Infinity;
+  let feared = 0;
   for (const other of [...foes].sort((a, b) => a - b)) {
     if (validate(ctx, { type: 'declareWar', polity, target: other }) !== null) continue;
     // Its allies and vassals would stand by it, and a friend is not attacked.
     if (favourOf(ctx, polity, other) >= AI.allianceFavour) continue;
-    let defence = militaryStrength(ctx, other);
-    for (const friend of [...alliesOf(ctx, other), ...vassalsOf(ctx, other)]) defence += militaryStrength(ctx, friend);
-    for (const city of state.cities) if (city !== null && city.owner === other) defence += cityStrength(ctx, city) / 2;
+    const defence = defenceOf(other);
     if (strength < defence * ratio) continue;
-    // The weakest it can beat; a leader out for conquest first goes for the nearest capital of a major nation.
+    // A leader the world fears comes first, the most feared first of all. Then the weakest it can beat;
+    // a leader out for conquest first goes for the nearest capital of a major nation.
+    const fear = at(balance.fear, other) > at(balance.fear, polity) && at(balance.fear, other) >= BALANCE.warAt ? at(balance.fear, other) : 0;
     const distance = conqueror ? prizeDistance(other) : Infinity;
-    if (distance < nearest || (distance === nearest && defence < weakest)) {
+    if (fear > feared || (fear === feared && (distance < nearest || (distance === nearest && defence < weakest)))) {
+      feared = fear;
       nearest = distance;
       weakest = defence;
       target = other;
@@ -682,12 +727,26 @@ interface Plans {
 function armyTarget(ctx: Ctx, polity: number, major: boolean, cities: City[]): number {
   const kind = at(ctx.map.polities, polity).kind;
   if (kind === 'cityState') return 1;
+  // Nobody plans an army beyond its supply limit: the units past it cost far more than they are worth.
+  let pop = 0;
+  for (const city of cities) pop += city.pop;
+  const limit = supplyLimitFor(cities.length, pop);
+  // A nation on the simplified AI keeps a garrison in every city and a small field force.
+  if (!major) return Math.min(limit, cities.length + AI.simpleFieldUnits);
   const free = FREE_UNITS_PER_CITY * cities.length;
-  if (!major) return free;
   let buildingUpkeep = 0;
   for (const city of cities) for (const id of city.buildings) buildingUpkeep += BUILDINGS[id].upkeep;
   const spare = Math.max(0, polityOf(ctx, polity).yields.gold - buildingUpkeep);
-  return free + Math.floor((spare * AI.armyIncomeShare * styleOf(ctx, polity).armyShare) / UNIT_UPKEEP);
+  const affordable = free + Math.floor((spare * AI.armyIncomeShare * styleOf(ctx, polity).armyShare) / UNIT_UPKEEP);
+  const style = AMBITION_STYLES[ambition(ctx, polity)];
+  // At peace a leader keeps the share of the limit its ambition asks for, and never less than its garrisons and a guard.
+  if (enemiesOf(ctx, polity).length === 0) {
+    return Math.min(affordable, Math.max(Math.ceil(limit * style.peaceArmy), Math.min(limit, cities.length + AI.simpleFieldUnits)));
+  }
+  // At war it fills the limit, and a leader out for conquest pays for some units beyond it.
+  let beyond = 0;
+  while (supplySurcharge(beyond + 1) <= spare * style.overSupply) beyond++;
+  return Math.min(affordable, limit + beyond);
 }
 
 /**
@@ -904,7 +963,9 @@ function chooseBuild(ctx: Ctx, polity: number, city: City, cities: City[], plans
     if (front) return airfield;
   }
   const recruiting = room && plans.military < plans.wanted && plans.barracks < plans.maxBarracks;
-  if (recruiting && (plans.atWar || plans.military * 2 < plans.wanted)) return fieldUnit(ctx, polity, plans);
+  if (recruiting && (plans.atWar || plans.military < plans.wanted * AMBITION_STYLES[ambition(ctx, polity)].armyFirst)) {
+    return fieldUnit(ctx, polity, plans);
+  }
   const worked = chooseImprovement(ctx, city, city.worked);
   if (worked !== null) return worked;
   const settler = (): BuildItem | null => {
@@ -998,6 +1059,26 @@ function pathField(ctx: Ctx, polity: number, goal: number, limit = PATH_LIMIT, b
   return cost;
 }
 
+/** True if a unit stands on the hex and `polity` sees it. A unit it does not see is not there for its plans. */
+function seesUnitOn(ctx: Ctx, polity: number, hex: number): boolean {
+  return ctx.unitAt.has(hex) && canSee(ctx, polity, hex);
+}
+
+/**
+ * Why the AI believes `unit` cannot step onto `to`, or null: the rules'
+ * own check, except that a unit its polity does not see does not stand in
+ * the way. If the rules then refuse the step, the unit stays where it is for
+ * the turn and looks for no other way: it has learned nothing from the
+ * refusal.
+ */
+export function stepKnown(ctx: Ctx, unit: Unit, to: number): RejectReason | null {
+  const reason = checkStep(ctx, unit, to);
+  if (reason !== 'hexOccupied' || seesUnitOn(ctx, unit.owner, to)) return reason;
+  // What is left of `hexOccupied` without the unit: somebody else's city.
+  const city = cityAtHex(ctx, to);
+  return city !== null && city.owner !== unit.owner ? reason : null;
+}
+
 /** Steps the unit down the field while it has movement. Returns true if it moved at all. */
 function advanceAlong(ctx: Ctx, unit: Unit, field: Int16Array, act: Act, stopAt: number): boolean {
   let moved = false;
@@ -1007,7 +1088,7 @@ function advanceAlong(ctx: Ctx, unit: Unit, field: Int16Array, act: Act, stopAt:
     for (let d = 0; d < 6; d++) {
       const next = ctx.topo.neighbors[unit.hex * 6 + d] as number;
       if (next < 0 || (field[next] as number) >= bestCost) continue;
-      if (checkStep(ctx, unit, next) !== null) continue;
+      if (stepKnown(ctx, unit, next) !== null) continue;
       best = next;
       bestCost = field[next] as number;
     }
@@ -1253,7 +1334,7 @@ function campField(ctx: Ctx, polity: number, cities: City[]): Int16Array {
   const own = (hex: number): boolean => topo.water[hex] !== 1 && topo.enterable[hex] === 1 && ownerOf(ctx, hex) === polity;
   let frontier: number[] = [];
   for (let hex = 0; hex < topo.count; hex++) {
-    if (!own(hex) || ctx.unitAt.has(hex) || cityAtHex(ctx, hex) !== null || nearGates(ctx, hex, cities)) continue;
+    if (!own(hex) || seesUnitOn(ctx, polity, hex) || cityAtHex(ctx, hex) !== null || nearGates(ctx, hex, cities)) continue;
     cost[hex] = 0;
     frontier.push(hex);
   }
@@ -1344,7 +1425,7 @@ function advanceOneStep(ctx: Ctx, unit: Unit, field: Int16Array, act: Act): bool
   for (let d = 0; d < 6; d++) {
     const next = ctx.topo.neighbors[unit.hex * 6 + d] as number;
     if (next < 0 || (field[next] as number) >= bestCost) continue;
-    if (checkStep(ctx, unit, next) !== null) continue;
+    if (stepKnown(ctx, unit, next) !== null) continue;
     best = next;
     bestCost = field[next] as number;
   }
@@ -1364,11 +1445,11 @@ function sidestep(ctx: Ctx, unit: Unit, field: Int16Array): number {
   const here = field[unit.hex] as number;
   for (let d = 0; d < 6; d++) {
     const next = ctx.topo.neighbors[unit.hex * 6 + d] as number;
-    if (next < 0 || (field[next] as number) !== here || checkStep(ctx, unit, next) !== null) continue;
+    if (next < 0 || (field[next] as number) !== here || stepKnown(ctx, unit, next) !== null) continue;
     for (let e = 0; e < 6; e++) {
       const beyond = ctx.topo.neighbors[next * 6 + e] as number;
       if (beyond < 0 || (field[beyond] as number) >= here) continue;
-      if (!ctx.unitAt.has(beyond)) return next;
+      if (!seesUnitOn(ctx, unit.owner, beyond)) return next;
     }
   }
   return -1;

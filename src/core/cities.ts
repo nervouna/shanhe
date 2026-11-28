@@ -4,6 +4,7 @@ import { Terrain } from '../shared/mapData.ts';
 import {
   BUILDINGS,
   CITY,
+  CAPITAL_PERCENT,
   CITY_CENTRE_YIELD,
   CITY_STATE,
   COMBAT,
@@ -36,7 +37,7 @@ import {
   routeMatches,
   unitMatches,
 } from './modifiers.ts';
-import { partnersIn } from './relations.ts';
+import { isNation, partnersIn } from './relations.ts';
 import type { BuildingDef, Focus, ImprovementDef, ImprovementId, UnitDef, Yields } from './data.ts';
 import {
   addUnit,
@@ -271,6 +272,8 @@ function yieldParts(ctx: Ctx, city: City, picked: readonly HexScore[]): { flat: 
   percent.gold += tradePactGoldPercent(ctx, owner);
   percent.gold += CITY_STATE.financeGoldPercent * suzerainCount(ctx, owner, 'finance');
   if (capital) {
+    // The seat of government.
+    if (isNation(ctx, owner)) for (const key of YIELD_KEYS) percent[key] += CAPITAL_PERCENT[key] ?? 0;
     yields.culture += CITY_STATE.cultureInCapital * suzerainCount(ctx, owner, 'culture');
     percent.production += CITY_STATE.industryCapitalProductionPercent * suzerainCount(ctx, owner, 'industry');
   }

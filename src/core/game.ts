@@ -39,7 +39,7 @@ import { hasResource, specialtiesOf, techCost, visibleResource, worldEra } from 
 import { findRoutePath, routeSlots } from './trade.ts';
 import type { RoutePath } from './trade.ts';
 import { topologyOf } from './topology.ts';
-import { endRound } from './turn.ts';
+import { endRound, supplyOf } from './turn.ts';
 import { NO_POLITY } from './types.ts';
 import type {
   Action,
@@ -338,6 +338,15 @@ export function unitVision(state: GameState, unit: number): number {
   const ctx = createCtx(state as MutableGameState);
   const found = ctx.unitById.get(unit);
   return found === undefined ? 0 : visionRange(ctx, found);
+}
+
+/**
+ * The polity's supply: `limit` is how many fighting units its cities and
+ * people keep at the ordinary upkeep, `used` how many it has, and
+ * `surcharge` the gold a turn the excess costs on top of the upkeep.
+ */
+export function supplyStatus(state: GameState, polity: number): { limit: number; used: number; surcharge: number } {
+  return supplyOf(createCtx(state as MutableGameState), polity);
 }
 
 // ------------------------------------------------------------ save and load

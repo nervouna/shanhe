@@ -12,18 +12,21 @@ Accepted for now; revisit after playtesting.
 
 2. **Southeast Asian naval overlap.** Six of the thirteen Southeast Asian unique units are ships and may play alike.
 3. **Late-era unique units.** Four unique units fall in the Industrial era and none in the Modern era, so staggered power peaks hold only for the first four eras.
-4. **Two nations win most AI games.** In 60 AI-only games on the real map 蜀 and 暹罗 win about three in four between them: 蜀 has the richest land of the four-city nations and 暹罗 the safest corner of the map, and each is the best at whatever its leader sets out for. Kit numbers move the lead from one to the other, not away from both.
+4. **暹罗 wins a third of AI games.** In 60 AI-only games on the real map 暹罗 wins 21, 漠北 12 and 蜀 10; nine nations win at least once across the two batches of 30, eight in one and seven in the other. 蜀 fell from 27 wins when armies were held to the supply limit, and most of what it lost went to 暹罗 before the other changes spread it. Nobody can reach 暹罗: the nearest major is four provinces away by land and 26 hexes by sea, and its neighbours are its allies. It is the nation most often feared, and no war of containment is ever declared on it (in ten games eleven such wars were declared, eight of them on 漠北). Its income and its science are those of any four-city nation that is never at war. What is left of the world's reactions (lost favour, refused pacts, leaked knowledge) does not cost it a game.
 5. **Air power comes late.** Airfields need the Modern era, which starts on turn 126, and a conquering nation with many cities seldom gets there. Air strikes happen in few games.
+6. **Conquest hangs on a few games.** With armies held to the supply limit a conqueror is seldom three times as strong as its neighbour. Five of 30 games ended by conquest in the batch the numbers were set on and none in the next 30. Two of the five ended on turns 94 and 98, before the turn 110 the pacing asks for: a conqueror whose neighbours are out for conquest too, or keep small armies at peace, makes four major nations its vassals one after the other, each 6 to 21 turns after it declared war, with ten units more than its limit supplies. Nobody near it is strong enough for a war of containment.
+7. **Treasuries pile up.** With armies capped, a major nation that has built everything has nothing left to buy: the majors end a game with about 13 turns of income unspent.
+8. **Fear the interface does not list.** The two favour terms of the balance of power are in `FavourStanding.power`; the polity panel lists only `FavourStanding.terms`, so the causes it shows do not add up to the level it shows until it lists both.
 
 ## Numbers
 
-6. All yields, costs, strengths and percentages in the docs are directions, not balanced values. The kits of [02-nations.md](02-nations.md) have their numbers, sized against a policy card but not balanced against each other.
-7. Exact hex counts per nation and the city zones of each province come out of the map data pipeline.
+9. All yields, costs, strengths and percentages in the docs are directions, not balanced values. The kits of [02-nations.md](02-nations.md) have their numbers, sized against a policy card but not balanced against each other.
+10. Exact hex counts per nation and the city zones of each province come out of the map data pipeline.
 
 ## Technology
 
-9. English names for nations are romanisations for now; the final English display names are not reviewed.
-10. Audio was not discussed. The procedural rule implies synthesised sound.
+11. English names for nations are romanisations for now; the final English display names are not reviewed.
+12. Audio was not discussed. The procedural rule implies synthesised sound.
 
 ## Resolved on 2026-11-28
 

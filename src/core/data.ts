@@ -79,7 +79,7 @@ export interface TechDef {
 }
 
 /** Science cost of a tech of each era. */
-export const TECH_ERA_COST: readonly number[] = [7, 32, 100, 240, 560, 740];
+export const TECH_ERA_COST: readonly number[] = [9, 37, 110, 270, 640, 1150];
 
 export const RESEARCH = {
   /** A tech known by any other living polity costs this much less. */
@@ -213,6 +213,11 @@ export const RIVER_YIELD: HexYield = { food: 0, production: 0, gold: 1 };
 export const RESOURCE_YIELD: HexYield = { food: 0, production: 0, gold: 1 };
 /** Yield of the city's own hex, whatever its terrain. */
 export const CITY_CENTRE_YIELD: Readonly<Yields> = { food: 2, production: 2, gold: 2, science: 1, culture: 1 };
+/**
+ * The seat of government: what a nation's capital yields more than its
+ * other cities, in percent. It counts for more the smaller the realm is.
+ */
+export const CAPITAL_PERCENT: Readonly<Partial<Yields>> = { gold: 50, science: 50 };
 
 /** Movement points a land unit pays to enter a hex: base, plus the extras that apply. */
 export const MOVE_COST = { base: 1, hills: 1, roughFeature: 1 } as const;
@@ -592,6 +597,32 @@ export const UNIT_UPKEEP = 1;
 /** Units a polity keeps without upkeep, per city. */
 export const FREE_UNITS_PER_CITY = 2;
 
+/**
+ * The supply limit: the fighting units, on land and at sea, a polity keeps at
+ * the ordinary upkeep. It grows with its cities and its people. Every unit
+ * beyond it costs more than the one before.
+ */
+export const SUPPLY = {
+  /** Units any polity can supply. */
+  base: 2,
+  /** More for every city. */
+  perCity: 1.5,
+  /** One more for every this many citizens in all its cities. */
+  popPerUnit: 6,
+  /** Gold per turn the first unit beyond the limit costs on top of its upkeep; each further one costs this much more than the last. */
+  overStep: 1,
+} as const;
+
+/** Units a polity with `cities` cities and `pop` citizens in all can supply. */
+export function supplyLimitFor(cities: number, pop: number): number {
+  return Math.floor(SUPPLY.base + SUPPLY.perCity * cities + pop / SUPPLY.popPerUnit);
+}
+
+/** Gold per turn a polity pays on top of the upkeep for having `over` units beyond its supply limit: 1, 3, 6, 10, 15, ... */
+export function supplySurcharge(over: number): number {
+  return over <= 0 ? 0 : (SUPPLY.overStep * over * (over + 1)) / 2;
+}
+
 export const SETTLER = 'settler';
 export const TRIBE = 'tribe';
 /** Each settler a polity completes raises the cost of its next one by this percentage of the base cost. */
@@ -807,7 +838,7 @@ export const CITY = {
   popPerScience: 2,
   /** Population per point of gold. */
   popPerGold: 2,
-  hp: 200,
+  hp: 130,
   /** Strength: `strengthBase + strengthPerEra * ERA_STRENGTH + strengthPerPop * pop`. */
   strengthBase: 6,
   strengthPerEra: 0.5,
@@ -853,7 +884,7 @@ export const WAR = {
   /** Gained by the loser of a city. */
   wearinessPerCityLost: 5,
   /** Taken off the weariness of whoever takes a city: a victory lifts the mood. */
-  wearinessPerCityTaken: 3,
+  wearinessPerCityTaken: 5,
   /** Taken off the weariness of whoever forces a nation to become its vassal. */
   wearinessPerVassalMade: 10,
   /** Lost per turn at peace. */
@@ -1057,6 +1088,54 @@ export const FAVOUR = {
   goldPerPoint: 10,
 } as const;
 
+/**
+ * The balance of power (`power.ts`): a nation in the race for victory whose
+ * standing rises above the others is feared, and the world turns against it.
+ */
+export const BALANCE = {
+  /** No standing is measured before this turn: the first turns say little. */
+  fromTurn: 26,
+  /** ...nor with fewer nations than this in the race. */
+  minRated: 3,
+  /**
+   * The three tracks, one per victory. On each a nation's figure is set
+   * against the average of the nations in the race: a lead begins at `from`
+   * times the average and is complete at `full` times.
+   */
+  tracks: {
+    /** Cumulative gross income: what the Economic victory ranks. */
+    income: { from: 1.25, full: 1.75 },
+    /** Cumulative science. */
+    science: { from: 1.5, full: 2.3 },
+    /** Military strength. */
+    army: { from: 2.2, full: 3.6 },
+  },
+  /** Added to the fear on the science track for every stage of the endgame project a nation has completed. */
+  fearPerStage: 15,
+  /** Favour a nation with a complete lead loses with every nation that fears it. */
+  maxFear: 50,
+  /** The fear grows with the game: it counts in full from this turn on, and in proportion before. */
+  fullTurn: 90,
+  /** A tech that a feared nation knows costs those who fear it this much less, in percent per point of fear. */
+  learnPercentPerFear: 1,
+  /** A leader feared this much draws those who stand against it together. */
+  commonThreatAt: 12,
+  /** What two nations that stand against the same leader add to the favour between them. */
+  commonThreat: 15,
+  /** A vassal leaves an overlord it has come to dislike this much, ... */
+  vassalLeavesFavour: -10,
+  /** ...unless the overlord's army is this many times its own: a strong hand holds what favour does not. */
+  vassalAweRatio: 1.5,
+  /** An AI major joins a war of containment against a leader feared this much, ... */
+  warAt: 20,
+  /** ...once its favour with the leader is down to this, ... */
+  warFavour: -15,
+  /** ...and it and those who would fight beside it are together this many times as strong as the leader's side. */
+  warRatio: 1.1,
+  /** A nation on the simplified AI refuses a trade pact below this favour. */
+  simpleTradePactFavour: -20,
+} as const;
+
 export const DEAL = {
   /** Turns a resource deal lasts. */
   turns: 20,
@@ -1208,7 +1287,7 @@ export function isDifficultyLevel(value: unknown): value is DifficultyLevel {
 // ----------------------------------------------------------------- tribes
 
 /** One tribe per this many hexes of a wasteland zone, at least one per zone. */
-export const HEXES_PER_TRIBE = 12;
+export const HEXES_PER_TRIBE = 60;
 
 // --------------------------------------------------------------------- AI
 
@@ -1229,6 +1308,8 @@ export const AI = {
   ],
   /** A major nation keeps this share of its spare gold income for unit upkeep. */
   armyIncomeShare: 0.6,
+  /** Field units a nation on the simplified AI keeps beside one garrison per city. */
+  simpleFieldUnits: 1,
   /** No war before this turn. */
   firstWarTurn: 12,
   /** Field units needed before declaring war. */
@@ -1282,11 +1363,11 @@ export const AI = {
   /** A nation on the simplified AI accepts an alliance at this favour. */
   simpleAllianceFavour: 10,
   /** A nation on the simplified AI becomes a vassal peacefully when the other is this many times stronger... */
-  vassalStrengthRatio: 8,
+  vassalStrengthRatio: 5,
   /** ...and favour is at least this. */
   vassalFavour: 40,
   /** A major takes a capital's owner as a vassal instead of the city when it is this many times stronger. */
-  demandVassalRatio: 2,
+  demandVassalRatio: 1.5,
   /** ...and it is at war with somebody else too, or its war weariness has reached this. */
   vassalWeariness: 15,
   /** Vassals a major wants at most. */
@@ -1295,7 +1376,7 @@ export const AI = {
    * A nation that has lost a city in a war and asks an enemy this many times
    * as strong as itself for peace submits: the peace makes it a vassal.
    */
-  submitRatio: 2.5,
+  submitRatio: 1.5,
   /** Gold kept back before gifts, and before buying when nothing threatens. */
   goldReserve: 80,
   /** A major also keeps this many turns of its upkeep before it buys what its cities are building. */
@@ -1308,6 +1389,8 @@ export const AI = {
   richGiftFactor: 4,
   /** At war, a city this close to an enemy city builds its airfield before anything else. */
   airfieldFrontRange: 10,
+  /** A major joins a war of containment only while its war weariness is at most this. */
+  containmentWeariness: 20,
   /** A leader out for conquest starts its next war once its war weariness is down to this, ... */
   conquestWeariness: 40,
   /** ...and sues for peace only at this war weariness. */

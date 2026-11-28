@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
-import { AI, DEAL, DIPLOMACY, FAVOUR, WAR } from './data.ts';
+import { AI, BALANCE, DEAL, DIPLOMACY, FAVOUR, WAR } from './data.ts';
 import {
   NO_POLITY,
   agreementsOf,
@@ -157,10 +157,13 @@ describe('agreements', () => {
   });
 
   it('are accepted or refused by the AI from favour and relative strength', () => {
-    // A major weighs favour for every agreement; a nation on the simplified AI takes trade and alliances readily.
+    // A major weighs favour for every agreement; a nation on the simplified AI takes trade and alliances readily,
+    // and trades with anybody it does not thoroughly dislike.
     expect(reason(observed, propose(BING, YI, 'tradePact'))).toBe('ok');
     expect(reason(favoured(observed, BING, YI, -30), propose(BING, YI, 'tradePact'))).toBe('refused');
-    expect(reason(favoured(observed, BING, DING, -30), propose(BING, DING, 'tradePact'))).toBe('ok');
+    expect(BALANCE.simpleTradePactFavour).toBeLessThan(AI.tradePactFavour);
+    expect(reason(favoured(observed, BING, DING, BALANCE.simpleTradePactFavour), propose(BING, DING, 'tradePact'))).toBe('ok');
+    expect(reason(favoured(observed, BING, DING, BALANCE.simpleTradePactFavour - 1), propose(BING, DING, 'tradePact'))).toBe('refused');
     expect(reason(observed, propose(BING, YI, 'openBorders'))).toBe('refused');
     expect(reason(favoured(observed, BING, YI, AI.openBordersFavour), propose(BING, YI, 'openBorders'))).toBe('ok');
     expect(reason(observed, propose(BING, YI, 'alliance'))).toBe('refused');
