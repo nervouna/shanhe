@@ -119,6 +119,21 @@ describe('pendingItems: research, policies and offers', () => {
     expect(pendingItems(slotted, none)).toEqual([]);
   });
 
+  it('leaves a slot alone that the player emptied', () => {
+    const rich = edit(settled(), (draft) => {
+      draft.polities[player]!.cultureProgress = 6;
+    });
+    const unlocked = apply(rich, { type: 'unlockPolicy', polity: player, policy: 'wellField' });
+    const slotted = apply(unlocked, { type: 'slotPolicy', polity: player, policy: 'wellField', slot: 0 });
+    const emptiedSlot = apply(slotted, { type: 'slotPolicy', polity: player, policy: null, slot: 0 });
+    expect(emptiedSlot.polities[player]!.slots).toEqual([null, null]);
+    // the other slot is empty too, and was never emptied by the player: the card still waits for it
+    expect(policyPending(emptiedSlot, new Set([0]))).toBe(true);
+    expect(policyPending(emptiedSlot, new Set([0, 1]))).toBe(false);
+    expect(pendingItems(emptiedSlot, { ...none, emptied: new Set([0, 1]) })).toEqual([]);
+    expect(pendingItems(emptiedSlot, none)).toEqual([{ kind: 'policy' }]);
+  });
+
   it('lists the proposals waiting for an answer, and drops one once answered', () => {
     const offered = edit(settled(), (draft) => {
       draft.offers.push({ id: 7, type: 'agreement', from: 1, to: player, turn: 1, agreement: 'tradePact' });

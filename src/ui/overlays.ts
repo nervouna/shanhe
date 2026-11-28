@@ -3,7 +3,7 @@
 import { ERAS, POLICIES, POLICY_IDS } from '../core/data.ts';
 import type { PolicyId, PolicyKind, TechId } from '../core/data.ts';
 import { NO_POLITY, nextPolicyCost } from '../core/game.ts';
-import { getLanguage, t } from '../shared/i18n.ts';
+import { dictionaries, getLanguage, t } from '../shared/i18n.ts';
 import type { TranslationKey } from '../shared/i18n.ts';
 import { standingWith } from './diplomacy.ts';
 import type { Standing } from './diplomacy.ts';
@@ -69,6 +69,10 @@ function unlockText(view: View, unlock: TechUnlock): string {
       return buildingName(unlock.building);
     case 'improvement':
       return improvementName(unlock.improvement);
+    case 'road': {
+      const key = `road.${unlock.road}`;
+      return Object.hasOwn(dictionaries.zh, key) ? t(key as TranslationKey) : unlock.road;
+    }
     case 'resource':
       return t('unlock.resource', { name: resourceName(view.map, unlock.resource) });
     default: {

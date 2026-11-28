@@ -4,21 +4,10 @@
  * of an attack. Legality and costs come from the rules' own functions.
  */
 
-import { attackStrength, combatDamage } from '../core/combat.ts';
 import { unitDef } from '../core/data.ts';
 import type { GameState, Unit } from '../core/game.ts';
-import {
-  atWarWith,
-  cityDefence,
-  cityOnHex,
-  hexDistance,
-  stepCheck,
-  stepCostOf,
-  unitDefence,
-  unitEmbarked,
-  unitOnHex,
-  unitWithId,
-} from '../core/query.ts';
+import { attackOutcome, hexDistance, stepCheck, stepCostOf, unitEmbarked, unitWithId } from '../core/query.ts';
+import type { AttackOutcome } from '../core/query.ts';
 import { topologyOf } from '../core/topology.ts';
 
 export interface Path {
@@ -196,61 +185,20 @@ export function reachableHexes(state: GameState, unitId: number): number[] {
   return out;
 }
 
-export interface AttackPreview {
-  /** Expected hit points the defender loses. */
-  readonly toDefender: number;
-  /** Expected hit points the attacker loses: 0 for a ranged attack. */
-  readonly toAttacker: number;
-  /** True if the attack would take a defenceless city. */
-  readonly capture: boolean;
-}
-
-function riverBetween(state: GameState, from: number, to: number): boolean {
-  const topo = topologyOf(state.map);
-  for (let d = 0; d < 6; d++) {
-    if (topo.neighbors[from * 6 + d] === to) return ((state.map.riverEdges[from] as number) & (1 << d)) !== 0;
-  }
-  return false;
-}
+/** What an attack would do on average. */
+export type AttackPreview = AttackOutcome;
 
 /**
  * What an attack of the unit on `target` would do on average (the rules add
- * a random factor of ±20%), or null if there is no enemy of the unit on that
- * hex. Distance and movement points are not checked.
+ * a random factor of ±20%), with every modifier of both sides and the
+ * penalty for attacking from the water counted in, or null if there is no
+ * enemy of the unit on that hex. Distance and movement points are not
+ * checked.
  *
  * @param from the hex the unit would attack from. Default: where it stands.
  */
 export function previewAttack(state: GameState, unitId: number, target: number, from?: number): AttackPreview | null {
-  const unit = unitWithId(state, unitId);
-  if (unit === null || !isHex(state, target)) return null;
-  const def = unitDef(unit.type);
-  if (def.strength <= 0) return null;
-  const origin = from ?? unit.hex;
-  const ranged = def.range > 0;
-  const across = riverBetween(state, origin, target);
-
-  const city = cityOnHex(state, target);
-  if (city !== null && city.owner !== unit.owner) {
-    if (!atWarWith(state, unit.owner, city.owner)) return null;
-    if (!ranged && city.hp <= 0 && def.domain === 'land') return { toDefender: 0, toAttacker: 0, capture: true };
-    const strength = cityDefence(state, city.zone);
-    return {
-      toDefender: combatDamage(attackStrength(unit, ranged, true, across), strength, 1),
-      toAttacker: ranged ? 0 : combatDamage(strength, attackStrength(unit, false, false, false), 1),
-      capture: false,
-    };
-  }
-
-  const defender = unitOnHex(state, target);
-  if (defender === null || defender.owner === unit.owner || !atWarWith(state, unit.owner, defender.owner)) return null;
-  if (unitDef(defender.type).strength === 0) return { toDefender: defender.hp, toAttacker: 0, capture: false };
-  const attack = attackStrength(unit, ranged, false, across);
-  const defence = unitDefence(state, defender);
-  return {
-    toDefender: combatDamage(attack, defence, 1),
-    toAttacker: ranged ? 0 : combatDamage(defence, attack, 1),
-    capture: false,
-  };
+  return attackOutcome(state, unitId, target, from);
 }
 
 /** How close the unit has to be to attack: its range, or 1 for melee. */

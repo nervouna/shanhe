@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { BUILDING_IDS, ERAS, IMPROVEMENT_IDS, TECHS, TECH_IDS, UNITS, UNIT_IDS } from '../core/data.ts';
+import { ERAS, GENERIC_BUILDING_IDS, GENERIC_IMPROVEMENT_IDS, TECHS, TECH_IDS, UNITS, UNIT_IDS } from '../core/data.ts';
 import { applyAction, createGame } from '../core/game.ts';
+import { KITS, KIT_NATIONS } from '../core/kits.ts';
 import { learn } from '../core/testUtil.ts';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
 import { layoutTechTree, techUnlocks, techViews } from './techTree.ts';
+import type { TechUnlock } from './techTree.ts';
 
 const map = createFixtureMap();
 
@@ -55,16 +57,52 @@ describe('layoutTechTree', () => {
 });
 
 describe('techUnlocks', () => {
-  it('lists every buildable unit, building and improvement under its tech, once', () => {
+  const ids = (list: readonly TechUnlock[]): string[] =>
+    list.flatMap((entry) =>
+      entry.kind === 'unit' ? [entry.unit] : entry.kind === 'building' ? [entry.building] : entry.kind === 'improvement' ? [entry.improvement] : entry.kind === 'road' ? [entry.road] : [],
+    );
+
+  it('lists every generic unit, building and improvement under its tech, once, and nobody’s unique ones', () => {
     const all = TECH_IDS.flatMap((tech) => techUnlocks(tech));
     const units = all.flatMap((entry) => (entry.kind === 'unit' ? [entry.unit] : []));
-    // the generic roster: a nation's own units are not part of the shared tree
     const wanted = UNIT_IDS.filter((id) => UNITS[id]!.buildable && UNITS[id]!.tech !== null);
     expect(units.sort()).toEqual(wanted.sort());
-    expect(all.flatMap((entry) => (entry.kind === 'building' ? [entry.building] : [])).sort()).toEqual([...BUILDING_IDS].sort());
+    expect(all.flatMap((entry) => (entry.kind === 'building' ? [entry.building] : [])).sort()).toEqual([...GENERIC_BUILDING_IDS].sort());
     expect(all.flatMap((entry) => (entry.kind === 'improvement' ? [entry.improvement] : [])).sort()).toEqual(
-      [...IMPROVEMENT_IDS].sort(),
+      [...GENERIC_IMPROVEMENT_IDS].sort(),
     );
+    expect(all.some((entry) => 'unique' in entry && entry.unique)).toBe(false);
+    expect(all.some((entry) => entry.kind === 'road')).toBe(false);
+  });
+
+  it('puts a nation’s unique unit, building and improvement where they replace a generic one', () => {
+    expect(ids(techUnlocks('crossbow'))).toContain('crossbowman');
+    expect(techUnlocks('crossbow', 'qin')).toContainEqual({ kind: 'unit', unit: 'qinCrossbowman', unique: true });
+    expect(ids(techUnlocks('crossbow', 'qin'))).not.toContain('crossbowman');
+    expect(techUnlocks('writing', 'qi')).toContainEqual({ kind: 'building', building: 'jixiaAcademy', unique: true });
+    expect(ids(techUnlocks('writing', 'qi'))).not.toContain('academy');
+    expect(techUnlocks('writing', 'qin')).toContainEqual({ kind: 'building', building: 'academy', unique: false });
+    expect(techUnlocks('irrigation', 'shu')).toContainEqual({ kind: 'improvement', improvement: 'dujiangyan', unique: true });
+    expect(ids(techUnlocks('irrigation', 'shu'))).not.toContain('irrigationCanal');
+    expect(ids(techUnlocks('irrigation', 'shu'))).toContain('canal');
+  });
+
+  it('adds a nation’s extra building, improvement and road upgrade under their tech', () => {
+    expect(techUnlocks('guilds', 'wu')).toContainEqual({ kind: 'building', building: 'classicalGarden', unique: true });
+    expect(ids(techUnlocks('guilds'))).not.toContain('classicalGarden');
+    expect(techUnlocks('fortification', 'yan')).toContainEqual({ kind: 'improvement', improvement: 'greatWallPass', unique: true });
+    expect(techUnlocks('currency', 'qin')).toContainEqual({ kind: 'road', road: 'imperialHighway', unique: true });
+    expect(ids(techUnlocks('currency', 'dian'))).toContain('teaHorseRoad');
+    expect(ids(techUnlocks('currency', 'dian'))).not.toContain('imperialHighway');
+  });
+
+  it('gives each of the 50 nations exactly its own unique items, each under one tech', () => {
+    for (const nation of KIT_NATIONS) {
+      const kit = KITS[nation]!;
+      const unique = TECH_IDS.flatMap((tech) => techUnlocks(tech, nation)).filter((entry) => 'unique' in entry && entry.unique);
+      const wanted = [kit.building, ...(UNITS[kit.unit]!.tech === null ? [] : [kit.unit])];
+      expect(ids(unique).sort(), nation).toEqual(wanted.sort());
+    }
   });
 
   it('lists what a tech does by itself', () => {

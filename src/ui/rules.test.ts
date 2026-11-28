@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { BUILDINGS, UNITS } from '../core/data.ts';
 import { createGame, endTurn } from '../core/game.ts';
+import { HOME_ZONE, LAND, SELF, labGame } from '../core/kitLab.ts';
 import { apply, edit, put } from '../core/testUtil.ts';
 import { topologyOf } from '../core/topology.ts';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
+import { Terrain } from '../shared/mapData.ts';
+import { itemName } from './names.ts';
 import {
   check,
   cityView,
@@ -23,6 +27,57 @@ const map = createFixtureMap();
 const JIA = 0;
 const YI = 1;
 const capital = map.polities[JIA]!.capitalZone;
+
+describe('cityView for a nation with a kit', () => {
+  it('lists the unique unit under the generic id and the unique building under its own', () => {
+    const { state } = labGame('qi');
+    const view = cityView(state, HOME_ZONE)!;
+    const warrior = view.units.find((option) => option.item.kind === 'unit' && option.item.unit === 'warrior')!;
+    expect(warrior).toBeDefined();
+    expect(itemName(state.map, warrior.item, SELF)).toBe('技击士');
+    expect(view.units.some((option) => option.item.kind === 'unit' && option.item.unit === 'jijiInfantry')).toBe(false);
+    const buildings = view.buildings.map((option) => (option.item.kind === 'building' ? option.item.building : ''));
+    expect(buildings).toContain('jixiaAcademy');
+    expect(buildings).not.toContain('academy');
+    // the cost is the unique unit's
+    expect(warrior.cost).toBe(UNITS.jijiInfantry!.cost);
+    const plain = cityView(labGame(null).state, HOME_ZONE)!;
+    expect(plain.buildings.map((option) => (option.item.kind === 'building' ? option.item.building : ''))).toContain('academy');
+    expect(plain.buildings.some((option) => option.item.kind === 'building' && BUILDINGS[option.item.building].nation !== null)).toBe(false);
+  });
+
+  it('offers every hex the rules let the city improve: 夜郎 farms its mountains', () => {
+    const base = labGame('yelang').state;
+    const topo = topologyOf(base.map);
+    const hex = topo.workHexes[HOME_ZONE]!.find((candidate) => topo.water[candidate] === 0 && base.map.zone[candidate] === HOME_ZONE)!;
+    const mountain = (nation: string | null) =>
+      labGame(nation, {
+        tweak: (m) => {
+          m.terrain[hex] = Terrain.Mountain;
+        },
+      }).state;
+    const farm = (nation: string | null) => cityView(mountain(nation), HOME_ZONE)!.improvements.find((option) => option.improvement === 'farm');
+    expect(farm('yelang')!.hexes).toContain(hex);
+    expect(farm(null)?.hexes ?? []).not.toContain(hex);
+    // a nation's own improvement is offered to it alone
+    const improvements = (nation: string | null) => cityView(labGame(nation).state, HOME_ZONE)!.improvements.map((option) => option.improvement);
+    expect(improvements('chenla')).toContain('baray');
+    expect(improvements(null)).not.toContain('baray');
+  });
+
+  it('shows the price of an upgrade as the rules take it', () => {
+    const priced = (nation: string | null): number => {
+      let id = 0;
+      const state = edit(labGame(nation).state, (draft) => {
+        draft.units = draft.units.filter((unit) => unit.hex !== LAND);
+        id = put(draft, 'warrior', SELF, LAND).id;
+      });
+      return upgradeView(state, id)!.gold;
+    };
+    expect(priced('xiaoxiang')).toBeLessThan(priced(null));
+    expect(priced('xiaoxiang')).toBe(Math.floor(priced(null) * 0.9));
+  });
+});
 
 describe('cityView', () => {
   it('offers what the rules allow in the first era, with costs and turns', () => {

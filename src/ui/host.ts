@@ -131,6 +131,8 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
   const orders = new Map<number, MoveOrder>();
   const skipped = new Set<number>();
   const declined = new Set<number>();
+  /** Policy slots the player emptied: they wait for no card until one is put in. */
+  const emptied = new Set<number>();
   const listeners = new Set<(change: HostChange) => void>();
 
   const emit = (change: HostChange): void => {
@@ -145,6 +147,7 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
     orders.clear();
     skipped.clear();
     declined.clear();
+    emptied.clear();
     emit({ kind: 'started' });
   };
 
@@ -257,6 +260,10 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
         orders.delete(action.unit);
         skipped.delete(action.unit);
       }
+      if (action.type === 'slotPolicy') {
+        if (action.policy === null) emptied.add(action.slot);
+        else emptied.delete(action.slot);
+      }
       emit({ kind: 'action', events: result.events });
       return result;
     },
@@ -315,7 +322,7 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
       emit({ kind: 'attention' });
     },
     pending() {
-      return playing && !busy ? pendingItems(state, { orders, skipped, declined }) : [];
+      return playing && !busy ? pendingItems(state, { orders, skipped, declined, emptied }) : [];
     },
     async endTurn() {
       return (await run(1, false)).turns === 1;

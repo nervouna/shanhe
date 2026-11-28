@@ -28,6 +28,8 @@ export interface Attention {
   readonly skipped: { has(unit: number): boolean };
   /** Polities whose peace offer the player turned down this turn. */
   readonly declined?: { has(polity: number): boolean };
+  /** Policy slots the player emptied and has not filled since: they are empty on purpose. */
+  readonly emptied?: { has(slot: number): boolean };
 }
 
 /** The polities that offered the player peace during the last turn and are still at war with them. */
@@ -46,12 +48,16 @@ export function peaceOffers(state: GameState): number[] {
   return list.sort((a, b) => a - b);
 }
 
-/** True if the player has a card to unlock, or an empty slot and an unlocked card that is in no slot. */
-export function policyPending(state: GameState): boolean {
+/**
+ * True if the player has a card to unlock, or an empty slot and an unlocked
+ * card that is in no slot. A slot the player emptied does not count.
+ */
+export function policyPending(state: GameState, emptied?: { has(slot: number): boolean }): boolean {
   const self = state.polities[state.player];
   if (self === undefined) return false;
   if (unlockOptions(state, state.player).length > 0) return true;
-  return self.slots.includes(null) && self.policies.some((policy) => !self.slots.includes(policy));
+  const waiting = self.slots.some((card, slot) => card === null && emptied?.has(slot) !== true);
+  return waiting && self.policies.some((policy) => !self.slots.includes(policy));
 }
 
 /**
@@ -75,7 +81,7 @@ export function pendingItems(state: GameState, attention: Attention): PendingIte
     if (zone !== undefined) items.push({ kind: 'city', city: city.zone, hex: zone.siteHex });
   }
   if (self.research === null && researchOptions(state, player).length > 0) items.push({ kind: 'research' });
-  if (policyPending(state)) items.push({ kind: 'policy' });
+  if (policyPending(state, attention.emptied)) items.push({ kind: 'policy' });
   for (const offer of state.offers) {
     if (offer.to === player) items.push({ kind: 'offer', offer: offer.id, from: offer.from });
   }
