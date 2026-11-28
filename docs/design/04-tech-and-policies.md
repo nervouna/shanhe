@@ -9,11 +9,11 @@ Rules:
 - A nation researches one tech at a time with its science. Science beyond a tech's cost carries over, and at most one tech is finished per turn. A player who has chosen no tech gets the AI's choice, so research never stands still.
 - Every tech after the Ancient era has 1–2 prerequisites, all from earlier eras (see [Prerequisites](#prerequisites)). Ancient techs have none. Within an era the order is free.
 - A tech can be researched once its era has been entered. Entering the next era requires at least 4 techs of the current era; a nation's era is the highest it has entered, and each nation has its own.
-- **Catch-up**: a tech already known by any other living nation or city-state costs 20% less.
-- Cost per tech by era: 7, 32, 100, 240, 560, 740 science, before the three percentages below, which add up.
+- **Catch-up**: a tech already known by any other living nation or city-state costs 20% less. If one of those who know it is a nation the researcher fears (the balance of power in [03-gameplay.md](03-gameplay.md)), it costs 1% less again for each point of that fear, up to 50%: what a leader knows does not stay its own.
+- Cost per tech by era: 9, 37, 110, 270, 640, 1150 science, before the percentages below, which add up.
 - **The calendar.** The game's calendar gives every era 25 turns (Ancient on turns 1–25, Modern from turn 126). A tech of an era the calendar has not reached yet is ahead of its time and costs 100% more for each era it is ahead. A tech of an era the calendar has left behind is common knowledge and costs 30% less for each era, up to two eras. This is what keeps the leader near the pace of 25 turns an era and lets the others catch up.
 - **The size of the realm.** Every city beyond a nation's first adds 15% to the cost of its techs, up to ten cities beyond the first. A large realm learns slowly; a nation of one city pays the plain cost.
-- With these the first major nation enters the Modern era on turns 120–130 in most games, and no nation knows all 40 techs when the game ends.
+- With these the first major nation enters the Modern era on turns 112–128 in most games, and no nation knows all 40 techs when the game ends.
 - **Simplified-AI nations and city-states do not research.** They know a tech once half of the researching nations (the living major nations and the player) know it, and their era follows from what they know.
 - A unit, building or improvement is available only with its tech. The settler needs no tech: it needs the Classical era.
 

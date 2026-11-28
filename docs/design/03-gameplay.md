@@ -12,7 +12,9 @@ Five yields: food (粮), production (工), gold (金), science (科), culture (�
 
 Morale (民心) is a per-city satisfaction value. War weariness lowers it: the longer a war runs, the lower morale falls in every city. This is the brake on endless conquest.
 
-War weariness rises by 1 for every turn a polity is at war, however many enemies it has, and by 5 when it loses a city. It falls by 3 when the polity takes a city, by 10 when it forces a nation to become its vassal, and by 2 for every turn at peace. It never goes above 60.
+**The capital.** A nation's capital yields 50% more gold and science than the same city would elsewhere. It is the seat of government, and it counts for more the smaller the realm is: a nation of one city gets it on everything it has, a nation of six on a sixth.
+
+War weariness rises by 1 for every turn a polity is at war, however many enemies it has, and by 5 when it loses a city. It falls by 5 when the polity takes a city, by 10 when it forces a nation to become its vassal, and by 2 for every turn at peace. It never goes above 60.
 
 ## Cities
 
@@ -22,7 +24,7 @@ War weariness rises by 1 for every turn a polity is at war, however many enemies
 - One build project at a time, with a queue. Options: buildings, units, improvements.
 - **There are no worker units.** An improvement is chosen in the city's build queue and then placed on a hex on the map.
 - A captured city goes through a period of unrest.
-- **City defence.** A city has HP. Once it has walls it makes one ranged counter-strike per turn. When its HP reaches zero, a melee unit entering the hex captures it. A city regains 10 HP in a turn in which nobody attacks it.
+- **City defence.** A city has 130 HP, and 50 more with walls. Once it has walls it makes one ranged counter-strike per turn. When its HP reaches zero, a melee unit entering the hex captures it. A city regains 10 HP in a turn in which nobody attacks it.
 - **Mustering.** A new unit appears on its city's hex or, when that is taken, on the nearest free hex it may stand on within 3 hexes of the city. With no such hex the unit waits.
 
 ## Roads
@@ -36,7 +38,11 @@ Roads are never built by hand. They form automatically between a nation's own ci
 
 ## Gold
 
-Gold pays building and unit upkeep. Beyond that it can:
+Gold pays building and unit upkeep. A unit costs 1 gold a turn, and two units per city are kept for nothing.
+
+**The supply limit.** A polity's cities and people supply a certain number of fighting units, on land and at sea: 2, plus 1.5 for every city, plus 1 for every 6 citizens, rounded down. A nation of four cities and 24 citizens supplies 12. Units beyond the limit can be kept, but each costs more than the one before: the first 1 gold a turn on top of its upkeep, the second 2, the third 3, so five units too many cost 15 gold a turn and ten cost 55. No policy card or trait lowers that. Settlers and tribes are not counted. This is what keeps the map of the middle game from being carpeted with pieces: an army is as large as the realm behind it, and a rich nation pays dearly for more. For the same reason wasteland holds one tribe for every 60 hexes of a zone, and at least one in each.
+
+Beyond upkeep, gold can:
 
 - buy a building or unit outright instead of waiting for production;
 - upgrade units;
@@ -121,6 +127,27 @@ Favour is a number from −100 to 100 for each pair of nations, starting at 0. E
 | Trade route between them (each, at most two) | +5 |
 | Shared enemy (each, at most two) | +10 |
 
+**The balance of power.** The nations in the race for victory (the major nations and the player) are measured on three tracks, one for each victory: the gold a nation has earned in all, the science it has gathered in all, and the strength of its army. On each track its figure is set against the average of all of them. A figure far enough above the average is a lead, and the nation is feared for the largest of its leads:
+
+| Track | A lead begins at | It is complete at |
+|---|---|---|
+| Income | 1.25 times the average | 1.75 times |
+| Science | 1.5 times | 2.3 times |
+| Army | 2.2 times | 3.6 times |
+
+A complete lead is feared at 50, a lead halfway at 25. Every stage of the Tiangong project a nation has completed adds 15 to its fear on the science track. Nothing is feared before turn 26, and the fear counts in full only from turn 90 on (at turn 45 for half): nobody minds who is ahead in the first age. The fear is public: it is worked out from the figures the victory screen shows.
+
+| Standing | Favour |
+|---|---|
+| Fear of the leader: between a feared nation and every nation feared less | minus its fear, down to −50 |
+| A common threat: between two nations that both stand against a leader feared at 12 or more | +15 |
+
+A nation stands against a leader if it is feared less, is neither its ally, its vassal nor its overlord, and is either in the race itself or shares a border with it. The world then turns against the leader in ways that follow from favour: majors refuse it trade pacts (below favour −10) and so do the other nations (below −20), nobody proposes or accepts open borders or an alliance, and those who stand against it sign with each other more readily. Three reactions go beyond favour:
+
+- **Wars of containment.** An AI major declares war on a leader feared at 20 or more once its favour with the leader is down to −15, if it can reach the leader's land (its allies' land counts as its own for that) and it, its allies, its vassals and everybody already at war with the leader are together 1.1 times as strong as the leader with its allies, vassals and cities. A leader out for learning or wealth, which starts no other war, joins this one. A major choosing a war of its own picks a feared leader it can beat before any other target, the most feared first.
+- **Vassals drift away.** A vassal whose favour with its overlord has fallen to −10 leaves it, once the vassalage is 10 turns old, unless the overlord's army is at least 1.5 times its own.
+- **Knowledge leaks.** A tech that a feared nation knows costs every nation that is feared less 1% less for each point of that fear, on top of the catch-up discount.
+
 Events change it at once: declaring war −30 (−15 more when it breaks an agreement, and −15 with each ally of the attacked nation), making peace +10, an agreement or deal that runs its full term +5, one that is cancelled or goes unpaid −15, a gift of gold +1 per 10 gold.
 
 ### Agreements
@@ -146,11 +173,11 @@ An agreement is proposed with an action. An AI answers at once; a human player g
 
 - At the gates of an enemy nation's fallen capital (0 HP), a melee land unit can demand vassalage instead of taking the city. The city stays with its owner, the war between the two ends, and the owner becomes a vassal. City-states cannot be made vassals.
 - A nation can also be asked to become a vassal without a war.
-- **Submission.** An AI nation that has lost a city in a war and asks an enemy at least 2.5 times as strong as itself for peace pays for the peace with its freedom: if the enemy accepts, it becomes the enemy's vassal. A human player who asks for peace never submits this way, and a player who accepts such an offer gets the vassal.
+- **Submission.** An AI nation that has lost a city in a war and asks an enemy at least 1.5 times as strong as itself for peace pays for the peace with its freedom: if the enemy accepts, it becomes the enemy's vassal. A human player who asks for peace never submits this way, and a player who accepts such an offer gets the vassal.
 - **How many vassals.** A nation can hold 1 vassal in the Ancient era, 2 in the Classical and Medieval eras, 3 in the Early Modern era and 5 from the Industrial era on. At that number a demand, a proposal or a submission is refused; the vassals it has stay.
 - A new vassal lets its own vassals and allies go. Its wars end, except those its overlord is also fighting, and it joins the rest of its overlord's wars.
 - A vassal pays 20% of its income (city gold and trade routes) to its overlord each turn. It joins every war its overlord enters and leaves it when its overlord makes peace. It cannot declare war or make peace itself, and war is declared on its overlord, not on it. Overlord and vassal have open borders.
-- An overlord can release a vassal at any time. A vassal is also freed when its overlord loses its own capital or is annexed, or itself becomes a vassal.
+- An overlord can release a vassal at any time. A vassal is also freed when its overlord loses its own capital or is annexed, or itself becomes a vassal. A vassal that has come to dislike an overlord too weak to hold it leaves by itself (see the balance of power under [Favour](#favour)).
 - For the Conquest victory a major nation's original capital held by a vassal counts for the overlord.
 
 ### Resource deals
@@ -162,7 +189,7 @@ An agreement is proposed with an action. An AI answers at once; a human player g
 ### How the AI decides
 
 - A major nation accepts a trade pact at favour −10 or more, open borders at 5, an alliance at 30. It never becomes a vassal by agreement.
-- A nation on the simplified AI accepts every trade pact, open borders at favour 5, an alliance at 10, and vassalage at favour 40 when the other is eight times as strong.
+- A nation on the simplified AI accepts a trade pact at favour −20 or more, open borders at favour 5, an alliance at 10, and vassalage at favour 40 when the other is five times as strong.
 - Nobody allies with an ally of its enemy or an enemy of its ally.
 - A resource is sold at 4 gold a turn (strategic) or 2 (specialty) to anyone at favour −20 or more, and bought at that price by a nation that has a use for it and the income to pay.
 
@@ -201,6 +228,8 @@ In an observer game every major nation is the AI's.
 - **What the full AI does with diplomacy and trade.** It picks policy cards for its situation (economy and civil cards at peace, military cards at war, a diplomacy card only when it has what the card works on). It fills its trade route slots with the destinations that pay best. Every few turns it offers its neighbours a trade pact, open borders and an alliance where favour allows, sells a resource a neighbour lacks, and sends a gift to the nearest city-state. It does not attack a nation it is on good terms with, and counts a target's allies and vassals before it declares war. At a fallen capital it takes a much weaker nation as a vassal when it is weary of war or has another war to fight, and takes the city otherwise. A city with an enemy at its gates and no garrison buys one.
 - **Ambitions.** In every game each leader of a major nation sets out for one of the three victories; which one is drawn from the game's seed and weighted by its personality (see [02-nations.md](02-nations.md)). A leader out for learning or wealth starts no wars; a leader out for conquest goes from one war to the next, after the nations that hold the capitals it needs.
 - **Gold.** A major nation keeps a reserve (80 gold and four turns of its upkeep) and spends the rest: up to four times a turn it buys what one of its cities is building, or the next building the city would build, the slowest item first. A full treasury makes its gifts to city-states four times as large.
+- **The size of armies.** No AI plans an army beyond its supply limit. At peace a leader out for conquest keeps the whole limit under arms and recruits before its cities' first buildings; the others keep 60% of it (80% for a nation without an ambition) and recruit half of that first. At war every leader fills the limit, and a leader out for conquest pays for units beyond it as long as the surcharge stays under 70% of its spare income. At a fallen capital it takes the owner as a vassal when it is 1.5 times as strong. A nation on the simplified AI keeps one garrison per city and one unit in the field.
+- **Fog.** The AI plans its steps with what its polity sees: a unit in the fog does not stand in its way. If the rules then refuse the step, the unit stays where it is for the turn and looks for no other way, so a refusal tells it nothing.
 - **Armies.** An army goes round units of other polities that stand in its way, and a column that is held up spreads out. A unit with no orders does not stay at the gates of its city, where new units muster. At war, a city within 10 hexes of an enemy city builds its airfield before anything else, and a nation at war or out for conquest researches Aviation before the other techs of its kind.
 - **Peace.** A major sues for peace at war weariness 35 (a leader out for conquest at 55), after 30 turns in which the enemy has lost no city, or when its army is less than 60% of the enemy's. It accepts a peace that makes the other its vassal while it has room for one.
 - The simplified AI uses policy cards and accepts agreements, but proposes none and opens no trade routes.
