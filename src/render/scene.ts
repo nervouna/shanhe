@@ -245,6 +245,14 @@ export interface FrameStats {
   readonly frameMs: number;
   /** Time spent in the frame callback in milliseconds, averaged over recent frames. */
   readonly cpuMs: number;
+  /**
+   * Time the GPU spent in the render passes of a recent frame, in
+   * milliseconds, as its timestamp queries report it; `null` where the
+   * browser or the backend has no such queries. Unlike {@link frameMs} it is
+   * not rounded up to the display's refresh interval, so it tells how much
+   * of the frame budget is left.
+   */
+  readonly gpuMs: number | null;
   /** Draw calls of the last frame, shadow pass included. */
   readonly drawCalls: number;
   /** Triangles of the last frame, shadow pass included. */

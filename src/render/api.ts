@@ -43,6 +43,7 @@ import { createKeyedCache } from './keyed.ts';
 import type { GroundArea } from './keyed.ts';
 import { createEffects } from './effects.ts';
 import { createSurface, mapWorldRect, surfaceHeightAt, unitsPerMetre } from './heightField.ts';
+import { createGpuTimer } from './gpuTimer.ts';
 import { createGroundLines } from './groundLines.ts';
 import { createHexRaster } from './hexRaster.ts';
 import { POLITICAL_NAMES_FROM, createLabels } from './labels.ts';
@@ -113,7 +114,8 @@ export async function createRenderer(
   options: RendererOptions = {},
 ): Promise<Renderer> {
   // edges are smoothed by the finish (`postfx.ts`), not by multisampling
-  const renderer = new WebGPURenderer({ canvas, antialias: false });
+  // the GPU's own timing of the passes, where the browser has it, tells the adaptive scale how much room is left
+  const renderer = new WebGPURenderer({ canvas, antialias: false, trackTimestamp: true });
   await renderer.init();
   const backend: RenderBackend =
     (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true
@@ -399,6 +401,7 @@ export async function createRenderer(
     frames: 0,
     frameMs: 0,
     cpuMs: 0,
+    gpuMs: null,
     drawCalls: 0,
     triangles: 0,
     renderScale,
@@ -430,10 +433,16 @@ export async function createRenderer(
   });
   const listeners = new Set<(stats: FrameStats) => void>();
   let lastTime: number | null = null;
+  const gpuTimer = createGpuTimer(renderer);
+  /** Time the last frame spent in the frame callback and in `setScene` before it, and the latter as it adds up. */
+  let lastCpuMs = 0;
+  let sceneMs = 0;
+  // the options are not kept: they hold the heightmap samples, which nothing needs once the ground is built
+  const maxFps = options.maxFps;
   let disposed = false;
   let paused = options.paused === true;
   // a little slack, so that a cap at the display's own rate does not drop every other frame
-  const minFrameMs = options.maxFps === undefined ? 0 : 1000 / options.maxFps - 2;
+  const minFrameMs = maxFps === undefined ? 0 : 1000 / maxFps - 2;
   let ownersKey = '';
   let citySites: ReadonlySet<number> = new Set();
   let citySitesKey = '';
@@ -454,10 +463,11 @@ export async function createRenderer(
     const elapsed = lastTime === null ? 0 : start - lastTime;
     lastTime = start;
 
-    // the adaptive scale follows the time between frames. A capped frame
-    // rate says nothing about the load, and building terrain is a passing cost.
-    if (settings.scale === null && options.maxFps === undefined && stats.frames > 2 && terrainBuilds === 0 && treeBuilds === 0) {
-      const next = scaleController.sample(elapsed);
+    // the adaptive scale follows the GPU's time for a frame where it is known and the time between
+    // frames where it is not, also while terrain and trees come in. A frame rate capped by the page
+    // says nothing about the load.
+    if (settings.scale === null && maxFps === undefined && stats.frames > 2) {
+      const next = scaleController.sample(elapsed, { gpuMs: gpuTimer.ms, cpuMs: lastCpuMs });
       if (next !== renderScale) {
         renderScale = next;
         resize();
@@ -472,12 +482,17 @@ export async function createRenderer(
     if (postfx.active) postfx.render();
     else renderer.render(scene, camera);
     const cpu = performance.now() - start;
+    // what held the next frame up on the page's side: this callback, and the scenes set since the last one
+    lastCpuMs = cpu + sceneMs;
+    sceneMs = 0;
+    gpuTimer.frameDone();
     const info = renderer.info.render;
     const first = stats.frames < 2;
     stats = {
       frames: stats.frames + 1,
       frameMs: first ? elapsed : stats.frameMs + (elapsed - stats.frameMs) * STATS_BLEND,
       cpuMs: first ? cpu : stats.cpuMs + (cpu - stats.cpuMs) * STATS_BLEND,
+      gpuMs: gpuTimer.ms,
       drawCalls: info.drawCalls,
       triangles: info.triangles,
       renderScale,
@@ -520,6 +535,7 @@ export async function createRenderer(
   return {
     backend,
     setScene(next) {
+      const began = performance.now();
       const valid = validHex;
       for (const unit of next.units) {
         if (!valid(unit.hex)) throw new RangeError(`setScene: unit ${unit.id} is on hex ${unit.hex}`);
@@ -578,6 +594,7 @@ export async function createRenderer(
         routesKey = routeKey;
         groundLines.setRoutes(routes);
       }
+      sceneMs += performance.now() - began;
     },
     pickHex(clientX, clientY) {
       const bounds = canvas.getBoundingClientRect();
@@ -704,6 +721,7 @@ export async function createRenderer(
       window.removeEventListener('resize', resize);
       listeners.clear();
       controller.dispose();
+      gpuTimer.dispose();
       terrain.dispose();
       vegetation.dispose();
       groundLines.dispose();
