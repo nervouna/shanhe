@@ -10,7 +10,9 @@ import type { TranslationKey } from '../shared/i18n.ts';
 import type { MapData } from '../shared/mapData.ts';
 import { agreementsBetween, controlReasonText, dealsBetween, diplomaticControls, offersFrom } from './diplomacy.ts';
 import type { DiplomaticControl } from './diplomacy.ts';
-import { button, el } from './dom.ts';
+import { button, el, iconOnly } from './dom.ts';
+import { kitViewOf } from './kit.ts';
+import { kitRows } from './kitPanel.ts';
 import { agreementName, polityName, resourceName } from './names.ts';
 import { peaceOffers } from './pending.ts';
 import { relationView } from './rules.ts';
@@ -72,15 +74,25 @@ export function polityPanel(view: View, polity: number, onClose: () => void): HT
   if (entry === undefined || self === undefined) return null;
 
   const title = el('h2', { id: 'polity-name', text: polityName(map, polity) });
-  title.style.borderColor = cssColor(entry.color);
-  const header = el('header', {}, title, button('×', onClose, { class: 'close', id: 'polity-close' }));
+  title.style.setProperty('--nation', cssColor(entry.color));
+  const header = el('header', {}, title, iconOnly('close', t('menu.close'), onClose, { class: 'close', id: 'polity-close' }));
+  const kit = kitViewOf(map, polity);
   const kind =
     entry.kind === 'cityState' ? t('polity.cityState') : state.majors.includes(polity) ? t('polity.major') : t('polity.nation');
   const cities = state.cities.filter((city) => city !== null && city.owner === polity).length;
   const body = el(
     'div',
     { class: 'scroll' },
-    el('div', { class: 'line' }, el('span', { text: kind }), el('span', { text: t('polity.cities', { count: cities }) })),
+    el(
+      'div',
+      { class: 'line' },
+      el('span', { text: kind }),
+      el('span', { text: t('polity.cities', { count: cities }) }),
+      // who leads it and how they play, where it has a leader
+      kit !== null && el('span', { id: 'polity-leader', text: kit.leader.name }),
+      kit !== null &&
+        el('span', { class: 'tag', id: 'polity-personality', text: kit.leader.personalityName, data: { personality: kit.leader.personality } }),
+    ),
   );
 
   const playing = me !== NO_POLITY && self.alive && state.polities[me]?.alive === true;
@@ -228,5 +240,6 @@ export function polityPanel(view: View, polity: number, onClose: () => void): HT
     });
     if (controls.length > 0) body.append(el('section', { id: 'polity-controls' }, ...controls));
   }
+  if (kit !== null) body.append(el('section', { id: 'polity-kit', data: { nation: kit.nation } }, kitRows(kit, false)));
   return [header, body];
 }

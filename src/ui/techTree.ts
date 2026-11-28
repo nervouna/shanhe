@@ -1,10 +1,24 @@
 /** The tech tree as the overlay draws it: where each tech sits, the lines between them, and what each one gives. */
 
-import { BUILDINGS, BUILDING_IDS, ERAS, IMPROVEMENTS, IMPROVEMENT_IDS, TECHS, TECH_IDS, UNITS, UNIT_IDS } from '../core/data.ts';
+import {
+  BUILDINGS,
+  BUILDING_IDS,
+  ERAS,
+  IMPROVEMENTS,
+  IMPROVEMENT_IDS,
+  TECHS,
+  TECH_IDS,
+  UNITS,
+  UNIT_IDS,
+  buildingFor,
+  improvementFor,
+  unitFor,
+} from '../core/data.ts';
 import type { BuildingId, ImprovementId, TechId } from '../core/data.ts';
 import { researchCost } from '../core/game.ts';
 import type { GameState, RejectReason } from '../core/game.ts';
 import { checkAction } from '../core/query.ts';
+import { ROAD_UPGRADES } from '../core/uniques.ts';
 
 export interface TechNode {
   readonly tech: TechId;
@@ -61,26 +75,48 @@ export function layoutTechTree(): TechLayout {
   return { nodes, edges, columns: ERAS.length, rows };
 }
 
-/** One thing a tech gives. */
+/** One thing a tech gives. `unique` marks what only the nation in question has. */
 export type TechUnlock =
-  | { readonly kind: 'unit'; readonly unit: string }
-  | { readonly kind: 'building'; readonly building: BuildingId }
-  | { readonly kind: 'improvement'; readonly improvement: ImprovementId }
+  | { readonly kind: 'unit'; readonly unit: string; readonly unique: boolean }
+  | { readonly kind: 'building'; readonly building: BuildingId; readonly unique: boolean }
+  | { readonly kind: 'improvement'; readonly improvement: ImprovementId; readonly unique: boolean }
+  /** The nation's roads become this road upgrade (an id of `ROAD_UPGRADES`). */
+  | { readonly kind: 'road'; readonly road: string; readonly unique: true }
   /** It reveals the strategic resource (`MapResource.id`). */
   | { readonly kind: 'resource'; readonly resource: string }
   | { readonly kind: 'tradeRoute' | 'landPorts' | 'seaExits' | 'coast' | 'ocean' | 'railways' | 'hillFarms' | 'project' };
 
-/** Everything the tech unlocks: units, buildings and improvements that name it, then its own effects. */
-export function techUnlocks(tech: TechId): TechUnlock[] {
+/**
+ * Everything the tech unlocks for a nation: the units, buildings and
+ * improvements that name it, then its own effects. The nation's unique unit,
+ * building or improvement stands where it replaces a generic one, its extra
+ * ones and its road upgrade are added, and nobody else's are listed.
+ *
+ * @param nation `MapPolity.id` of the nation the tree is drawn for; without one, the generic tree.
+ */
+export function techUnlocks(tech: TechId, nation = ''): TechUnlock[] {
   const def = TECHS[tech];
   const list: TechUnlock[] = [];
-  for (const unit of UNIT_IDS) {
+  for (const generic of UNIT_IDS) {
+    const unit = unitFor(nation, generic);
     const entry = UNITS[unit];
-    if (entry !== undefined && entry.buildable && entry.tech === tech) list.push({ kind: 'unit', unit });
+    if (entry !== undefined && entry.buildable && entry.tech === tech) list.push({ kind: 'unit', unit, unique: unit !== generic });
   }
-  for (const building of BUILDING_IDS) if (BUILDINGS[building].tech === tech) list.push({ kind: 'building', building });
+  for (const building of BUILDING_IDS) {
+    const entry = BUILDINGS[building];
+    if (entry.tech !== tech) continue;
+    // a generic building the nation replaces is not built by it; a unique one is only its nation's
+    if (entry.nation === null ? buildingFor(nation, building) !== building : entry.nation !== nation) continue;
+    list.push({ kind: 'building', building, unique: entry.nation !== null });
+  }
   for (const improvement of IMPROVEMENT_IDS) {
-    if (IMPROVEMENTS[improvement].tech === tech) list.push({ kind: 'improvement', improvement });
+    const entry = IMPROVEMENTS[improvement];
+    if (entry.tech !== tech) continue;
+    if (entry.nation === undefined ? improvementFor(nation, improvement) !== improvement : entry.nation !== nation) continue;
+    list.push({ kind: 'improvement', improvement, unique: entry.nation !== undefined });
+  }
+  for (const [road, spec] of Object.entries(ROAD_UPGRADES)) {
+    if (spec.nation === nation && spec.tech === tech) list.push({ kind: 'road', road, unique: true });
   }
   if (def.reveals !== undefined) list.push({ kind: 'resource', resource: def.reveals });
   if ((def.tradeRoutes ?? 0) > 0) list.push({ kind: 'tradeRoute' });

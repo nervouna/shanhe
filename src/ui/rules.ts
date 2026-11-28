@@ -11,8 +11,9 @@ import {
   capitalsHeldBy,
   checkAction,
   favourStanding,
+  improvementSites,
   strengthOf,
-  unitUpgrade,
+  upgradeOffer,
   victoryContenders,
   victoryStandings,
 } from '../core/query.ts';
@@ -56,7 +57,6 @@ export function cityView(state: GameState, zone: number): CityView | null {
   const city = state.cities[zone];
   if (city === undefined || city === null) return null;
   const polity = city.owner;
-  const topo = topologyOf(state.map);
   const production = city.yields.production;
   const option = (item: BuildItem): BuildOption => {
     const cost = buildCost(state, zone, item);
@@ -67,8 +67,10 @@ export function cityView(state: GameState, zone: number): CityView | null {
 
   const units = UNIT_IDS.map((unit): BuildItem => ({ kind: 'unit', unit })).filter(legal).map(option);
   const buildings = BUILDING_IDS.map((building): BuildItem => ({ kind: 'building', building })).filter(legal).map(option);
+  // every hex the rules let the city improve, the mountains a trait opens included
+  const reach = improvementSites(state, zone);
   const improvements = IMPROVEMENT_IDS.flatMap((improvement) => {
-    const hexes = (topo.workHexes[zone] ?? []).filter((hex) => legal({ kind: 'improvement', improvement, hex }));
+    const hexes = reach.filter((hex) => legal({ kind: 'improvement', improvement, hex }));
     const first = hexes[0];
     return first === undefined ? [] : [{ ...option({ kind: 'improvement', improvement, hex: first }), improvement, hexes }];
   });
@@ -170,9 +172,9 @@ export function cityZoneAt(state: GameState, hex: number): number {
   return zone !== undefined && zone >= 0 && state.cities[zone] !== null && state.cities[zone] !== undefined ? zone : -1;
 }
 
-/** What a unit would upgrade to and the gold it costs, or null if it has no upgrade now. */
+/** What a unit would upgrade to and the gold its owner pays, modifiers counted in, or null if it has no upgrade now. */
 export function upgradeView(state: GameState, unitId: number): { readonly type: string; readonly gold: number } | null {
-  return unitUpgrade(state, unitId);
+  return upgradeOffer(state, unitId);
 }
 
 /** What a polity is researching and how long it still takes, or null if it researches nothing now. */

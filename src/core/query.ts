@@ -5,17 +5,27 @@
  * query calls legal is what `applyAction` accepts.
  */
 
-import { buyCost, checkStep, stepCost, upgradeCost, validate } from './actions.ts';
-import { itemCost } from './cities.ts';
-import { cityStrength, defenceStrength, hexesApart, militaryStrength } from './combat.ts';
+import { buyCost, checkStep, stepCost, upgradeCost, upgradePrice, validate } from './actions.ts';
+import { improvableHexes, itemCost } from './cities.ts';
+import {
+  amphibiousFactor,
+  attackStrength,
+  cityStrength,
+  combatDamage,
+  combatFactor,
+  defenceStrength,
+  hexesApart,
+  militaryStrength,
+} from './combat.ts';
 import { at, atWar, cityAtHex, createCtx, isEmbarked, relationKey } from './context.ts';
 import type { Ctx } from './context.ts';
-import { AIR_STRIKE, FAVOUR, PROJECT, TRADE, conquestTarget } from './data.ts';
+import { AIR_STRIKE, FAVOUR, PROJECT, TRADE, conquestTarget, unitDef } from './data.ts';
 import type { AgreementKind, PolicyId, TechId } from './data.ts';
 import { dealPrice } from './diplomacy.ts';
+import { kitOf, roadUpgradeOf } from './modifiers.ts';
 import { openPolicies } from './policies.ts';
 import { isNation } from './relations.ts';
-import { hasResource, openTechs, ownsResource, researches, upgradeTargetFor } from './tech.ts';
+import { eraOf, hasResource, openTechs, ownsResource, researches, upgradeTargetFor } from './tech.ts';
 import { checkRoute, checkRouteTarget, findRoutePath, routeIncome, routeSlots, routesOf } from './trade.ts';
 import { capitalsHeld, contenders } from './turn.ts';
 import { NO_POLITY } from './types.ts';
@@ -411,4 +421,115 @@ export function victoryContenders(state: GameState): number[] {
 /** Number of major nations' original capitals `polity` holds, itself or through a vassal. */
 export function capitalsHeldBy(state: GameState, polity: number): number {
   return polity === NO_POLITY ? 0 : capitalsHeld(ctxOf(state), polity);
+}
+
+// ------------------------------------------- kits and modifiers (interface)
+
+/** The era `polity` has reached (an index into `ERAS`); 0 for `NO_POLITY`. */
+export function eraOfPolity(state: GameState, polity: number): number {
+  return state.polities[polity] === undefined ? 0 : eraOf(ctxOf(state), polity);
+}
+
+/**
+ * What a unit would upgrade to and the gold its owner pays for it, with the
+ * owner's modifiers counted in: the price the `upgrade` action takes. Null
+ * if it has no upgrade now.
+ */
+export function upgradeOffer(state: GameState, unitId: number): { readonly type: string; readonly gold: number } | null {
+  const ctx = ctxOf(state);
+  const unit = ctx.unitById.get(unitId);
+  const target = unit === undefined ? null : upgradeTargetFor(ctx, unit);
+  return unit === undefined || target === null ? null : { type: target.id, gold: upgradePrice(ctx, unit, target) };
+}
+
+/**
+ * The hexes the city in `zone` could put an improvement on as far as reach
+ * goes: those its citizens work and the mountains of its zone. Whether a
+ * given improvement fits a hex is `checkAction`'s answer.
+ */
+export function improvementSites(state: GameState, zone: number): readonly number[] {
+  const city = state.cities[zone];
+  return city === undefined || city === null ? [] : improvableHexes(ctxOf(state), city as City);
+}
+
+/** The id (in `ROAD_UPGRADES`) of the road upgrade the polity's roads have now, or null. */
+export function activeRoadUpgrade(state: GameState, polity: number): string | null {
+  if (state.polities[polity] === undefined) return null;
+  const ctx = ctxOf(state);
+  return roadUpgradeOf(ctx, polity) === null ? null : (kitOf(ctx, polity)?.building ?? null);
+}
+
+export interface AttackOutcome {
+  /** Expected hit points the defender loses. */
+  readonly toDefender: number;
+  /** Expected hit points the attacker loses: 0 for a ranged attack. */
+  readonly toAttacker: number;
+  /** True if the attack would take a defenceless city. */
+  readonly capture: boolean;
+}
+
+function riverEdgeBetween(ctx: Ctx, from: number, to: number): boolean {
+  for (let d = 0; d < 6; d++) {
+    if (ctx.topo.neighbors[from * 6 + d] === to) return ((ctx.map.riverEdges[from] as number) & (1 << d)) !== 0;
+  }
+  return false;
+}
+
+/**
+ * What an attack of the unit on `target` would do on average: the damage of
+ * the rules' own attack with its random factor at 1, every modifier and the
+ * penalty for attacking from the water counted in. Null if the unit cannot
+ * fight or there is no enemy of it on that hex. Distance and movement points
+ * are not checked.
+ *
+ * @param from the hex the unit would attack from. Default: where it stands.
+ */
+export function attackOutcome(state: GameState, unitId: number, target: number, from?: number): AttackOutcome | null {
+  const real = ctxOf(state);
+  const found = real.unitById.get(unitId);
+  if (found === undefined || !Number.isInteger(target) || target < 0 || target >= real.topo.count) return null;
+  const def = unitDef(found.type);
+  if (def.strength <= 0) return null;
+  const origin = from ?? found.hex;
+  // From another hex the unit's surroundings differ: the fight is worked out on a board with the unit standing there.
+  let ctx = real;
+  let unit = found;
+  if (origin !== found.hex) {
+    const moved = { ...found, hex: origin };
+    unit = moved;
+    ctx = createCtx({ ...state, units: state.units.map((other) => (other.id === unitId ? moved : other)) } as MutableGameState);
+  }
+  const ranged = def.range > 0;
+  const river = riverEdgeBetween(ctx, origin, target);
+  const acrossRiver = river && !ranged;
+
+  const city = cityAtHex(ctx, target);
+  if (city !== null && city.owner !== unit.owner) {
+    if (!atWar(ctx, unit.owner, city.owner)) return null;
+    if (!ranged && city.hp <= 0 && def.domain === 'land') return { toDefender: 0, toAttacker: 0, capture: true };
+    const strength = cityStrength(ctx, city);
+    const factor =
+      amphibiousFactor(ctx, unit) * combatFactor(ctx, unit, city.owner, { role: 'attack', ranged, acrossRiver, enemyCity: city });
+    return {
+      toDefender: combatDamage(attackStrength(unit, ranged, true, river) * factor, strength, 1),
+      toAttacker: ranged ? 0 : combatDamage(strength, attackStrength(unit, false, false, false) * factor, 1),
+      capture: false,
+    };
+  }
+
+  const defender = ctx.unitAt.get(target);
+  if (defender === undefined || defender.owner === unit.owner || !atWar(ctx, unit.owner, defender.owner)) return null;
+  if (unitDef(defender.type).strength === 0) return { toDefender: defender.hp, toAttacker: 0, capture: false };
+  const attack =
+    attackStrength(unit, ranged, false, river) *
+    amphibiousFactor(ctx, unit) *
+    combatFactor(ctx, unit, defender.owner, { role: 'attack', ranged, acrossRiver, enemyUnit: defender });
+  const defence =
+    defenceStrength(ctx, defender) *
+    combatFactor(ctx, defender, unit.owner, { role: 'defend', ranged, acrossRiver, enemyUnit: unit });
+  return {
+    toDefender: combatDamage(attack, defence, 1),
+    toAttacker: ranged ? 0 : combatDamage(defence, attack, 1),
+    capture: false,
+  };
 }
