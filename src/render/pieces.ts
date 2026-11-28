@@ -5,6 +5,11 @@
  * sky, a ring of hit-point ticks along the rim and a soft shade on the
  * ground under it. All pieces are one instanced mesh, so a
  * thousand of them cost one draw call.
+ *
+ * In the shadow map a piece is a plain disc of a tenth of the triangles (one
+ * more instanced mesh, placed by the same matrices), drawn into the piece
+ * layer's own shadow maps: a piece in motion costs one small pass, not a new
+ * shadow of the whole ground.
  */
 
 import {
@@ -34,6 +39,7 @@ import {
   BufferGeometry,
   CanvasTexture,
   Color,
+  FrontSide,
   InstancedBufferAttribute,
   InstancedMesh,
   LinearFilter,
@@ -48,8 +54,10 @@ import {
 import { hexToWorld, indexToOffset } from '../shared/hex.ts';
 import { surfaceHeightAt, surfaceHeightAtHex } from './heightField.ts';
 import type { Surface } from './heightField.ts';
+import { PIECE_AROUND, PIECE_HEIGHT, PIECE_RADIUS, pieceCasterMesh, pieceOutline } from './pieceShape.ts';
 import type { RenderUnit } from './scene.ts';
 import { noise } from './shaderLib.ts';
+import { PIECE_SHADOW_LAYER } from './shadowLayers.ts';
 
 /** Where a piece is drawn while it is animated. */
 export interface PiecePose {
@@ -69,6 +77,11 @@ export interface Pieces {
   readonly object: InstancedMesh;
   /** The soft dark patch on the ground under every piece. */
   readonly shadows: InstancedMesh;
+  /**
+   * Grows whenever a piece is placed, moved, tipped or resized: whoever
+   * draws the shadows of the pieces draws them again when it has changed.
+   */
+  readonly version: number;
   /** Replaces the pieces. Every pose and effect set since the last call is dropped. */
   setUnits(units: readonly RenderUnit[]): void;
   /** Whether a unit with this id is on the board. */
@@ -90,9 +103,8 @@ export interface Pieces {
 }
 
 /** Shape of a piece, as fractions of the hex size. */
-const RADIUS = 0.54;
-const HEIGHT = 0.3;
-const BEVEL = 0.055;
+const RADIUS = PIECE_RADIUS;
+const HEIGHT = PIECE_HEIGHT;
 /** How deep a piece sits in the water at sea, as a fraction of its height. */
 const DRAFT = 0.25;
 
@@ -162,23 +174,9 @@ class GlyphAtlas {
 
 /** A disc with rounded edges, standing on y = 0. The underside is left open. */
 function buildPieceGeometry(): BufferGeometry {
-  // the outline from the centre of the top to the bottom rim: radius, height, normal
-  const outline: (readonly [r: number, y: number, nr: number, ny: number])[] = [
-    [0, HEIGHT, 0, 1],
-    [RADIUS - BEVEL, HEIGHT, 0, 1],
-  ];
-  const ARC = 3;
-  for (let s = 1; s < ARC; s++) {
-    const a = (s / ARC) * (Math.PI / 2);
-    outline.push([RADIUS - BEVEL + BEVEL * Math.sin(a), HEIGHT - BEVEL + BEVEL * Math.cos(a), Math.sin(a), Math.cos(a)]);
-  }
-  outline.push([RADIUS, HEIGHT - BEVEL, 1, 0], [RADIUS, BEVEL, 1, 0]);
-  for (let s = 1; s <= ARC; s++) {
-    const a = Math.PI / 2 + (s / ARC) * (Math.PI / 2);
-    outline.push([RADIUS - BEVEL + BEVEL * Math.sin(a), BEVEL + BEVEL * Math.cos(a), Math.sin(a), Math.cos(a)]);
-  }
+  const outline = pieceOutline();
 
-  const AROUND = 36;
+  const AROUND = PIECE_AROUND;
   const positions: number[] = [];
   const normals: number[] = [];
   const indices: number[] = [];
@@ -352,7 +350,18 @@ export function createPieces(surface: Surface, environment: Texture): Pieces {
   const polityColors = map.polities.map((polity) => new Color().setHex(polity.color));
   const fallbackColor = new Color(0x888888);
 
+  // what casts the shadows: a coarse disc per piece, seen by the shadow cameras of the piece layer only
+  const caster = pieceCasterMesh();
+  const casterGeometry = new BufferGeometry();
+  casterGeometry.setAttribute('position', new BufferAttribute(new Float32Array(caster.positions), 3));
+  casterGeometry.setIndex(caster.indices);
+  const casterMaterial = new MeshBasicNodeMaterial();
+  // the side towards the sun is the shadow: the disc lies inside the piece, so the piece's own face stays lit
+  casterMaterial.shadowSide = FrontSide;
+
   let capacity = 0;
+  let version = 0;
+  let casters!: InstancedMesh;
   let mesh = allocate(256);
 
   function allocate(size: number): InstancedMesh {
@@ -363,10 +372,18 @@ export function createPieces(surface: Surface, environment: Texture): Pieces {
     const created = new InstancedMesh(geometry, material, size);
     created.name = 'pieces';
     created.count = 0;
-    created.castShadow = true;
     created.receiveShadow = true;
     // instances are spread over the whole map
     created.frustumCulled = false;
+    // the casters go wherever the pieces go: one set of matrices for both
+    casters = new InstancedMesh(casterGeometry, casterMaterial, size);
+    casters.name = 'pieceCasters';
+    casters.instanceMatrix = created.instanceMatrix;
+    casters.count = 0;
+    casters.castShadow = true;
+    casters.frustumCulled = false;
+    casters.layers.set(PIECE_SHADOW_LAYER);
+    created.add(casters);
     return created;
   }
 
@@ -391,7 +408,11 @@ export function createPieces(surface: Surface, environment: Texture): Pieces {
     get shadows() {
       return shadows;
     },
+    get version() {
+      return version;
+    },
     setUnits(units) {
+      version++;
       if (units.length > capacity) {
         const shadeParent = shadows.parent;
         shadeParent?.remove(shadows);
@@ -402,6 +423,8 @@ export function createPieces(surface: Surface, environment: Texture): Pieces {
         shadeParent?.add(shadows);
         const parent = mesh.parent;
         parent?.remove(mesh);
+        mesh.remove(casters);
+        casters.dispose();
         mesh.dispose();
         let size = capacity;
         while (size < units.length) size *= 2;
@@ -430,6 +453,7 @@ export function createPieces(surface: Surface, environment: Texture): Pieces {
       });
       shadows.count = units.length;
       mesh.count = units.length;
+      casters.count = units.length;
       mesh.instanceMatrix.needsUpdate = true;
       data.needsUpdate = true;
       colors.needsUpdate = true;
@@ -445,6 +469,7 @@ export function createPieces(surface: Surface, environment: Texture): Pieces {
     setPose(id, pose) {
       const slot = slots.get(id);
       if (slot === undefined) return;
+      version++;
       const size = layout.size * (pose.scale ?? 1);
       // tipping over turns the piece about the horizontal axis across its fall
       axis.set(pose.tiltZ ?? 0, 0, -(pose.tiltX ?? 1));
@@ -463,6 +488,9 @@ export function createPieces(surface: Surface, environment: Texture): Pieces {
       effects.needsUpdate = true;
     },
     dispose() {
+      casters.dispose();
+      casterGeometry.dispose();
+      casterMaterial.dispose();
       mesh.dispose();
       shadows.dispose();
       shadeGeometry.dispose();

@@ -44,6 +44,7 @@ import { createSurface, mapWorldRect, surfaceHeightAt, unitsPerMetre } from './h
 import { createGroundLines } from './groundLines.ts';
 import { createHexRaster } from './hexRaster.ts';
 import { POLITICAL_NAMES_FROM, createLabels } from './labels.ts';
+import { streamedGroundDue } from './lightMath.ts';
 import { createLighting } from './lighting.ts';
 import { createMapTextures } from './mapTextures.ts';
 import { createOverlays } from './overlays.ts';
@@ -269,10 +270,10 @@ export async function createRenderer(
   const target = new Vector3();
   const probe = new Vector3();
   const viewHeight = 2 * Math.tan((CAMERA_FOV * Math.PI) / 360);
-  /** Anything that casts a shadow changed: the shadow map is drawn again. */
+  /** Something on the ground that casts a shadow changed: the ground's shadow maps are drawn again. */
   let shadowDirty = true;
-  /** Only pieces in motion changed what casts shadows. */
-  let shadowMoving = false;
+  /** The state of the pieces their shadow maps were last drawn for. */
+  let piecesDrawn = -1;
   /** Drawn time in seconds: what the drifting light and the clouds follow. */
   let seconds = 0;
   let political = 0;
@@ -280,7 +281,9 @@ export async function createRenderer(
   let terrainBuilds = 0;
   let shownTrees = 0;
   let treeBuilds = 0;
-  let treesChanged = false;
+  /** Terrain or trees came in that the ground's shadow maps do not show yet, and for how many frames. */
+  let groundStreamed = false;
+  let streamFrames = Infinity;
   let cloudLayer = 0;
   const applyCamera = (state: CameraState, firstFrame: boolean): void => {
     const pose = poseOf(state);
@@ -311,21 +314,26 @@ export async function createRenderer(
     const grown = vegetation.update(camera.position, firstFrame ? 64 : undefined);
     shownTrees = grown.trees;
     treeBuilds = grown.builds;
-    if (grown.changed) treesChanged = true;
-    // forests come in a few chunks per frame: their shadows follow in steps, not every frame
-    if (treesChanged && (firstFrame || grown.builds === 0 || stats.frames % 12 === 0)) {
-      treesChanged = false;
+    // terrain and forests come in a few patches per frame while the view moves:
+    // their shadows follow in steps, and at once when the view rests
+    const streamed = update.changed || grown.changed;
+    if (streamed) groundStreamed = true;
+    streamFrames++;
+    if (streamedGroundDue(groundStreamed, streamed, streamFrames)) {
+      groundStreamed = false;
+      streamFrames = 0;
       shadowDirty = true;
     }
+    // a piece that moved casts its shadow elsewhere; the ground's shadow stays as it is
     lighting.update(
       target,
       state.distance,
       pose.tilt,
-      shadowDirty || update.changed ? true : shadowMoving ? 'moving' : false,
+      { ground: shadowDirty, pieces: pieces.version !== piecesDrawn },
       seconds,
     );
     shadowDirty = false;
-    shadowMoving = false;
+    piecesDrawn = pieces.version;
     uniforms.clock.value = seconds;
     // the cloud that shades a point floats between it and the sun
     const sunward = (surface.field.maxY * 0.5 + CLOUD_HEIGHT * layout.size) / lighting.sunDirection.y;
@@ -365,7 +373,6 @@ export async function createRenderer(
     },
   });
   let animationSpeed = 1;
-  let wasMoving = false;
 
   let stats: FrameStats = {
     frames: 0,
@@ -380,6 +387,8 @@ export async function createRenderer(
     labels: 0,
     animating: false,
     shadowDraws: 0,
+    pieceShadowDraws: 0,
+    shadowTriangles: 0,
     trees: 0,
     cloudLayer: 0,
   };
@@ -418,10 +427,7 @@ export async function createRenderer(
     }
 
     const moving = animator.frame(start);
-    // pieces in motion cast moving shadows, and one more frame settles them
-    if (animator.playing || wasMoving) shadowMoving = true;
     seconds += Math.min(elapsed, 250) / 1000;
-    wasMoving = animator.playing;
     applyCamera(controller.update(elapsed / 1000), stats.frames === 0);
     if (moving) effects.update((elapsed / 1000) * animationSpeed, camera);
     renderer.info.reset();
@@ -443,6 +449,8 @@ export async function createRenderer(
       labels: shownLabels,
       animating: animator.playing,
       shadowDraws: lighting.shadowDraws,
+      pieceShadowDraws: lighting.pieceShadowDraws,
+      shadowTriangles: lighting.shadowTriangles,
       trees: shownTrees,
       cloudLayer,
     };
@@ -478,8 +486,11 @@ export async function createRenderer(
       const repaint = animator.reset();
       pieces.setUnits(next.units);
       const cityLabels = cities.setCities(next.cities);
-      if (cityLabels !== null) labels.setCities(cityLabels);
-      shadowDirty = true;
+      if (cityLabels !== null) {
+        labels.setCities(cityLabels);
+        // the pieces have shadow maps of their own, which follow them by themselves
+        shadowDirty = true;
+      }
 
       // territory is redrawn only when an owner changed
       const overrides = [...next.ownerOverrides].filter(([hex]) => valid(hex));
@@ -585,7 +596,6 @@ export async function createRenderer(
     },
     skip() {
       animator.skip();
-      shadowDirty = true;
     },
     getAnimationCounts() {
       return animator.counts();

@@ -24,6 +24,7 @@ import { PART_SHAPE_COUNT, PartShape } from './cityGen.ts';
 import type { Part, PartShapeId } from './cityGen.ts';
 import { cloudShade, mapUv, noiseTile, withFogOfWar } from './shaderLib.ts';
 import type { MapUniforms } from './shaderLib.ts';
+import { castGroundShadow } from './shadowLayers.ts';
 import { ShapeBuilder } from './shapes.ts';
 
 export interface PartBatch {
@@ -179,7 +180,7 @@ export function createPartBatch(u: MapUniforms, hexSize: number, name: string): 
         const centre = new Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
         mesh.boundingSphere = new Sphere(centre, Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) / 2);
         geometry.boundingSphere = mesh.boundingSphere.clone();
-        mesh.castShadow = true;
+        castGroundShadow(mesh);
         mesh.receiveShadow = true;
         mesh.instanceMatrix.needsUpdate = true;
         meshes.push(mesh);
