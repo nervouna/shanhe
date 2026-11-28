@@ -28,6 +28,9 @@ import {
   BUILDINGS,
   BUILDING_IDS,
   buildingFor,
+  isCityProject,
+  POLICY_IDS,
+  TECH_IDS,
   CITY,
   CITY_STATE,
   DIPLOMACY,
@@ -47,9 +50,18 @@ import {
   WAR,
   unitDef,
 } from './data.ts';
-import type { BuildingId, ImprovementDef, PolicyId } from './data.ts';
+import type { BuildingId, CityProjectId, ImprovementDef, PolicyId } from './data.ts';
 import { buyCost, checkStep, isSettleSite, militaryStrength, upgradePrice, validate } from './actions.ts';
-import { canImprove, checkItem, hasBuilding, improvableHexes, itemCost, productionTowards, spawnHex } from './cities.ts';
+import {
+  canImprove,
+  checkItem,
+  cityProjectOf,
+  hasBuilding,
+  improvableHexes,
+  itemCost,
+  productionTowards,
+  spawnHex,
+} from './cities.ts';
 import {
   amphibiousFactor,
   attackStrength,
@@ -284,8 +296,9 @@ function diplomacy(ctx: Ctx, polity: number, major: boolean, cities: City[], act
     // A leader out for conquest lets go of an enemy that holds no capital of a major nation and is not the one it marches on.
     const sideshow = conquering && enemy !== marchingOn && capitalsHeld(ctx, enemy) === 0;
     if (major && !losing && !sideshow) continue;
+    // To the player it offers once: the offer stands for a while, and after it has lapsed it waits as long again.
     const offered = relation.a === polity ? relation.offerA : relation.offerB;
-    if (enemy === state.player && offered > 0) continue;
+    if (enemy === state.player && (offered > 0 || (offered < 0 && state.turn + offered < DIPLOMACY.offerTurns))) continue;
     act({ type: 'makePeace', polity, target: enemy });
   }
 
@@ -647,7 +660,8 @@ function spendGold(ctx: Ctx, polity: number, cities: City[], act: Act): void {
   /** What gold would buy in the city: the unit or building it is working on, or else the next building of the order. */
   const wanted = (city: City): { item: BuildItem; queued: boolean } | null => {
     const current = city.queue[0];
-    if (current !== undefined && (current.kind === 'unit' || current.kind === 'building')) return { item: current, queued: true };
+    const real = current !== undefined && cityProjectOf(current) === null;
+    if (real && (current.kind === 'unit' || current.kind === 'building')) return { item: current, queued: true };
     for (const building of order) {
       const item: BuildItem = { kind: 'building', building };
       if (checkItem(ctx, city, item) === null) return { item, queued: false };
@@ -831,8 +845,15 @@ function manageCities(ctx: Ctx, polity: number, major: boolean, cities: City[], 
       if (head.kind === 'unit') uncount(head.unit);
       act({ type: 'unqueueBuild', polity, city: city.zone, index: 0 });
     }
-    if (city.queue.length > 0) continue;
+    // A city on a city project looks every turn for something better to do.
+    const current = city.queue[0];
+    const filler = city.queue.length === 1 && current !== undefined && cityProjectOf(current) !== null ? current : null;
+    if (city.queue.length > 0 && filler === null) continue;
     const item = chooseBuild(ctx, polity, city, cities, plans);
+    if (filler !== null) {
+      if (item !== null && item.kind === 'building' && filler.kind === 'building' && item.building === filler.building) continue;
+      act({ type: 'unqueueBuild', polity, city: city.zone, index: 0 });
+    }
     if (item === null) continue;
     if (act({ type: 'queueBuild', polity, city: city.zone, item }) && item.kind === 'unit') {
       count(item.unit);
@@ -995,13 +1016,47 @@ function chooseBuild(ctx: Ctx, polity: number, city: City, cities: City[], plans
     if (can(item)) return item;
   }
   for (const building of BUILDING_IDS) {
+    if (isCityProject(building)) continue;
     const item: BuildItem = { kind: 'building', building };
     if (can(item)) return item;
   }
   const improvement = chooseImprovement(ctx, city, improvableHexes(ctx, city));
   if (improvement !== null) return improvement;
-  // With nothing left to build, the city recruits whatever the army still lacks.
-  return room && plans.military < plans.wanted ? fieldUnit(ctx, polity, plans) : null;
+  // With nothing left to build, the city recruits whatever the army still lacks, and then turns to a city project.
+  if (room && plans.military < plans.wanted) return fieldUnit(ctx, polity, plans);
+  return chooseProject(ctx, polity, city);
+}
+
+/**
+ * The city project a city with nothing left to build takes up, or null if it
+ * knows none. A leader out for learning has books compiled and one out for
+ * wealth mints; a leader out for conquest mints for its army until its
+ * treasury is full, then compiles. A nation on the simplified AI, which does
+ * not research, holds festivals while it has cards to unlock, and mints
+ * otherwise. A project that would do nothing (science with every tech
+ * known, culture with every card unlocked) is passed over.
+ */
+export function chooseProject(ctx: Ctx, polity: number, city: City): BuildItem | null {
+  const self = polityOf(ctx, polity);
+  const nation = at(ctx.map.polities, polity).kind === 'nation';
+  const learns = researches(ctx.state, polity) && self.techs.length < TECH_IDS.length;
+  const cards = nation && self.policies.length < POLICY_IDS.length;
+  const income = self.yields.gold + self.routeIncome + self.tributeReceived;
+  const rich = self.gold > income * AI.mintTreasuryTurns;
+  const goal = ambition(ctx, polity);
+  let order: readonly CityProjectId[];
+  if (!researches(ctx.state, polity)) order = ['festival', 'minting'];
+  else if (goal === 'wealth') order = ['minting', 'compilation', 'festival'];
+  else if (goal === 'conquest') order = rich ? ['compilation', 'festival', 'minting'] : ['minting', 'compilation', 'festival'];
+  else order = ['compilation', 'festival', 'minting'];
+  for (const building of order) {
+    if (building === 'compilation' && !learns) continue;
+    if (building === 'festival' && !cards) continue;
+    const item: BuildItem = { kind: 'building', building };
+    // It may be the one the city is already on.
+    if (checkItem(ctx, city, item, true) === null) return item;
+  }
+  return null;
 }
 
 // ------------------------------------------------------------------ units

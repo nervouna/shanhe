@@ -34,6 +34,7 @@ export function policySlotsFor(nation: string, era: number): number {
 export function growSlots(polity: PolityState, nation: boolean, id = ''): void {
   if (!nation) return;
   while (polity.slots.length < policySlotsFor(id, polity.era)) polity.slots.push(null);
+  while (polity.slotFreedOn.length < polity.slots.length) polity.slotFreedOn.push(0);
 }
 
 /** True if the polity has the card in a slot. */
@@ -89,10 +90,23 @@ export function unlockPolicy(ctx: Ctx, polity: number, policy: PolicyId): void {
 }
 
 /**
+ * True if putting a card into the polity's slot now replaces a card: one
+ * sits in it, or one was taken out of it less than a cooldown ago.
+ */
+export function isSwap(ctx: Ctx, polity: number, slot: number): boolean {
+  const self = polityOf(ctx, polity);
+  if (at(self.slots, slot) !== null) return true;
+  const freed = self.slotFreedOn[slot] ?? 0;
+  return freed > 0 && ctx.state.turn < freed + swapCooldown(ctx, polity);
+}
+
+/**
  * Why the polity cannot put the card into the slot (or empty the slot, with
- * `policy` null), or null. Filling an empty slot and emptying one are always
- * allowed; replacing a card is a swap, which takes a free swap or, without
- * one, starts the cooldown.
+ * `policy` null), or null. Emptying a slot is always allowed, and so is
+ * filling one that has stood empty for a cooldown or was never filled.
+ * Replacing a card is a swap, which takes a free swap or, without one,
+ * starts the cooldown; filling a slot emptied less than a cooldown ago
+ * replaces the card that was taken out and is a swap too.
  */
 export function checkSlot(ctx: Ctx, polity: number, policy: unknown, slot: unknown): RejectReason | null {
   if (!hasPolicies(ctx, polity)) return 'noPolicies';
@@ -103,7 +117,7 @@ export function checkSlot(ctx: Ctx, polity: number, policy: unknown, slot: unkno
   if (!isPolicyId(policy)) return 'badItem';
   if (!self.policies.includes(policy)) return 'notUnlocked';
   if (self.slots.includes(policy)) return 'alreadySlotted';
-  if (current === null || self.freeSwaps > 0) return null;
+  if (self.freeSwaps > 0 || !isSwap(ctx, polity, slot)) return null;
   return ctx.state.turn >= self.swapReadyOn ? null : 'swapCooldown';
 }
 
@@ -118,10 +132,12 @@ export function swapCooldown(ctx: Ctx, polity: number): number {
 export function slotPolicy(ctx: Ctx, polity: number, policy: PolicyId | null, slot: number): void {
   const self = polityOf(ctx, polity);
   const replaced = at(self.slots, slot);
-  if (policy !== null && replaced !== null) {
+  if (policy !== null && isSwap(ctx, polity, slot)) {
     if (self.freeSwaps > 0) self.freeSwaps--;
     else self.swapReadyOn = ctx.state.turn + swapCooldown(ctx, polity);
   }
+  while (self.slotFreedOn.length < self.slots.length) self.slotFreedOn.push(0);
+  self.slotFreedOn[slot] = policy === null ? ctx.state.turn : 0;
   self.slots[slot] = policy;
   forgetMods(ctx, polity);
   ctx.events.push({ type: 'policySlotted', polity, slot, policy, replaced });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { maxCityHp } from '../core/cities.ts';
-import { createGame, endTurn, hashState, rememberedBy, saveGame, supplyStatus, visibleTo } from '../core/game.ts';
+import { STATE_VERSION, createGame, endTurn, hashState, rememberedBy, saveGame, supplyStatus, visibleTo } from '../core/game.ts';
 import type { GameState } from '../core/game.ts';
 import { LAND, LAND2, labMap } from '../core/kitLab.ts';
 import { favourStanding } from '../core/query.ts';
@@ -424,5 +424,64 @@ describe('saves of games with nation kits', () => {
   it('rejects a save of the format before the kits', () => {
     const state = kitted();
     expect(importSave(tampered(state, (data) => (data.version = 3)), kitMap)).toEqual({ ok: false, error: 'badVersion' });
+  });
+});
+
+describe('saves of the format with city projects, repeat and the slot memory', () => {
+  const home = map.polities[0]!.capitalZone;
+  type Rows = Record<string, unknown>[];
+  const polity = (data: Record<string, unknown>, index: number): Record<string, unknown> => (data.polities as Rows)[index]!;
+  const city = (data: Record<string, unknown>): Record<string, unknown> => (data.cities as Rows)[home]!;
+
+  /** A game in which a city repeats its last item and works on a city project, a slot was emptied and a peace offer lapsed. */
+  function reworked(): GameState {
+    return edit(played(3), (draft) => {
+      const self = draft.polities[0]!;
+      self.techs.push('ritual');
+      self.policies = ['clanLaw'];
+      self.slots = ['clanLaw', null];
+      self.slotFreedOn = [0, 2];
+      draft.cities[home]!.repeat = true;
+      draft.cities[home]!.queue = [{ kind: 'building', building: 'festival' }];
+      draft.relations['0:1'] = { a: 0, b: 1, atWar: true, since: 1, offerA: 0, offerB: -2 };
+    });
+  }
+
+  it('is version 6', () => {
+    expect(STATE_VERSION).toBe(6);
+    expect(importSave(tampered(reworked(), (data) => (data.version = 5)), map)).toEqual({ ok: false, error: 'badVersion' });
+  });
+
+  it('round-trips them', () => {
+    const state = reworked();
+    const result = importSave(exportSave(state), map);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.state).toEqual(state);
+    expect(result.state.cities[home]).toMatchObject({ repeat: true, queue: [{ kind: 'building', building: 'festival' }] });
+    expect(result.state.polities[0]!.slotFreedOn).toEqual([0, 2]);
+    expect(result.state.relations['0:1']!.offerB).toBe(-2);
+    expect(hashState(endTurn(result.state).state)).toBe(hashState(endTurn(state).state));
+  });
+
+  it('rejects a save in which they do not fit the rules', () => {
+    const state = reworked();
+    const cases: Record<string, (data: Record<string, unknown>) => void> = {
+      'repeat missing': (data) => delete city(data).repeat,
+      'repeat not a boolean': (data) => (city(data).repeat = 1),
+      'a city project among the buildings of a city': (data) => (city(data).buildings = ['festival']),
+      'a queued building that does not exist': (data) => (city(data).queue = [{ kind: 'building', building: 'carnival' }]),
+      'the slot memory missing': (data) => delete polity(data, 0).slotFreedOn,
+      'the slot memory shorter than the slots': (data) => (polity(data, 0).slotFreedOn = [0]),
+      'the slot memory longer than the slots': (data) => (polity(data, 0).slotFreedOn = [0, 2, 0]),
+      'the slot memory negative': (data) => (polity(data, 0).slotFreedOn = [0, -2]),
+      'the slot memory a fraction': (data) => (polity(data, 0).slotFreedOn = [0, 1.5]),
+      'a filled slot that says it was emptied': (data) => (polity(data, 0).slotFreedOn = [2, 0]),
+      'the slot memory of a polity without slots': (data) => (polity(data, 4).slotFreedOn = [0]),
+      'a lapsed offer as a fraction': (data) => ((data.relations as Record<string, Record<string, unknown>>)['0:1']!.offerB = -1.5),
+      'a lapsed offer as text': (data) => ((data.relations as Record<string, Record<string, unknown>>)['0:1']!.offerB = '-2'),
+    };
+    for (const [name, change] of Object.entries(cases)) {
+      expect(importSave(tampered(state, change), map), name).toEqual({ ok: false, error: 'corrupt' });
+    }
   });
 });

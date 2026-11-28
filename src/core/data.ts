@@ -365,9 +365,16 @@ export interface BuildingDef {
   readonly capitalOnly: boolean;
   /** What it does beyond the fields above, for its city. */
   readonly modifiers: readonly Modifier[];
+  /**
+   * For a city project: what the city's production turns into while it is
+   * the city's current item, and at what rate. Null for a real building. A
+   * city project is never finished and never stands in the city.
+   */
+  readonly converts: { readonly to: 'gold' | 'science' | 'culture'; readonly percent: number } | null;
 }
 
 const BUILDING_BASE = {
+  converts: null,
   yields: {},
   percent: {},
   coastal: false,
@@ -422,7 +429,27 @@ const GENERIC_BUILDINGS = {
     yields: { science: 6 }, percent: { science: 25 },
   },
 } as const satisfies Record<string, BuildingDef>;
-export type GenericBuildingId = keyof typeof GENERIC_BUILDINGS;
+
+/**
+ * The city projects: what a city with nothing left to build does with its
+ * production. They are queued like buildings, cost nothing, are never
+ * finished and can be queued again and again: every turn in which one is the
+ * city's current item the city's production of the turn becomes gold, science
+ * or culture for its owner at the project's rate.
+ */
+const CITY_PROJECTS = {
+  /** 庆典: culture. */
+  festival: { ...BUILDING_BASE, tech: 'ritual', cost: 0, upkeep: 0, era: 0, converts: { to: 'culture', percent: 25 } },
+  /** 铸钱: gold. */
+  minting: { ...BUILDING_BASE, tech: 'currency', cost: 0, upkeep: 0, era: 1, converts: { to: 'gold', percent: 50 } },
+  /** 修书: science. */
+  compilation: { ...BUILDING_BASE, tech: 'writing', cost: 0, upkeep: 0, era: 1, converts: { to: 'science', percent: 25 } },
+} as const satisfies Record<string, BuildingDef>;
+export type CityProjectId = keyof typeof CITY_PROJECTS;
+/** The three city projects, in the order of doc 04. */
+export const CITY_PROJECT_IDS = Object.keys(CITY_PROJECTS) as CityProjectId[];
+
+export type GenericBuildingId = keyof typeof GENERIC_BUILDINGS | CityProjectId;
 export type BuildingId = GenericBuildingId | keyof typeof UNIQUE_BUILDINGS;
 
 /**
@@ -456,13 +483,19 @@ function uniqueBuilding(spec: UniqueBuildingSpec): BuildingDef {
 /** Every building by id: the generic ones, then the unique ones of the nations (`uniques.ts`). */
 export const BUILDINGS: Readonly<Record<BuildingId, BuildingDef>> = {
   ...GENERIC_BUILDINGS,
+  ...CITY_PROJECTS,
   ...(Object.fromEntries(
     Object.entries(UNIQUE_BUILDINGS as Record<string, UniqueBuildingSpec>).map(([id, spec]) => [id, uniqueBuilding(spec)]),
   ) as Record<keyof typeof UNIQUE_BUILDINGS, BuildingDef>),
 };
 export const BUILDING_IDS = Object.keys(BUILDINGS) as BuildingId[];
-/** The buildings every nation can build. */
-export const GENERIC_BUILDING_IDS = Object.keys(GENERIC_BUILDINGS) as GenericBuildingId[];
+/** What every nation can build in a city: the generic buildings, then the city projects. */
+export const GENERIC_BUILDING_IDS = [...Object.keys(GENERIC_BUILDINGS), ...CITY_PROJECT_IDS] as GenericBuildingId[];
+
+/** True for a city project: an entry of {@link BUILDINGS} that turns production into another yield and is never built. */
+export function isCityProject(id: string): id is CityProjectId {
+  return Object.hasOwn(CITY_PROJECTS, id);
+}
 
 /** The generic kind a building is or replaces: what cards, traits and slots that name a kind go by. */
 export function baseBuilding(id: BuildingId): BuildingId {
@@ -756,6 +789,19 @@ export function buildingFor(nation: string, id: BuildingId): BuildingId {
 /** The improvement the nation builds where others build `id`: its unique improvement, or `id` itself. */
 export function improvementFor(nation: string, id: ImprovementId): ImprovementId {
   return IMPROVEMENT_REPLACEMENTS.get(`${nation}:${id}`) ?? id;
+}
+
+/**
+ * The unit a nation (`MapPolity.id`) starts the game with as the garrison of
+ * its capital: its unique unit if that is a land unit of the Ancient era,
+ * whatever its class, and the warrior otherwise.
+ */
+export function startingGarrison(nation: string): string {
+  for (const id of UNIQUE_UNIT_IDS) {
+    const def = UNITS[id] as UnitDef;
+    if (def.nation === nation && def.era === 0 && def.domain === 'land' && def.strength > 0) return id;
+  }
+  return ROSTER.infantry[0] as string;
 }
 
 /** The roster of a class as the nation builds it, eras in order: its unique unit stands where it replaces one. */
@@ -1377,6 +1423,8 @@ export const AI = {
    * as strong as itself for peace submits: the peace makes it a vassal.
    */
   submitRatio: 1.5,
+  /** A leader out for conquest mints in its idle cities until its treasury holds this many turns of its income. */
+  mintTreasuryTurns: 4,
   /** Gold kept back before gifts, and before buying when nothing threatens. */
   goldReserve: 80,
   /** A major also keeps this many turns of its upkeep before it buys what its cities are building. */
