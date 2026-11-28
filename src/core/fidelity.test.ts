@@ -67,16 +67,17 @@ describe('the garrison a nation starts with', () => {
 });
 
 describe('a peace offer to the player', () => {
-  /** Yi, a major nation on the AI and much the stronger, has been at war with the player Jia since turn 5; it is turn 20. */
+  /** Yi, a major nation on the AI and much the stronger, has been at war with the player Jia since turn 10; it is turn 20. */
+  // (The war is young enough that Yi does not yet give it up as a stalemate.)
   const fighting = (): GameState =>
-    edit(war(createGame(map, { seed: 3, player: 'jia', majors: ['yi'] }), JIA, YI, 5, 20), (draft) => {
+    edit(war(createGame(map, { seed: 3, player: 'jia', majors: ['yi'] }), JIA, YI, 10, 20), (draft) => {
       for (const hex of landBy(seat(YI))) put(draft, 'warrior', YI, hex);
     });
   const peace: Action = { type: 'makePeace', polity: JIA, target: YI };
   const offerOf = (state: GameState): number => state.relations[`${JIA}:${YI}`]!.offerB;
   /** The state after the diplomacy of the turn that is `turns` after the current one has been processed. */
   const diplomacyAfter = (state: GameState, turns: number): GameState => {
-    const ctx = createCtx(edit(state, (draft) => void (draft.turn += turns)));
+    const ctx = createCtx(cloneState(edit(state, (draft) => void (draft.turn += turns))));
     processDiplomacy(ctx);
     return ctx.state;
   };

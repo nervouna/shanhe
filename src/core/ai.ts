@@ -173,6 +173,16 @@ export function overseas(ctx: Ctx, zone: number, cities: readonly City[]): boole
   return !cities.some((city) => ctx.topo.landmass[at(ctx.map.zones, city.zone).siteHex] === mass);
 }
 
+/** True if no other polity has a city on a landmass on which `polity` has one: its wars are all across the sea. */
+export function islandPower(ctx: Ctx, polity: number, cities: readonly City[]): boolean {
+  const masses = new Set(cities.map((city) => ctx.topo.landmass[at(ctx.map.zones, city.zone).siteHex]));
+  for (const city of ctx.state.cities) {
+    if (city === null || city.owner === polity) continue;
+    if (masses.has(ctx.topo.landmass[at(ctx.map.zones, city.zone).siteHex])) return false;
+  }
+  return true;
+}
+
 /**
  * Steps a ship of `polity` needs to reach one of `goals` (water hexes) from
  * every water hex in reach. `UNREACHABLE` where there is no way within `limit`.
@@ -232,6 +242,63 @@ export function runAi(ctx: Ctx, polity: number, act: Act): void {
   if (major) spendGold(ctx, polity, cities, act);
   airStrikes(ctx, polity, cities, act);
   commandUnits(ctx, polity, major, cities, act);
+}
+
+// ------------------------------------------------------------- war reach
+
+/** How a war of `polity` on some nation would be fought. */
+export interface WarPlan {
+  /** Whether the army gets there without crossing water. */
+  readonly way: 'land' | 'sea';
+  /** Zone of the enemy city it would march on. */
+  readonly target: number;
+  /** Zone of its own city nearest to that one by the army's path. */
+  readonly rally: number;
+}
+
+/**
+ * How an army of `polity` would get to the cities of `foe` if the two were
+ * at war, or null if it could not get there at all: by land if one of them
+ * lies within `AI.warReachLand` of path cost of one of its own cities
+ * without crossing water, by sea if one lies within `AI.warReachSea` once
+ * its units may embark. Only cities it knows of count; the land of `foe` and
+ * of its vassals is open to the army, as it would be in the war.
+ */
+export function warPlan(ctx: Ctx, polity: number, foe: number): WarPlan | null {
+  const { state, map } = ctx;
+  const own: City[] = [];
+  const targets: City[] = [];
+  for (const city of state.cities) {
+    if (city === null) continue;
+    if (city.owner === polity) own.push(city);
+    else if (city.owner === foe && knowsCity(ctx, polity, city)) targets.push(city);
+  }
+  if (own.length === 0 || targets.length === 0) return null;
+  const site = (city: City): number => at(map.zones, city.zone).siteHex;
+  const nearest = (city: City): number => Math.min(...own.map((home) => hexesApart(ctx, site(city), site(home))));
+  // The nearest few cities are the ones the army would march on.
+  targets.sort((a, b) => nearest(a) - nearest(b) || a.zone - b.zone);
+  const through = new Set([foe, ...vassalsOf(ctx, foe)]);
+  const reached = (way: 'land' | 'sea'): WarPlan | null => {
+    const limit = way === 'land' ? AI.warReachLand : AI.warReachSea;
+    for (const target of targets.slice(0, AI.warReachCities)) {
+      if (nearest(target) > limit) continue;
+      const field = pathField(ctx, polity, site(target), limit, null, through, way === 'land');
+      let rally: City | null = null;
+      for (const home of own) {
+        const cost = field[site(home)] as number;
+        if (cost < UNREACHABLE && (rally === null || cost < (field[site(rally)] as number))) rally = home;
+      }
+      if (rally !== null) return { way, target: target.zone, rally: rally.zone };
+    }
+    return null;
+  };
+  return reached('land') ?? ((ctx.seaLevel[polity] as number) >= 1 ? reached('sea') : null);
+}
+
+/** {@link warPlan} as the way alone: `land`, `sea` or null. */
+export function warReach(ctx: Ctx, polity: number, foe: number): 'land' | 'sea' | null {
+  return warPlan(ctx, polity, foe)?.way ?? null;
 }
 
 // --------------------------------------------------------------- research
@@ -335,6 +402,18 @@ function diplomacy(ctx: Ctx, polity: number, major: boolean, cities: City[], act
     }
     return foes;
   };
+  /** Warships it has: what carries and escorts an army over the sea. */
+  let ships = 0;
+  for (const unit of state.units) if (unit.owner === polity && isWarship(unit)) ships++;
+  /**
+   * True if it can bring `force` to bear on `other`, which `needed` would beat on land: by land as it is,
+   * by sea only with ships to carry and escort the army and with the strength an assault from the water takes.
+   */
+  const marchOn = (other: number, force: number, needed: number): WarPlan | null => {
+    const plan = warPlan(ctx, polity, other);
+    if (plan === null || plan.way === 'land') return plan;
+    return ships >= AI.seaWarShips && force >= needed * AI.seaWarRatio ? plan : null;
+  };
   /** What stands against an attack on `other`: its army, those of its allies and vassals, and its cities. */
   const defenceOf = (other: number): number => {
     let defence = militaryStrength(ctx, other);
@@ -361,7 +440,8 @@ function diplomacy(ctx: Ctx, polity: number, major: boolean, cities: City[], act
       for (const enemy of enemiesOf(ctx, threat)) {
         if (enemy !== polity && !vassals.includes(enemy) && !alliesOf(ctx, polity).includes(enemy)) side += militaryStrength(ctx, enemy);
       }
-      if (side >= defenceOf(threat) * BALANCE.warRatio) {
+      const needed = defenceOf(threat) * BALANCE.warRatio;
+      if (side >= needed && marchOn(threat, side, needed) !== null) {
         act({ type: 'declareWar', polity, target: threat });
         return;
       }
@@ -392,28 +472,26 @@ function diplomacy(ctx: Ctx, polity: number, major: boolean, cities: City[], act
     }
     return nearest;
   };
-  let target = -1;
-  let weakest = Infinity;
-  let nearest = Infinity;
-  let feared = 0;
+  const candidates: { other: number; fear: number; distance: number; defence: number }[] = [];
   for (const other of [...foes].sort((a, b) => a - b)) {
     if (validate(ctx, { type: 'declareWar', polity, target: other }) !== null) continue;
     // Its allies and vassals would stand by it, and a friend is not attacked.
     if (favourOf(ctx, polity, other) >= AI.allianceFavour) continue;
     const defence = defenceOf(other);
     if (strength < defence * ratio) continue;
-    // A leader the world fears comes first, the most feared first of all. Then the weakest it can beat;
-    // a leader out for conquest first goes for the nearest capital of a major nation.
     const fear = at(balance.fear, other) > at(balance.fear, polity) && at(balance.fear, other) >= BALANCE.warAt ? at(balance.fear, other) : 0;
-    const distance = conqueror ? prizeDistance(other) : Infinity;
-    if (fear > feared || (fear === feared && (distance < nearest || (distance === nearest && defence < weakest)))) {
-      feared = fear;
-      nearest = distance;
-      weakest = defence;
-      target = other;
-    }
+    candidates.push({ other, fear, distance: conqueror ? prizeDistance(other) : Infinity, defence });
   }
-  if (target >= 0) act({ type: 'declareWar', polity, target });
+  // A leader the world fears comes first, the most feared first of all. Then the weakest it can beat;
+  // a leader out for conquest first goes for the nearest capital of a major nation.
+  candidates.sort((a, b) => b.fear - a.fear || a.distance - b.distance || a.defence - b.defence || a.other - b.other);
+  // The first of them its army can get to: a war it cannot carry to the enemy only costs it units.
+  for (const candidate of candidates) {
+    const plan = marchOn(candidate.other, strength, candidate.defence * ratio);
+    if (plan === null) continue;
+    act({ type: 'declareWar', polity, target: candidate.other });
+    return;
+  }
 }
 
 // ---------------------------------------------------------------- policies
@@ -547,6 +625,8 @@ function statecraft(ctx: Ctx, polity: number, cities: City[], act: Act): void {
     return null;
   });
 
+  if (self.capital >= 0) spendSurplus(ctx, polity, neighbours, act);
+
   // The nearest city-state at peace, until it is safely won.
   if (self.gold < AI.goldReserve + AI.giftGold || self.capital < 0) return;
   const home = at(map.zones, self.capital).siteHex;
@@ -564,6 +644,50 @@ function statecraft(ctx: Ctx, polity: number, cities: City[], act: Act): void {
   // A full treasury gives more.
   const rich = self.gold >= AI.goldReserve + AI.giftGold * AI.richGiftFactor * 2;
   if (nearest >= 0) act({ type: 'gift', polity, target: nearest, amount: rich ? AI.giftGold * AI.richGiftFactor : AI.giftGold });
+}
+
+/**
+ * What a major nation holds beyond `AI.treasuryTurns` turns of its income
+ * (and its reserve) it gives away for standing: to the city-states within
+ * twice the usual courting range, the nearest first, up to the influence a
+ * gift can still add, and then to the neighbours it is at peace with, the
+ * one it stands worst with first, for favour.
+ */
+function spendSurplus(ctx: Ctx, polity: number, neighbours: readonly number[], act: Act): void {
+  const { state, map } = ctx;
+  const self = polityOf(ctx, polity);
+  const income = self.yields.gold + self.routeIncome + self.tributeReceived;
+  const keep = AI.goldReserve + income * AI.treasuryTurns;
+  const gift = AI.giftGold * AI.richGiftFactor;
+  if (self.gold - keep < gift) return;
+  const home = at(map.zones, self.capital).siteHex;
+  const courts: { index: number; apart: number }[] = [];
+  state.polities.forEach((other, index) => {
+    if (!other.alive || other.cityStateType === null || other.capital < 0 || atWar(ctx, polity, index)) return;
+    const apart = hexesApart(ctx, home, at(map.zones, other.capital).siteHex);
+    if (apart <= AI.courtRange * 2) courts.push({ index, apart });
+  });
+  courts.sort((a, b) => a.apart - b.apart || a.index - b.index);
+  for (const court of courts) {
+    // A gift adds half its gold in influence; what would go beyond the most a city-state can hold is not given.
+    while (
+      self.gold - keep >= gift &&
+      (polityOf(ctx, court.index).influence[polity] ?? 0) + gift / CITY_STATE.goldPerInfluence <= CITY_STATE.maxInfluence
+    ) {
+      if (!act({ type: 'gift', polity, target: court.index, amount: gift })) break;
+    }
+  }
+  // Round after round, the one it stands worst with first, until all are well disposed or the surplus is gone.
+  for (let round = 0; round < AI.giftRounds; round++) {
+    const worstFirst = [...neighbours]
+      .filter((other) => !atWar(ctx, polity, other) && favourOf(ctx, polity, other) < AI.giftFavour)
+      .sort((a, b) => favourOf(ctx, polity, a) - favourOf(ctx, polity, b) || a - b);
+    if (worstFirst.length === 0) return;
+    for (const other of worstFirst) {
+      if (self.gold - keep < gift) return;
+      act({ type: 'gift', polity, target: other, amount: gift });
+    }
+  }
 }
 
 /**
@@ -668,6 +792,15 @@ function spendGold(ctx: Ctx, polity: number, cities: City[], act: Act): void {
     }
     return null;
   };
+  // At war the airfields of the cities near the enemy come before everything else gold can buy.
+  if (enemiesOf(ctx, polity).length > 0) {
+    const airfield: BuildItem = { kind: 'building', building: buildingFor(nation, 'airfield') };
+    for (const city of cities) {
+      if (city.unrest > 0 || checkItem(ctx, city, airfield, true) !== null || !nearFront(ctx, polity, city)) continue;
+      if (buyCost(ctx, city, airfield) > self.gold - reserve) continue;
+      act({ type: 'buy', polity, city: city.zone, item: airfield });
+    }
+  }
   const tried = new Set<number>();
   for (let bought = 0; bought < AI.buysPerTurn; ) {
     let best: { city: City; item: BuildItem; queued: boolean } | null = null;
@@ -689,6 +822,19 @@ function spendGold(ctx: Ctx, polity: number, cities: City[], act: Act): void {
     bought++;
     if (best.item.kind === 'unit') act({ type: 'unqueueBuild', polity, city: best.city.zone, index: 0 });
   }
+}
+
+/** True if a city of an enemy that `polity` knows of lies within `AI.airfieldFrontRange` of the city. */
+function nearFront(ctx: Ctx, polity: number, city: City): boolean {
+  const { state, map } = ctx;
+  const site = at(map.zones, city.zone).siteHex;
+  return state.cities.some(
+    (other) =>
+      other !== null &&
+      atWar(ctx, polity, other.owner) &&
+      hexesApart(ctx, site, at(map.zones, other.zone).siteHex) <= AI.airfieldFrontRange &&
+      knowsCity(ctx, polity, other),
+  );
 }
 
 /** Vassals `polity` could still take in its era. */
@@ -780,6 +926,10 @@ function navyTarget(ctx: Ctx, polity: number, cities: City[], budget: number): n
   }
   const focus = polityOf(ctx, polity).aiTarget;
   if (focus >= 0 && state.cities[focus] !== null && overseas(ctx, focus, cities)) wanted += AI.shipsForSeaTarget;
+  // A major nation that starts wars and has nobody else on its own shores keeps the ships an invasion takes at peace too.
+  else if (focus < 0 && state.majors.includes(polity) && AMBITION_STYLES[ambition(ctx, polity)].startsWars && islandPower(ctx, polity, cities)) {
+    wanted += AI.shipsForSeaTarget;
+  }
   // One ship is always allowed beside the garrisons, so that a one-city island has a navy at all.
   const cap = Math.max(Math.min(1, budget - cities.length), Math.floor(budget * AI.navyShare));
   return Math.max(0, Math.min(Math.ceil(wanted * styleOf(ctx, polity).navy), cap));
@@ -934,6 +1084,8 @@ function settleTargetNear(ctx: Ctx, from: number, polity: number): number {
     const site = at(map.zones, zone).siteHex;
     // A tribe on the site keeps settlers away, where it has been seen.
     if (ctx.unitAt.get(site)?.owner === NO_POLITY && canSee(ctx, polity, site)) continue;
+    // A settler walks there, or crosses the water once its nation can embark.
+    if (ctx.topo.landmass[site] !== ctx.topo.landmass[from] && (ctx.seaLevel[polity] as number) < 1) continue;
     const distance = hexesApart(ctx, from, site);
     if (distance < bestDistance) {
       bestDistance = distance;
@@ -972,33 +1124,25 @@ function chooseBuild(ctx: Ctx, polity: number, city: City, cities: City[], plans
   if (shipyard && ship !== null && plans.atWar) return { kind: 'unit', unit: ship.id };
   // At war, a city near the enemy gets its airfield before anything else it would build.
   const airfield: BuildItem = { kind: 'building', building: buildingFor(nationOf(ctx, polity), 'airfield') };
-  if (plans.atWar && can(airfield)) {
-    const site = at(map.zones, city.zone).siteHex;
-    const front = state.cities.some(
-      (other) =>
-        other !== null &&
-        atWar(ctx, polity, other.owner) &&
-        hexesApart(ctx, site, at(map.zones, other.zone).siteHex) <= AI.airfieldFrontRange &&
-        knowsCity(ctx, polity, other),
-    );
-    if (front) return airfield;
-  }
+  if (plans.atWar && can(airfield) && nearFront(ctx, polity, city)) return airfield;
   const recruiting = room && plans.military < plans.wanted && plans.barracks < plans.maxBarracks;
   if (recruiting && (plans.atWar || plans.military < plans.wanted * AMBITION_STYLES[ambition(ctx, polity)].armyFirst)) {
     return fieldUnit(ctx, polity, plans);
   }
-  const worked = chooseImprovement(ctx, city, city.worked);
-  if (worked !== null) return worked;
   const settler = (): BuildItem | null => {
     if (!nation || plans.settler || city.pop < AI.expandPop || !can({ kind: 'unit', unit: SETTLER })) return null;
     if (settleTargetNear(ctx, at(map.zones, city.zone).siteHex, polity) < 0) return null;
     plans.settler = true;
     return { kind: 'unit', unit: SETTLER };
   };
-  if (plans.style.settleFirst) {
+  // Empty land in reach is settled early: at peace a city sends a settler once it has its first building
+  // (an expansionist leader's before that).
+  if (!plans.atWar && (plans.style.settleFirst || city.buildings.length >= AI.settleAfterBuildings)) {
     const item = settler();
     if (item !== null) return item;
   }
+  const worked = chooseImprovement(ctx, city, city.worked);
+  if (worked !== null) return worked;
   // The buildings its leader favours come first, then the common order.
   const own = nationOf(ctx, polity);
   const favoured = plans.style.buildFirst as readonly BuildingId[];
@@ -1080,8 +1224,19 @@ function standingInTheWay(ctx: Ctx, polity: number): Uint8Array {
  * reach, ignoring other units except those on `blocked` hexes, which the
  * path avoids where it can. `UNREACHABLE` where there is no way within
  * `limit`.
+ *
+ * @param through polities whose land counts as open to the walker whatever the borders say.
+ * @param landOnly never over water.
  */
-function pathField(ctx: Ctx, polity: number, goal: number, limit = PATH_LIMIT, blocked: Uint8Array | null = null): Int16Array {
+function pathField(
+  ctx: Ctx,
+  polity: number,
+  goal: number,
+  limit = PATH_LIMIT,
+  blocked: Uint8Array | null = null,
+  through: ReadonlySet<number> | null = null,
+  landOnly = false,
+): Int16Array {
   const { topo } = ctx;
   const walker = unitDef(at(ROSTER.infantry, 0));
   const cost = new Int16Array(topo.count).fill(UNREACHABLE);
@@ -1100,7 +1255,10 @@ function pathField(ctx: Ctx, polity: number, goal: number, limit = PATH_LIMIT, b
       for (let d = 0; d < 6; d++) {
         const next = topo.neighbors[hex * 6 + d] as number;
         if (next < 0 || total >= (cost[next] as number)) continue;
-        if (!terrainAllows(ctx, walker, next, polity) || !bordersOpen(ctx, polity, next)) continue;
+        if (landOnly && topo.water[next] === 1) continue;
+        if (!terrainAllows(ctx, walker, next, polity)) continue;
+        // Land that would be enemy land in the war being weighed counts as open.
+        if (!bordersOpen(ctx, polity, next) && (through === null || !through.has(ownerOf(ctx, next)))) continue;
         cost[next] = total;
         let target = buckets[total];
         if (target === undefined) {

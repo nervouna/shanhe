@@ -1366,14 +1366,26 @@ export const AI = {
   peaceStrengthRatio: 0.6,
   /** Sues for peace at this war weariness. */
   peaceWeariness: 35,
-  /** Sues for peace after this many turns of war without progress. */
-  stalemateTurns: 30,
+  /** Gives up a war after this many turns in which the enemy has lost no city. */
+  stalemateTurns: 24,
+  /** It declares a war only on a nation one of whose cities lies within this path cost of one of its own by land, ... */
+  warReachLand: 36,
+  /** ...or within this path cost with a crossing (a water hex counts 3), ... */
+  warReachSea: 60,
+  /** ...looking at this many of the target's cities nearest to its own. */
+  warReachCities: 3,
+  /** A war it can only carry over the sea needs this many warships to carry and escort the army, ... */
+  seaWarShips: 2,
+  /** ...and this many times the strength a war by land would need: units fight at half strength from the water. */
+  seaWarRatio: 2,
   /** A unit below this HP rests instead of attacking. */
   restHp: 40,
   /** Gold kept back when upgrading. */
   upgradeReserve: 20,
   /** A wasteland site this close to one of its cities is worth a settler. */
-  settleRange: 10,
+  settleRange: 24,
+  /** At peace a city sends a settler once it has this many buildings. */
+  settleAfterBuildings: 1,
   /** Smallest city that builds a settler or founds a city. */
   expandPop: 2,
   /** A city gets this many of its first buildings before it adds to the peacetime army. */
@@ -1425,6 +1437,12 @@ export const AI = {
   submitRatio: 1.5,
   /** A leader out for conquest mints in its idle cities until its treasury holds this many turns of its income. */
   mintTreasuryTurns: 4,
+  /** A major gives away what it holds beyond this many turns of its income (and its reserve): see `spendSurplus` in `ai.ts`. */
+  treasuryTurns: 4,
+  /** Its surplus goes to a neighbour for favour until favour with it has reached this, ... */
+  giftFavour: 60,
+  /** ...in at most this many rounds of gifts a look. */
+  giftRounds: 4,
   /** Gold kept back before gifts, and before buying when nothing threatens. */
   goldReserve: 80,
   /** A major also keeps this many turns of its upkeep before it buys what its cities are building. */

@@ -99,9 +99,14 @@ describe('personalities', () => {
       const home = topo.zoneHexes[map.polities[0]!.capitalZone]!.filter(
         (hex) => topo.water[hex] !== 1 && topo.siteZone[hex] === -1,
       );
-      let state = edit(createGame(map, { majors: [id], seed: 3 }), (draft) => {
+      // It has a city on each of its sites, so that Yi is its neighbour by land: it starts no war it cannot march to.
+      let state = createGame(map, { majors: [id], seed: 3 });
+      map.zones.forEach((zone, index) => {
+        if (zone.polity === 0 && state.cities[index] === null) state = withCity(state, index, 0);
+      });
+      state = edit(state, (draft) => {
         draft.turn = AI.firstWarTurn + 1;
-        for (let i = 0; i < 5; i++) put(draft, 'warrior', 0, home[i]!);
+        for (let i = 0; i < 7; i++) put(draft, 'warrior', 0, home[i]!);
       });
       // The weakest neighbour as the AI sees it: one garrison and half its city.
       const ctx = createCtx(cloneState(state));

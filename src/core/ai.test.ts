@@ -122,7 +122,11 @@ describe('AI: agreements and deals', () => {
   it('courts the nearby city-state with gifts once it has gold to spare', () => {
     const gifts = [...of(long.events, 'goldGifted'), ...of(crowded.events, 'goldGifted')];
     expect(gifts.length).toBeGreaterThan(0);
-    expect(gifts.every((event) => event.to === WUCHENG && event.amount === AI.giftGold)).toBe(true);
+    expect(gifts.some((event) => event.to === WUCHENG)).toBe(true);
+    // A gift is the small one that courts the nearest city-state, or the large one a full treasury gives.
+    expect(gifts.every((event) => event.amount === AI.giftGold || event.amount === AI.giftGold * AI.richGiftFactor)).toBe(true);
+    // What goes to another nation is a surplus given for favour: always the large gift.
+    expect(gifts.filter((event) => event.to !== WUCHENG).every((event) => event.amount === AI.giftGold * AI.richGiftFactor)).toBe(true);
   });
 
   it('leaves proposals to a human player as pending offers', () => {
