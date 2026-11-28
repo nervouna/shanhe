@@ -238,3 +238,64 @@ describe('mainButton', () => {
     expect(mainButton([city], unitA)).toEqual({ kind: 'city', item: city });
   });
 });
+
+/**
+ * The situation of the interface review: the capital finishes a warrior
+ * while the turn ends, so the new turn begins with a unit that has no order,
+ * a city that has no project and a research to choose.
+ */
+describe('the main button when a city has just finished a unit', () => {
+  const begin = (): { state: GameState; unit: number } => {
+    let state = apply(createGame(map, { player: 'jia' }), {
+      type: 'queueBuild',
+      polity: player,
+      city: capital,
+      item: { kind: 'unit', unit: 'warrior' },
+    });
+    const before = new Set(state.units.map((unit) => unit.id));
+    for (let turn = 0; turn < 40 && state.cities[capital]!.queue.length > 0; turn++) state = endTurn(state).state;
+    const built = state.units.find((unit) => unit.owner === player && !before.has(unit.id));
+    expect(built, 'the capital built its warrior').toBeDefined();
+    // and, as in the review, the research was finished in the same turn
+    state = edit(state, (draft) => {
+      draft.polities[player]!.research = null;
+    });
+    expect(researchOptions(state, player).length).toBeGreaterThan(0);
+    return { state, unit: built!.id };
+  };
+
+  it('offers the newly idle unit before the city, and the city before the research', () => {
+    const { state, unit } = begin();
+    const items = pendingItems(state, none);
+    expect(items.map((item) => item.kind)).toEqual(['unit', 'city', 'research']);
+    expect(items[0]).toMatchObject({ kind: 'unit', unit });
+    // the turn has just begun and nothing is in focus: the button names the unit
+    expect(mainButton(items, null)).toMatchObject({ kind: 'unit', item: { unit } });
+    // one press goes to the unit; only then does the button name the city, and after it the research
+    expect(mainButton(items, items[0]!)).toMatchObject({ kind: 'city', item: { city: capital } });
+    expect(mainButton(items, items[1]!)).toEqual({ kind: 'research', item: { kind: 'research' } });
+    expect(mainButton(items, items[2]!)).toMatchObject({ kind: 'unit', item: { unit } });
+  });
+
+  it('comes back to the unit as soon as the city has its project, while the unit is still idle', () => {
+    const { state, unit } = begin();
+    const city = pendingItems(state, none)[1]!;
+    const queued = apply(state, { type: 'queueBuild', polity: player, city: capital, item: { kind: 'unit', unit: 'warrior' } });
+    const items = pendingItems(queued, none);
+    expect(items.map((item) => item.kind)).toEqual(['unit', 'research']);
+    // the city was in focus and is no longer pending: the queue starts from its head again
+    expect(mainButton(items, city)).toMatchObject({ kind: 'unit', item: { unit } });
+  });
+
+  it('leaves the unit alone once it has an order or was told to wait, and goes on to the city', () => {
+    const { state, unit } = begin();
+    for (const attention of [
+      { orders: new Map([[unit, true]]), skipped: new Set<number>() },
+      { orders: new Map<number, boolean>(), skipped: new Set([unit]) },
+    ]) {
+      const items = pendingItems(state, attention);
+      expect(items.map((item) => item.kind)).toEqual(['city', 'research']);
+      expect(mainButton(items, null)).toMatchObject({ kind: 'city', item: { city: capital } });
+    }
+  });
+});
