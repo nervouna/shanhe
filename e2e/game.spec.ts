@@ -99,6 +99,13 @@ test('an observer game on the fixture map runs to its end', async ({ page }) => 
   await page.click('#victory-button');
   expect(await page.evaluate(() => window.__shanhe?.ui.overlay)).toBe('victory');
   expect(await page.locator('#victory tbody tr').count()).toBe(3);
+  // the balance of power lists every nation in the race
+  const rated = await page.evaluate(() => {
+    const state = window.__shanhe?.state;
+    return (state?.majors ?? []).filter((polity) => state?.polities[polity]?.alive === true).length;
+  });
+  expect(rated).toBeGreaterThan(0);
+  expect(await page.locator('#balance tbody tr[data-fear]').count()).toBe(rated);
   await page.keyboard.press('Escape');
   await page.click('#speed [data-speed="2"]');
   expect(await page.evaluate(() => window.__shanhe?.ui.observer?.speed)).toBe(2);
@@ -197,6 +204,18 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
   expect((await ui()).scale).toEqual({ setting: 'auto', factor: scale });
   expect(await page.locator('#ui').evaluate((node) => getComputedStyle(node).zoom)).toBe(String(scale));
 
+  // the supply in the top bar: the player's fighting units against what its cities keep
+  const supply = await page.locator('#stat-supply').evaluate((node) => ({
+    used: Number(node.dataset.used),
+    limit: Number(node.dataset.limit),
+    surcharge: Number(node.dataset.surcharge),
+    units: window.__shanhe?.state.units.filter((unit) => unit.owner === window.__shanhe?.state.player).length ?? -1,
+  }));
+  expect(supply.limit).toBeGreaterThan(0);
+  expect(supply.used).toBeGreaterThan(0);
+  expect(supply.used).toBeLessThanOrEqual(supply.units);
+  expect(supply.surcharge > 0).toBe(supply.used > supply.limit);
+
   // Enter is the main button. It ends the turn only when nothing is pending:
   // every kind of pending item is answered the way a player would.
   const done = { research: 0, unlocked: 0, slotted: 0, routes: 0, offers: 0, enterKept: 0, aids: 0 };
@@ -208,6 +227,10 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
       expect((await ui()).panel).toBe('city');
       await expect(page.locator('#city-panel')).toBeVisible();
       if (done.routes === 0) {
+        // the first city is the capital: its panel lists what the seat adds
+        await expect(page.locator('#city-capital [data-yield]')).toHaveCount(2);
+        await expect(page.locator('#city-capital [data-yield="gold"]')).toHaveAttribute('data-percent', '50');
+        await expect(page.locator('#city-capital [data-yield="science"]')).toHaveAttribute('data-percent', '50');
         // the best destination comes first; choosing it previews the path, the button opens the route
         await expect(page.locator('#trade-slots')).toHaveAttribute('data-used', '0');
         const best = page.locator('#trade-picker .option[data-open="1"]').first();
@@ -355,6 +378,13 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
   await page.click('#victory-button');
   expect((await ui()).overlay).toBe('victory');
   await expect(page.locator('#victory tbody tr')).toHaveCount(3);
+  const inRace = await page.evaluate(() => {
+    const state = window.__shanhe?.state;
+    const listed = new Set([...(state?.majors ?? []), state?.player ?? -1]);
+    return [...listed].filter((polity) => state?.polities[polity]?.alive === true).length;
+  });
+  await expect(page.locator('#balance tbody tr[data-fear]')).toHaveCount(inRace);
+  await expect(page.locator('#balance tbody tr.mine')).toHaveCount(1);
   await capture(page, 'victory');
   await page.keyboard.press('Escape');
   expect((await ui()).overlay).toBeNull();
