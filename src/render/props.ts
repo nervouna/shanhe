@@ -1,7 +1,7 @@
 /**
  * Small things that stand on a hex because of what it is or what was built
  * on it: a farmhouse among the fields, a barn on the pasture, the pit head
- * of a mine, the boats of a fishery, the cone of a volcano. Lists of parts
+ * of a mine, the boats of a fishery. Lists of parts
  * around the middle of the hex, in hex sizes. No Three.js.
  */
 
@@ -36,7 +36,7 @@ export function improvementParts(kind: number, seed: number): Part[] {
     case Improvement.Mine:
       return [
         // the spoil heap, the winding tower over the shaft and the engine shed
-        { shape: Cone, x: x * 0.6, y: 0, z: z * 0.6, w: 0.26, h: 0.07, d: 0.2, yaw, color: 0x57524b },
+        { shape: Cone, x: x * 0.74, y: 0, z: z * 0.74, w: 0.2, h: 0.06, d: 0.15, yaw, color: 0x6b5d47 },
         { shape: Box, x, y: 0, z, w: 0.035, h: 0.13, d: 0.035, yaw, color: 0x4a3a2a },
         { shape: Hip, x, y: 0.13, z, w: 0.06, h: 0.025, d: 0.06, yaw, color: 0x3c3a36 },
         { shape: Box, x: x + 0.06, y: 0, z: z + 0.03, w: 0.08, h: 0.04, d: 0.05, yaw, color: 0x7d735f },
@@ -61,15 +61,4 @@ export function improvementParts(kind: number, seed: number): Part[] {
     default:
       return [];
   }
-}
-
-/** The cone of a volcano: dark slopes, a crater rim and the glow inside it. */
-export function volcanoParts(seed: number): Part[] {
-  const random = randomFrom(seed);
-  const yaw = random() * Math.PI;
-  return [
-    { shape: Cone, x: 0, y: 0, z: 0, w: 0.95, h: 0.34, d: 0.9, yaw, color: 0x3a3230 },
-    { shape: Cylinder, x: 0, y: 0.2, z: 0, w: 0.3, h: 0.07, d: 0.28, yaw, color: 0x2c2625 },
-    { shape: Cylinder, x: 0, y: 0.265, z: 0, w: 0.22, h: 0.008, d: 0.2, yaw, color: 0xff5a14, glow: 2.4 },
-  ];
 }

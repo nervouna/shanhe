@@ -42,18 +42,25 @@ export interface RenderUnit {
   readonly id: number;
   /** Hex the piece stands on. */
   readonly hex: number;
-  /** Polity whose colour the side band takes. */
+  /** Polity whose colour the ring on top and the band around the side take. */
   readonly polity: number;
   /** The one Chinese character engraved on top. */
   readonly character: string;
-  /** Unique units have the engraving filled with gold. */
+  /** Unique units have their character in gold, in a dark field. */
   readonly unique: boolean;
   readonly era: PieceEraId;
   /** Remaining hit points, from 0 to 1. */
   readonly hp: number;
+  /**
+   * How strong the unit is, on any scale. From far away pieces of one owner
+   * that would overlap are drawn as one stack, which shows the character of
+   * the strongest. If omitted, the later era counts as stronger, then the
+   * unique unit, then the healthier one.
+   */
+  readonly strength?: number;
 }
 
-/** One city marker. */
+/** One city. Its piece, if a unit stands on the hex, is drawn south of it, before the gate. */
 export interface RenderCity {
   readonly hex: number;
   readonly polity: number;
@@ -277,6 +284,41 @@ export interface FrameStats {
   readonly trees: number;
   /** Opacity of the cloud layer over the map: 0 near the ground, where only cloud shadows show. */
   readonly cloudLayer: number;
+  /**
+   * The factor by which pieces are drawn larger than on the board: 1 near,
+   * growing with the distance from where a piece would otherwise fall below
+   * its least size on screen.
+   */
+  readonly pieceScale: number;
+  /** Pieces and stacks drawn: fewer than the units of the scene where pieces have merged into stacks. */
+  readonly pieceMarkers: number;
+  /** Of {@link pieceMarkers}, the stacks: markers that stand for more than one unit. */
+  readonly pieceStacks: number;
+  /** How far the cities have turned from models into markers: 0 near, 1 from far away. */
+  readonly cityMarkers: number;
+}
+
+/** One piece or stack as it is drawn. */
+export interface BoardMarker {
+  /** The unit whose piece is drawn: of a stack, the strongest. */
+  readonly unit: number;
+  /** The hex that unit stands on. */
+  readonly hex: number;
+  /** Where the piece is drawn, and its radius as drawn, in world units. */
+  readonly x: number;
+  readonly z: number;
+  readonly radius: number;
+  /** Units it stands for: 1 for a piece that stands alone. */
+  readonly count: number;
+}
+
+/** How the board is laid out for the view of the last frame. */
+export interface BoardLayout {
+  /** As {@link FrameStats.pieceScale}. */
+  readonly pieceScale: number;
+  readonly markers: readonly BoardMarker[];
+  /** The city labels shown, by the city's hex, and the side of the city each sits on. */
+  readonly cityLabels: readonly { readonly hex: number; readonly side: 'below' | 'right' | 'left' | 'above' }[];
 }
 
 export interface RendererOptions {
@@ -305,7 +347,10 @@ export interface FocusOptions {
   /**
    * `zone` picks the distance that shows the whole zone the hex belongs to,
    * for example a city and its land. Ignored when `distance` is given, and
-   * for a hex outside every zone.
+   * for a hex outside every zone. A framed zone is centred exactly on its
+   * hex; without a frame the hex is brought into view, and near an edge of
+   * the map it stands off the middle of the view, so that the view does not
+   * show a broad strip of the table beside the map.
    */
   readonly frame?: 'zone';
   /** Jump instead of gliding. */
@@ -318,13 +363,15 @@ export interface Renderer {
   setScene(scene: RenderScene): void;
   /**
    * The hex under a point of the page, or `null` if the point is outside
-   * the canvas or the map.
+   * the canvas or the map. A piece that is drawn larger than its hex (from
+   * far away) or beside the middle of it (the garrison before a city's
+   * gate) answers for its own hex wherever its top face is hit.
    *
    * @param clientX as in `MouseEvent.clientX`.
    * @param clientY as in `MouseEvent.clientY`.
    */
   pickHex(clientX: number, clientY: number): number | null;
-  /** Moves the camera so that it looks at a hex. */
+  /** Moves the camera so that it looks at a hex, see {@link FocusOptions}. */
   focusHex(hex: number, options?: FocusOptions): void;
   /** Replaces the marked hexes. */
   setHighlights(highlights: readonly HexHighlight[]): void;
@@ -392,9 +439,15 @@ export interface Renderer {
   setGridVisible(visible: boolean): void;
   /** The camera state being drawn. */
   getCamera(): CameraState;
-  /** Moves the camera; missing fields keep their value. Out-of-range values are clamped. */
+  /**
+   * Moves the camera; missing fields keep their value. Out-of-range values
+   * are clamped, and the target keeps the distance from the map's edges at
+   * which at most a tenth of the view shows what lies beyond them.
+   */
   setCamera(state: Partial<CameraState>, immediate?: boolean): void;
   getStats(): FrameStats;
+  /** What is drawn for the pieces and where the city labels sit, as of the last frame. */
+  getBoardLayout(): BoardLayout;
   /** Calls `listener` after every frame. Returns a function that removes it. */
   onFrame(listener: (stats: FrameStats) => void): () => void;
   /**

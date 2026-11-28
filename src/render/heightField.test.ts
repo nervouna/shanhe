@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
 import { hexNeighbors, hexToWorld, indexToOffset } from '../shared/hex.ts';
-import { Terrain, isWaterTerrain } from '../shared/mapData.ts';
+import { Feature, Terrain, isWaterTerrain } from '../shared/mapData.ts';
 import {
   SEA_LEVEL,
+  VOLCANO_CRATER,
+  VOLCANO_HEIGHT,
+  VOLCANO_RADIUS,
   VERTICAL_EXAGGERATION,
   createSurface,
   mapWorldRect,
@@ -11,8 +14,10 @@ import {
   surfaceHeightAt,
   surfaceHeightAtHex,
   unitsPerMetre,
+  volcanoRise,
 } from './heightField.ts';
 import type { HeightField } from './heightField.ts';
+import { loadRealMap } from './realMapForTests.ts';
 import { createFlatMap } from './testMaps.ts';
 
 describe('unitsPerMetre', () => {
@@ -156,5 +161,74 @@ describe('surface of the fixture map', () => {
       const water = isWaterTerrain(map.terrain[i] as number);
       expect(Number.isNaN(surface.waterLevel[i] as number)).toBe(!water);
     }
+  });
+});
+
+describe('volcanoRise', () => {
+  it('is a cone that runs out into the ground at its foot', () => {
+    expect(volcanoRise(VOLCANO_RADIUS, 0)).toBe(0);
+    expect(volcanoRise(2, 1)).toBe(0);
+    expect(volcanoRise(VOLCANO_RADIUS * 0.99, 0)).toBeLessThan(0.01);
+    // higher towards the middle along every bearing, up to the rim
+    for (let k = 0; k < 12; k++) {
+      const angle = (k / 12) * Math.PI * 2;
+      let previous = 0;
+      for (let r = VOLCANO_RADIUS; r >= VOLCANO_CRATER; r -= 0.03) {
+        const rise = volcanoRise(Math.cos(angle) * r, Math.sin(angle) * r);
+        expect(rise).toBeGreaterThanOrEqual(previous - 0.012);
+        previous = Math.max(previous, rise);
+      }
+      expect(previous).toBeGreaterThan(VOLCANO_HEIGHT * 0.8);
+      expect(previous).toBeLessThanOrEqual(VOLCANO_HEIGHT + 1e-9);
+    }
+  });
+
+  it('has a crater inside its rim', () => {
+    const rim = volcanoRise(VOLCANO_CRATER, 0);
+    const floor = volcanoRise(0, 0);
+    expect(rim).toBeCloseTo(VOLCANO_HEIGHT, 6);
+    expect(floor).toBeLessThan(rim - 0.08);
+    expect(floor).toBeGreaterThan(VOLCANO_HEIGHT * 0.5);
+    // no step at the rim
+    expect(Math.abs(volcanoRise(VOLCANO_CRATER - 0.001, 0) - volcanoRise(VOLCANO_CRATER + 0.001, 0))).toBeLessThan(0.01);
+  });
+
+  it('stands on the volcano hex of the fixture map', () => {
+    const map = createFixtureMap();
+    const volcano = map.feature.indexOf(Feature.Volcano);
+    expect(volcano).toBeGreaterThanOrEqual(0);
+    const surface = createSurface(map);
+    const centre = hexToWorld(indexToOffset(volcano, map.width), map.projection.hexLayout);
+    const size = map.projection.hexLayout.size;
+    let top = -Infinity;
+    for (let k = 0; k < 12; k++) {
+      const angle = (k / 12) * Math.PI * 2;
+      top = Math.max(top, sampleHeight(surface.field, centre.x + Math.cos(angle) * 0.25 * size, centre.z + Math.sin(angle) * 0.25 * size));
+    }
+    const foot = sampleHeight(surface.field, centre.x + VOLCANO_RADIUS * size, centre.z);
+    expect(top).toBeGreaterThan(foot + 0.15 * size);
+  });
+
+  it('gives every volcano of the real map a rim higher than its crater', async () => {
+    const { map, heightmap } = await loadRealMap();
+    const surface = createSurface(map, heightmap);
+    const size = map.projection.hexLayout.size;
+    let volcanoes = 0;
+    for (let index = 0; index < map.width * map.height; index++) {
+      if (map.feature[index] !== Feature.Volcano) continue;
+      volcanoes++;
+      const centre = hexToWorld(indexToOffset(index, map.width), map.projection.hexLayout);
+      const floor = sampleHeight(surface.field, centre.x, centre.z);
+      let rim = Infinity;
+      let foot = -Infinity;
+      for (let k = 0; k < 12; k++) {
+        const angle = (k / 12) * Math.PI * 2;
+        rim = Math.min(rim, sampleHeight(surface.field, centre.x + Math.cos(angle) * VOLCANO_CRATER * size, centre.z + Math.sin(angle) * VOLCANO_CRATER * size));
+        foot = Math.max(foot, sampleHeight(surface.field, centre.x + Math.cos(angle) * VOLCANO_RADIUS * size, centre.z + Math.sin(angle) * VOLCANO_RADIUS * size));
+      }
+      // the whole rim stands over the crater floor
+      expect(rim, `volcano ${index}`).toBeGreaterThan(floor + 0.03 * size);
+    }
+    expect(volcanoes).toBeGreaterThan(10);
   });
 });

@@ -35,7 +35,7 @@ export interface MapTextures {
   readonly fog: DataTexture;
   /** RGBA: weight of farmland, pasture, mine and fishery. */
   readonly improvement: DataTexture;
-  /** R: volcano, G: oasis. */
+  /** R: volcano, G: oasis, B: a city stands on the hex. */
   readonly feature: DataTexture;
   /** Four fractal noises that repeat without a seam, see `noiseTile.ts`. */
   readonly noise: DataTexture;
@@ -45,6 +45,8 @@ export interface MapTextures {
   setFog(fog: Uint8Array | null): void;
   /** Repaints the improvement layer: hex index to an `Improvement` value. */
   setImprovements(improvements: ReadonlyMap<number, number>): void;
+  /** Marks the hexes that hold a city, whose ground is built up. */
+  setCities(hexes: ReadonlySet<number>): void;
   dispose(): void;
 }
 
@@ -141,6 +143,13 @@ export function createMapTextures(map: MapData, raster: HexRaster): MapTextures 
         }
       }
       improvement.needsUpdate = true;
+    },
+    setCities(hexes) {
+      for (let p = 0; p < pixels; p++) {
+        const hex = raster.hexAt[p] as number;
+        f[p * 4 + 2] = hex >= 0 && hexes.has(hex) ? 255 : 0;
+      }
+      feature.needsUpdate = true;
     },
     setOwners(owner) {
       const data = bytes(territory);

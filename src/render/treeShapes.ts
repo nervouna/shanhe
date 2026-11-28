@@ -28,7 +28,8 @@ export function buildTreeShape(family: TreeFamilyId, detailed: boolean): ShapeBu
   switch (family) {
     case TreeFamily.Conifer: {
       if (!detailed) {
-        shape.frustum(0, 0, 0.08, 1, 0.2, 0, 5, under, top);
+        // from the middle distances: a broad cone that closes ranks with its neighbours
+        shape.frustum(0, 0, 0.06, 1, 0.25, 0, 5, under, top);
         break;
       }
       shape.frustum(0, 0, 0, 0.3, 0.035, 0.03, 4, BARK);
@@ -40,13 +41,16 @@ export function buildTreeShape(family: TreeFamilyId, detailed: boolean): ShapeBu
     }
     case TreeFamily.Broadleaf: {
       if (!detailed) {
-        shape.blob(0, 0.62, 0, 0.3, 0.38, 5, 2, under, top);
+        // from the middle distances: a wide, low crown without a trunk, which
+        // runs into the crowns around it, so that a forest is a canopy and not a field of balls
+        shape.blob(0, 0.48, 0, 0.42, 0.4, 5, 2, under, top);
         break;
       }
-      shape.frustum(0, 0, 0, 0.45, 0.045, 0.03, 4, BARK);
-      shape.blob(0, 0.66, 0, 0.3, 0.34, 7, 3, under, top);
-      // a second lump to one side, so that the crown is not a ball
-      shape.blob(0.16, 0.52, 0.08, 0.19, 0.2, 5, 2, under, shade(top, 0.92));
+      // a short trunk under a crown of three lumps of different size: broad, uneven, never a ball on a stick
+      shape.frustum(0, 0, 0, 0.36, 0.05, 0.032, 3, BARK);
+      shape.blob(-0.05, 0.6, 0.02, 0.3, 0.26, 6, 2, under, top);
+      shape.blob(0.19, 0.5, 0.1, 0.21, 0.18, 5, 2, under, shade(top, 0.9));
+      shape.blob(0.06, 0.8, -0.08, 0.2, 0.17, 5, 2, shade(under, 1.1), shade(top, 1.06));
       break;
     }
     case TreeFamily.Bamboo: {
@@ -91,12 +95,14 @@ export function buildTreeShape(family: TreeFamilyId, detailed: boolean): ShapeBu
     }
     case TreeFamily.Rainforest: {
       if (!detailed) {
-        shape.blob(0, 0.74, 0, 0.42, 0.26, 6, 2, under, top);
+        // from the middle distances: the closed roof of the rainforest
+        shape.blob(0, 0.64, 0, 0.5, 0.28, 6, 2, under, top);
         break;
       }
-      shape.frustum(0, 0, 0, 0.62, 0.05, 0.03, 4, BARK);
-      // a wide, flat-topped crown over a ragged understorey
-      shape.blob(0, 0.78, 0, 0.44, 0.22, 8, 3, under, top);
+      shape.frustum(0, 0, 0, 0.6, 0.05, 0.03, 3, BARK);
+      // a wide, flat-topped crown in two tiers over a ragged understorey
+      shape.blob(0.04, 0.76, 0, 0.44, 0.2, 7, 2, under, top);
+      shape.blob(-0.2, 0.9, 0.12, 0.24, 0.13, 5, 2, shade(under, 1.1), shade(top, 1.05));
       shape.blob(-0.14, 0.42, 0.1, 0.2, 0.16, 5, 2, shade(under, 0.9), shade(top, 0.8));
       break;
     }

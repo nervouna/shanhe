@@ -32,6 +32,7 @@ import { Vector2, Vector4 } from 'three/webgpu';
 import type { HexLayout } from '../shared/hex.ts';
 import type { WorldRect } from '../shared/mapData.ts';
 import type { LatitudeTerms } from './climate.ts';
+import { CLOUD_SCALES, CLOUD_SHADOW_EDGES, CLOUD_SMALL_OFFSET, CLOUD_WEIGHTS } from './lightMath.ts';
 import type { MapTextures } from './mapTextures.ts';
 
 type Float = Node<'float'>;
@@ -64,6 +65,8 @@ export interface MapUniforms {
   readonly cloudShadow: UniformNode<'float'>;
   /** Opacity of the cloud layer seen from above, 0 near the ground. */
   readonly cloudLayer: UniformNode<'float'>;
+  /** Between which values of the cloud pattern a cloud's shadow deepens from none to full. */
+  readonly cloudEdges: UniformNode<'vec2'>;
   /** `apexZ`, `scale`, `c`, `n` of `LatitudeTerms` in `climate.ts`. */
   readonly latitude: UniformNode<'vec4'>;
   readonly textures: MapTextures;
@@ -91,6 +94,7 @@ export function createMapUniforms(
     cloudOffset: uniform(new Vector2()),
     cloudShadow: uniform(0.22),
     cloudLayer: uniform(0),
+    cloudEdges: uniform(new Vector2(CLOUD_SHADOW_EDGES[0], CLOUD_SHADOW_EDGES[1])),
     latitude: uniform(new Vector4(latitude.apexZ, latitude.scale, latitude.c, latitude.n)),
     textures,
   };
@@ -128,12 +132,12 @@ export function sinLatitude(u: MapUniforms, xz: Vec2): Float {
  * noise drifting at different speeds. One unit of the pattern is a few
  * dozen hexes, so that a cloud covers a province, not a field.
  */
-export function cloudCover(u: MapUniforms, xz: Vec2): Float {
+export function cloudCover(u: MapUniforms, xz: Vec2, edges: Vec2 = u.cloudEdges): Float {
   const p = xz.div(u.hexSize);
   const wind = vec2(u.clock.mul(0.0042), u.clock.mul(0.0017));
-  const large = texture(u.textures.noise, p.div(58).add(wind)).a;
-  const small = texture(u.textures.noise, p.div(23).sub(wind.mul(1.7)).add(vec2(0.37, 0.11))).a;
-  return smoothstep(0.5, 0.72, large.mul(0.65).add(small.mul(0.35)));
+  const large = texture(u.textures.noise, p.div(CLOUD_SCALES[0]).add(wind)).a;
+  const small = texture(u.textures.noise, p.div(CLOUD_SCALES[1]).sub(wind.mul(1.7)).add(vec2(CLOUD_SMALL_OFFSET[0], CLOUD_SMALL_OFFSET[1]))).a;
+  return smoothstep(edges.x, edges.y, large.mul(CLOUD_WEIGHTS[0]).add(small.mul(CLOUD_WEIGHTS[1])));
 }
 
 /** What is left of the light on a ground point under the drifting clouds, as a factor. */
@@ -146,11 +150,8 @@ function wrap(a: Vec2, b: Vec2): Vec2 {
   return a.sub(b.mul(floor(a.div(b))));
 }
 
-/**
- * Distance from a ground point to the centre of its hex across the nearest
- * edge, as a fraction of the way: 0 at the centre, 1 on the edge.
- */
-export function hexEdgeDistance(u: MapUniforms, xz: Vec2): Float {
+/** Where a ground point lies in its hex: east and south of the centre, in hex sizes. */
+export function hexLocal(u: MapUniforms, xz: Vec2): Vec2 {
   const SQRT3 = Math.sqrt(3);
   // in units of the hex size; pointy-top centres form two rectangular lattices
   const p = xz.sub(u.hexOrigin).div(u.hexSize);
@@ -159,7 +160,18 @@ export function hexEdgeDistance(u: MapUniforms, xz: Vec2): Float {
   const a = wrap(p.add(half), period).sub(half);
   const b = wrap(p, period).sub(half);
   const useA = dot(a, a).lessThan(dot(b, b));
-  const local = abs(vec2(select(useA, a.x, b.x), select(useA, a.y, b.y)));
+  return vec2(select(useA, a.x, b.x), select(useA, a.y, b.y));
+}
+
+/**
+ * Distance from a ground point to the centre of its hex across the nearest
+ * edge, as a fraction of the way: 0 at the centre, 1 on the edge.
+ *
+ * @param within the point's place in its hex, if {@link hexLocal} is already at hand.
+ */
+export function hexEdgeDistance(u: MapUniforms, xz: Vec2, within: Vec2 = hexLocal(u, xz)): Float {
+  const SQRT3 = Math.sqrt(3);
+  const local = abs(within);
   const reach = max(local.x, local.x.mul(0.5).add(local.y.mul(SQRT3 / 2)));
   return float(reach.div(SQRT3 / 2));
 }

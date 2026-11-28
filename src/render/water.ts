@@ -7,6 +7,7 @@
  */
 
 import {
+  attribute,
   cameraPosition,
   color,
   dot,
@@ -39,6 +40,7 @@ import {
 } from 'three/webgpu';
 import type { Texture } from 'three/webgpu';
 import { hexNeighbor, worldToHex } from '../shared/hex.ts';
+import { Terrain } from '../shared/mapData.ts';
 import { mapWorldRect, sampleHeight } from './heightField.ts';
 import type { Surface } from './heightField.ts';
 import { cloudShade, mapUv, noiseTile, withFogOfWar, withGrid } from './shaderLib.ts';
@@ -51,6 +53,18 @@ export interface Water {
 
 /** Mesh cells across the width of one hex. */
 const CELLS_PER_HEX = 3;
+/**
+ * How far past its shore a lake's sheet of water reaches, in hex sizes:
+ * well over a mesh cell, so that no cell that holds some of the lake is
+ * left out.
+ */
+const LAKE_SHEET = 1.6;
+/**
+ * The sheet is clear from this far outside the shore on, in hex sizes:
+ * within the bank that `heightField.ts` raises, beyond which the ground may
+ * lie lower than the lake.
+ */
+const LAKE_CLEAR: readonly [number, number] = [0.55, 0.9];
 
 function buildGeometry(surface: Surface): BufferGeometry {
   const { map, field, waterLevel } = surface;
@@ -60,13 +74,29 @@ function buildGeometry(surface: Surface): BufferGeometry {
   const cols = Math.ceil((rect.maxX - rect.minX) / cell) + 1;
   const rows = Math.ceil((rect.maxZ - rect.minZ) / cell) + 1;
 
+  /** Set by `levelAt`: how far outside a lake's shore the point lies, in hex sizes; -1 in a lake and for the sea. */
+  let shore = -1;
   /** Water level at a point: that of its hex, or of a water hex next to it. */
   const levelAt = (x: number, z: number): number => {
+    shore = -1;
+    const { lakes } = surface;
     const hex = worldToHex({ x, z }, layout);
+    const inside = hex.col >= 0 && hex.col < map.width && hex.row >= 0 && hex.row < map.height;
+    const own = inside ? (map.terrain[hex.row * map.width + hex.col] as number) : -1;
+    if (lakes !== undefined && own !== Terrain.Ocean && own !== Terrain.Coast) {
+      // a lake's sheet reaches a mesh cell past its shore, under the bank, so that no cell cuts into the water
+      const lake = lakes.at(x, z);
+      if (lake !== null && lake.distance < LAKE_SHEET * layout.size) {
+        shore = Math.max(lake.distance / layout.size, -1);
+        return lakes.levels[lake.body] as number;
+      }
+    }
     let found = Number.NaN;
     for (let d = -1; d < 6; d++) {
       const h = d < 0 ? hex : hexNeighbor(hex, d);
       if (h.col < 0 || h.col >= map.width || h.row < 0 || h.row >= map.height) continue;
+      // lakes with a shore of their own are done above
+      if (lakes !== undefined && map.terrain[h.row * map.width + h.col] === Terrain.Lake) continue;
       const level = waterLevel[h.row * map.width + h.col] as number;
       if (Number.isNaN(level)) continue;
       if (d < 0) return level;
@@ -78,12 +108,14 @@ function buildGeometry(surface: Surface): BufferGeometry {
 
   const levels = new Float32Array(cols * rows);
   const depths = new Float32Array(cols * rows);
+  const shores = new Float32Array(cols * rows);
   for (let j = 0; j < rows; j++) {
     const z = rect.minZ + ((rect.maxZ - rect.minZ) * j) / (rows - 1);
     for (let i = 0; i < cols; i++) {
       const x = rect.minX + ((rect.maxX - rect.minX) * i) / (cols - 1);
       const level = levelAt(x, z);
       levels[j * cols + i] = level;
+      shores[j * cols + i] = shore;
       depths[j * cols + i] = level - sampleHeight(field, x, z);
     }
   }
@@ -104,7 +136,7 @@ function buildGeometry(surface: Surface): BufferGeometry {
         levels[k] as number,
         rect.minZ + ((rect.maxZ - rect.minZ) * j) / (rows - 1),
       );
-      depth.push(depths[k] as number);
+      depth.push(shores[k] as number);
     }
     return v;
   };
@@ -123,7 +155,7 @@ function buildGeometry(surface: Surface): BufferGeometry {
 
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
-  geometry.setAttribute('depth', new BufferAttribute(new Float32Array(depth), 1));
+  geometry.setAttribute('shore', new BufferAttribute(new Float32Array(depth), 1));
   const normals = new Float32Array(positions.length);
   for (let i = 1; i < normals.length; i += 3) normals[i] = 1;
   geometry.setAttribute('normal', new BufferAttribute(normals, 3));
@@ -132,8 +164,8 @@ function buildGeometry(surface: Surface): BufferGeometry {
   return geometry;
 }
 
-/** Samples across the ground-height texture at most; the heightmap is finer than the water needs. */
-const DEPTH_TEXTURE_WIDTH = 1024;
+/** Samples across the ground-height texture at most: the shore is as fine as this texture. */
+const DEPTH_TEXTURE_WIDTH = 2048;
 
 /** The ground heights as a texture, so that the water knows its depth at every pixel. */
 function createGroundTexture(surface: Surface): DataTexture {
@@ -209,9 +241,12 @@ function createMaterial(u: MapUniforms, surface: Surface, ground: DataTexture, e
 
   const material = new MeshStandardNodeMaterial();
   material.colorNode = vec3(shaded);
+  // nothing at all where the ground is not under the water: the sheet also lies over low banks
+  // and nothing far outside a lake's shore, where the sheet lies over ground that may be lower than the lake
+  const wet = smoothstep(0, 0.5, depthMetres).mul(float(1).sub(smoothstep(LAKE_CLEAR[0], LAKE_CLEAR[1], attribute('shore', 'float'))));
   material.opacityNode = saturate(
     smoothstep(0, 4, depthMetres).mul(mix(float(0.55), float(0.97), max(deep, shelf.mul(0.6)))).add(foam.mul(0.6)),
-  );
+  ).mul(wet);
   material.normalNode = transformNormalToView(normal);
   material.roughnessNode = mix(float(0.1), float(0.55), saturate(foam.add(caps)));
   material.metalness = 0;
@@ -219,6 +254,11 @@ function createMaterial(u: MapUniforms, surface: Surface, ground: DataTexture, e
   material.envMapIntensity = 0.06;
   material.transparent = true;
   material.depthWrite = false;
+  // drawn a touch nearer than it lies: over ground that a coarse mesh puts a metre or two above the
+  // water. Where there really is ground, the depth read above leaves the water clear
+  material.polygonOffset = true;
+  material.polygonOffsetFactor = -1;
+  material.polygonOffsetUnits = -80;
   return material;
 }
 

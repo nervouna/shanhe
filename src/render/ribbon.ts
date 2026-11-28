@@ -5,7 +5,7 @@
  * ribbon of triangles drawn along a line.
  */
 
-import { hexCorners, hexToWorld, indexToOffset } from '../shared/hex.ts';
+import { hexCorners, hexToWorld, indexToOffset, worldToHex } from '../shared/hex.ts';
 import type { HexLayout, WorldPoint } from '../shared/hex.ts';
 import type { MapData } from '../shared/mapData.ts';
 import { isWaterTerrain } from '../shared/mapData.ts';
@@ -33,17 +33,59 @@ export function cornerId(point: WorldPoint, layout: HexLayout): number {
   return (a + 4096) * 65536 + (b + 4096);
 }
 
+/** A river as a line through hex corners, with how much river lies upstream of each of its points. */
+export interface RiverCourse extends Course {
+  /**
+   * Per point: the number of river edges that drain through it, itself
+   * included. It grows downstream, and sets the width.
+   */
+  readonly flows: readonly number[];
+}
+
+/** The river edges of a map as a graph of hex corners. */
+export interface RiverNetwork {
+  /** Where each corner is, by its id ({@link cornerId}). */
+  readonly position: ReadonlyMap<number, WorldPoint>;
+  /** The corners each corner is joined to by a river edge. */
+  readonly links: ReadonlyMap<number, readonly number[]>;
+  /** Corners that touch a water hex: a river ends there without thinning out. */
+  readonly wet: ReadonlySet<number>;
+  /** Per corner: the river edges that drain through it, itself included. */
+  readonly flow: ReadonlyMap<number, number>;
+  /** Per corner: the next corner downstream, or -1 at a mouth. */
+  readonly downstream: ReadonlyMap<number, number>;
+  /** River edges left out because they closed a ring around a single hex. */
+  readonly opened: number;
+}
+
 /**
- * The rivers of a map as lines through hex corners. Every river edge is
- * part of exactly one line. Lines end at a source, at the water, or at a
- * corner where three river edges meet; there, the lines that meet share the
- * corner as their end point.
+ * The hexes all six of whose edges are joined in a set of links: a river
+ * drawn along them would be a ring around the hex.
  */
-export function riverCourses(map: MapData): Course[] {
+export function ringHexes(map: MapData, links: ReadonlyMap<number, readonly number[]>): number[] {
+  const layout = map.projection.hexLayout;
+  const out: number[] = [];
+  for (let i = 0; i < map.width * map.height; i++) {
+    const ids = hexCorners(indexToOffset(i, map.width), layout).map((corner) => cornerId(corner, layout));
+    if (ids.every((id, k) => links.get(id)?.includes(ids[(k + 1) % 6] as number) === true)) out.push(i);
+  }
+  return out;
+}
+
+/**
+ * The rivers of a map as a graph. Where the data sets all six edges of a
+ * hex (a river on both sides of it), the ring is opened: of the stretches
+ * between the corners where other river edges join it, the longest is left
+ * out, so that the river still connects everything it connected and passes
+ * the hex on one side; a ring that nothing joins is left out altogether.
+ *
+ * Every river then drains towards the water: the flow of a corner counts
+ * the river edges upstream of it.
+ */
+export function riverNetwork(map: MapData): RiverNetwork {
   const layout = map.projection.hexLayout;
   const position = new Map<number, WorldPoint>();
   const links = new Map<number, number[]>();
-  /** Corners that touch a water hex: a river ends there without thinning out. */
   const wet = new Set<number>();
   const link = (a: number, b: number): void => {
     const list = links.get(a);
@@ -69,10 +111,97 @@ export function riverCourses(map: MapData): Course[] {
     }
   }
 
+  // open the rings around single hexes
+  const unlink = (a: number, b: number): void => {
+    for (const [from, to] of [[a, b], [b, a]] as const) {
+      const list = links.get(from);
+      if (list === undefined) continue;
+      const at = list.indexOf(to);
+      if (at >= 0) list.splice(at, 1);
+      if (list.length === 0) links.delete(from);
+    }
+  };
+  let opened = 0;
+  for (const hex of ringHexes(map, links)) {
+    const ids = hexCorners(indexToOffset(hex, map.width), layout).map((corner) => cornerId(corner, layout));
+    // an earlier ring may have shared an edge with this one and opened it already
+    if (!ids.every((id, k) => links.get(id)?.includes(ids[(k + 1) % 6] as number) === true)) continue;
+    const ports = ids.map((id, k) => ((links.get(id)?.length ?? 0) > 2 ? k : -1)).filter((k) => k >= 0);
+    let from = 0;
+    let span = 6;
+    if (ports.length >= 2) {
+      // the longest stretch between two corners where the ring is joined
+      span = 0;
+      ports.forEach((port, n) => {
+        const next = ports[(n + 1) % ports.length] as number;
+        const gap = (next - port + 6) % 6 || 6;
+        if (gap > span) {
+          span = gap;
+          from = port;
+        }
+      });
+    }
+    for (let k = 0; k < span; k++) {
+      unlink(ids[(from + k) % 6] as number, ids[(from + k + 1) % 6] as number);
+      opened++;
+    }
+  }
+  for (const id of [...position.keys()]) if (!links.has(id)) position.delete(id);
+
+  // towards the water: breadth first from the mouths, then from the lowest end of what is left
+  const downstream = new Map<number, number>();
+  const order: number[] = [];
+  const spread = (roots: readonly number[]): void => {
+    const queue = roots.filter((root) => !downstream.has(root));
+    for (const root of queue) downstream.set(root, -1);
+    for (let n = 0; n < queue.length; n++) {
+      const node = queue[n] as number;
+      order.push(node);
+      for (const next of links.get(node) ?? []) {
+        if (downstream.has(next)) continue;
+        downstream.set(next, node);
+        queue.push(next);
+      }
+    }
+  };
+  spread([...links.keys()].filter((node) => wet.has(node)));
+  const elevationAt = (node: number): number => {
+    const p = position.get(node) as WorldPoint;
+    const hex = worldToHex({ x: p.x, z: p.z + layout.size * 0.01 }, layout);
+    if (hex.col < 0 || hex.col >= map.width || hex.row < 0 || hex.row >= map.height) return 0;
+    return map.elevation[hex.row * map.width + hex.col] as number;
+  };
+  const rest = [...links.keys()].filter((node) => !downstream.has(node)).sort((a, b) => elevationAt(a) - elevationAt(b) || a - b);
+  for (const node of rest) if (!downstream.has(node)) spread([node]);
+  const flow = new Map<number, number>();
+  for (let n = order.length - 1; n >= 0; n--) {
+    const node = order[n] as number;
+    const own = (flow.get(node) ?? 0) + 1;
+    flow.set(node, own);
+    const to = downstream.get(node) as number;
+    if (to >= 0) flow.set(to, (flow.get(to) ?? 0) + own);
+  }
+  return { position, links, wet, flow, downstream, opened };
+}
+
+/**
+ * The rivers of a map as lines through hex corners. Every river edge of
+ * the network ({@link riverNetwork}) is part of exactly one line. Lines end
+ * at a source, at the water, or at a corner where three river edges meet;
+ * there, the lines that meet share the corner as their end point.
+ */
+export function riverCourses(map: MapData): RiverCourse[] {
+  const { position, links, wet, flow, downstream } = riverNetwork(map);
   const used = new Set<string>();
   const edgeKey = (a: number, b: number): string => (a < b ? `${a}:${b}` : `${b}:${a}`);
   const degree = (node: number): number => links.get(node)?.length ?? 0;
-  const courses: Course[] = [];
+  /** What drains through the edge between two corners: the flow of its upstream end. */
+  const edgeFlow = (a: number, b: number): number => {
+    if (downstream.get(a) === b) return flow.get(a) as number;
+    if (downstream.get(b) === a) return flow.get(b) as number;
+    return Math.min(flow.get(a) as number, flow.get(b) as number);
+  };
+  const courses: RiverCourse[] = [];
   /** Follows unused edges from `start` through `next` until a corner that is not a plain bend. */
   const walk = (start: number, next: number): number[] => {
     const nodes = [start, next];
@@ -93,11 +222,18 @@ export function riverCourses(map: MapData): Course[] {
     const first = nodes[0] as number;
     const last = nodes[nodes.length - 1] as number;
     const closed = nodes.length > 2 && first === last;
+    // a point carries what flows through the edges on either side of it: a tributary stays narrow up to the junction
+    const flows = nodes.map((node, i) => {
+      const before = i > 0 ? edgeFlow(nodes[i - 1] as number, node) : null;
+      const after = i < nodes.length - 1 ? edgeFlow(node, nodes[i + 1] as number) : null;
+      return before === null ? (after as number) : after === null ? before : (before + after) / 2;
+    });
     courses.push({
       points: nodes.map((node) => position.get(node) as WorldPoint),
       closed,
       taperStart: !closed && degree(first) === 1 && !wet.has(first),
       taperEnd: !closed && degree(last) === 1 && !wet.has(last),
+      flows,
     });
   };
   // from ends and junctions first, then whatever is left: closed loops
@@ -109,6 +245,118 @@ export function riverCourses(map: MapData): Course[] {
     for (const next of neighbours) if (!used.has(edgeKey(node, next))) emit(walk(node, next));
   }
   return courses;
+}
+
+/** The flow at which a river has its full width: the great rivers of the map reach it. */
+const FULL_FLOW = 150;
+/** The width of a river at its source and in full flow, as multiples of the nominal width. */
+const WIDTH_AT_SOURCE = 0.55;
+const WIDTH_IN_FULL_FLOW = 1.7;
+
+/** How wide a river is for what flows through it, as a multiple of the nominal width: it grows downstream. */
+export function riverWidthFactor(flow: number): number {
+  const t = Math.sqrt(Math.min(Math.max(flow, 0) / FULL_FLOW, 1));
+  return WIDTH_AT_SOURCE + (WIDTH_IN_FULL_FLOW - WIDTH_AT_SOURCE) * t;
+}
+
+/** A river as it is drawn: a smooth line, and its width at every point as a multiple of the nominal width. */
+export interface RiverLine {
+  readonly course: Course;
+  readonly widths: readonly number[];
+}
+
+/** Passes of the filter that takes the hex edges out of a course. */
+const RIVER_SMOOTHING = 3;
+/** The bends a river is given back afterwards: how far to either side and how long, in hex sizes. */
+const MEANDER_REACH = 0.13;
+const MEANDER_LENGTH = 2.7;
+
+/**
+ * Turns a river's course along hex edges into the line that is drawn. The
+ * edges zigzag by 120 degrees at every corner: a filter over three points
+ * takes exactly that out, and two more passes round what is left over
+ * several hexes. The line is then given gentle bends of its own, a spline
+ * is laid through it, and points are added so that it can follow the
+ * relief. The ends stay where they are, so rivers still meet in a point,
+ * and the line stays within a quarter of a hex of the edges it stands for.
+ *
+ * @param size the hex size.
+ * @param spacing the largest distance between two points of the result.
+ */
+export function riverLine(course: RiverCourse, size: number, spacing: number): RiverLine {
+  const closed = course.closed;
+  let points = closed ? course.points.slice(0, -1) : course.points.slice();
+  const flows = closed ? course.flows.slice(0, -1) : course.flows.slice();
+  const n = points.length;
+  if (n >= 3) {
+    for (let pass = 0; pass < RIVER_SMOOTHING; pass++) {
+      const next = points.slice();
+      for (let i = 0; i < n; i++) {
+        if (!closed && (i === 0 || i === n - 1)) continue;
+        const a = points[(i - 1 + n) % n] as WorldPoint;
+        const b = points[i] as WorldPoint;
+        const c = points[(i + 1) % n] as WorldPoint;
+        next[i] = { x: (a.x + 2 * b.x + c.x) / 4, z: (a.z + 2 * b.z + c.z) / 4 };
+      }
+      points = next;
+    }
+    // bends: to either side of the smoothed line, none at the ends
+    const lengths = [0];
+    for (let i = 1; i < n; i++) {
+      lengths.push((lengths[i - 1] as number) + Math.hypot((points[i] as WorldPoint).x - (points[i - 1] as WorldPoint).x, (points[i] as WorldPoint).z - (points[i - 1] as WorldPoint).z));
+    }
+    const first = course.points[0] as WorldPoint;
+    const phase = (Math.abs(Math.round(first.x * 131 + first.z * 71)) % 628) / 100;
+    const bent = points.slice();
+    for (let i = 0; i < n; i++) {
+      if (!closed && (i === 0 || i === n - 1)) continue;
+      const a = points[(i - 1 + n) % n] as WorldPoint;
+      const c = points[(i + 1) % n] as WorldPoint;
+      const along = Math.hypot(c.x - a.x, c.z - a.z) || 1;
+      const ease = closed ? 1 : Math.min(1, Math.min(i, n - 1 - i) / 3);
+      const sway = Math.sin(((lengths[i] as number) / (MEANDER_LENGTH * size)) * Math.PI * 2 + phase) * MEANDER_REACH * size * ease;
+      bent[i] = { x: (points[i] as WorldPoint).x - ((c.z - a.z) / along) * sway, z: (points[i] as WorldPoint).z + ((c.x - a.x) / along) * sway };
+    }
+    points = bent;
+  }
+  if (closed) {
+    points.push(points[0] as WorldPoint);
+    flows.push(flows[0] as number);
+  }
+  // a spline through the points, the widths carried along, then points close enough to follow the relief
+  const pieces = 4;
+  const splined = splineCourse({ ...course, points }, pieces);
+  let widths: number[] = [];
+  if (splined.points.length === points.length) {
+    widths = flows.map(riverWidthFactor);
+  } else {
+    for (let i = 0; i < points.length - 1; i++) {
+      for (let k = 0; k < pieces; k++) {
+        const t = k / pieces;
+        widths.push(riverWidthFactor((flows[i] as number) * (1 - t) + (flows[i + 1] as number) * t));
+      }
+    }
+    widths.push(riverWidthFactor(flows[flows.length - 1] as number));
+  }
+  const dense: WorldPoint[] = [];
+  const denseWidths: number[] = [];
+  splined.points.forEach((point, i) => {
+    const previous = splined.points[i - 1];
+    if (previous !== undefined) {
+      const steps = Math.ceil(Math.hypot(point.x - previous.x, point.z - previous.z) / spacing);
+      for (let k = 1; k < steps; k++) {
+        const t = k / steps;
+        dense.push({ x: previous.x + (point.x - previous.x) * t, z: previous.z + (point.z - previous.z) * t });
+        denseWidths.push((widths[i - 1] as number) * (1 - t) + (widths[i] as number) * t);
+      }
+    }
+    dense.push(point);
+    denseWidths.push(widths[i] as number);
+  });
+  return {
+    course: { points: dense, closed, taperStart: course.taperStart, taperEnd: course.taperEnd },
+    widths: denseWidths,
+  };
 }
 
 /**
@@ -322,8 +570,9 @@ const TAPER_OVER = 9;
  *
  * @param halfWidth half the width of the ribbon.
  * @param caps whether to close open ends with half-discs.
+ * @param widths per point of the course, a factor on the width there; 1 everywhere if omitted.
  */
-export function appendRibbon(ribbon: Ribbon, course: Course, halfWidth: number, caps = true): void {
+export function appendRibbon(ribbon: Ribbon, course: Course, halfWidth: number, caps = true, widths?: readonly number[]): void {
   const points = course.points;
   const n = points.length;
   if (n < 2) return;
@@ -344,11 +593,12 @@ export function appendRibbon(ribbon: Ribbon, course: Course, halfWidth: number, 
     lengths.push(total);
   }
   const widthAt = (i: number): number => {
-    let width = halfWidth;
+    const full = halfWidth * (widths?.[i] ?? 1);
+    let width = full;
     const reach = TAPER_OVER * halfWidth;
-    if (course.taperStart) width = Math.min(width, halfWidth * (TAPER_TO + (1 - TAPER_TO) * Math.min(1, (lengths[i] as number) / reach)));
+    if (course.taperStart) width = Math.min(width, full * (TAPER_TO + (1 - TAPER_TO) * Math.min(1, (lengths[i] as number) / reach)));
     if (course.taperEnd) {
-      width = Math.min(width, halfWidth * (TAPER_TO + (1 - TAPER_TO) * Math.min(1, (total - (lengths[i] as number)) / reach)));
+      width = Math.min(width, full * (TAPER_TO + (1 - TAPER_TO) * Math.min(1, (total - (lengths[i] as number)) / reach)));
     }
     return width;
   };

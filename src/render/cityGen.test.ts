@@ -15,7 +15,7 @@ import {
 import type { CityFamilyId, CitySpec, Part } from './cityGen.ts';
 import { createDemoGallery } from './demoGallery.ts';
 import { LANDMARK_IDS, generateLandmark, isLandmark, placeParts } from './landmarks.ts';
-import { improvementParts, volcanoParts } from './props.ts';
+import { improvementParts } from './props.ts';
 import { Improvement } from './scene.ts';
 import { createFlatMap } from './testMaps.ts';
 
@@ -264,12 +264,6 @@ describe('props', () => {
     expect(improvementParts(0, 1)).toEqual([]);
   });
 
-  it('gives a volcano a cone with a glowing crater', () => {
-    const parts = volcanoParts(5);
-    expectSound(parts);
-    expect(parts.some((part) => part.shape === PartShape.Cone && part.w > 0.5)).toBe(true);
-    expect(parts.some((part) => (part.glow ?? 0) > 1)).toBe(true);
-  });
 });
 
 describe('createDemoGallery', () => {

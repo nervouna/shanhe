@@ -16,6 +16,7 @@ import {
 } from 'three/webgpu';
 import { hexCorners, hexNeighbor, hexToWorld, indexToOffset } from '../shared/hex.ts';
 import type { WorldPoint } from '../shared/hex.ts';
+import { Terrain } from '../shared/mapData.ts';
 import { sampleHeight, surfaceHeightAt } from './heightField.ts';
 import type { Surface } from './heightField.ts';
 import type { MarkerLabel } from './labels.ts';
@@ -116,6 +117,8 @@ function buildBorders(surface: Surface, owner: Int16Array, colors: readonly Colo
       const inside =
         neighbor.col >= 0 && neighbor.col < map.width && neighbor.row >= 0 && neighbor.row < map.height;
       if (inside && owner[neighbor.row * map.width + neighbor.col] === polity) continue;
+      // a lake's shore wanders around the edges of its hexes: its own shoreline is the border there
+      if (inside && surface.lakes !== undefined && map.terrain[neighbor.row * map.width + neighbor.col] === Terrain.Lake) continue;
       // along a shore the border lies on the water, not under it
       const floor = Math.max(ownLevel, waterLevelOrLow(surface, neighbor));
       const from = corners[(d + 5) % 6] as WorldPoint;

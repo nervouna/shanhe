@@ -106,15 +106,86 @@ export function tiltForDistance(distance: number, limits: CameraLimits): number 
   return NEAR_TILT + (FAR_TILT - NEAR_TILT) * eased;
 }
 
-/** `state` with the target moved onto the map, the zoom into range and the yaw into -PI..PI. */
-export function clampCamera(state: CameraState, limits: CameraLimits): CameraState {
+/** At most this share of the view, measured from an edge of the screen inwards, shows what lies past the edge of the map. */
+export const MAX_VOID_SHARE = 0.1;
+
+/**
+ * How far from each edge of the map the camera's target has to stay so
+ * that no more than {@link MAX_VOID_SHARE} of the view shows what lies past
+ * that edge: `west`, `east`, `north` and `south` are distances inwards from
+ * the map's edges, for a view that looks along `yaw`.
+ *
+ * The view reaches farther on the ground towards the top of the screen
+ * than towards the bottom, and farther the flatter it looks: the margins
+ * follow from the tilt that goes with the distance.
+ *
+ * @param aspect width of the view divided by its height.
+ */
+export function viewMargins(
+  distance: number,
+  yaw: number,
+  limits: CameraLimits,
+  aspect: number,
+): { west: number; east: number; north: number; south: number } {
+  const d = clamp(distance, limits.minDistance, limits.maxDistance);
+  const tilt = tiltForDistance(d, limits);
+  const half = Math.tan((CAMERA_FOV * Math.PI) / 360);
+  const inner = 1 - 2 * MAX_VOID_SHARE;
+  const height = d * Math.sin(tilt);
+  const back = d * Math.cos(tilt);
+  // ground distances from the target to where the view's inner frame meets the ground
+  const edge = Math.atan(inner * half);
+  const near = back - height / Math.tan(tilt + edge);
+  const far = tilt - edge > 0.02 ? height / Math.tan(tilt - edge) - back : Infinity;
+  const side = inner * half * aspect * d;
+  // the four points of that frame, as offsets from the target: ahead of the camera is (-sin yaw, -cos yaw)
+  const ahead = [-Math.sin(yaw), -Math.cos(yaw)] as const;
+  const right = [Math.cos(yaw), -Math.sin(yaw)] as const;
+  const points = [
+    [ahead[0] * far, ahead[1] * far],
+    [-ahead[0] * near, -ahead[1] * near],
+    [right[0] * side, right[1] * side],
+    [-right[0] * side, -right[1] * side],
+  ] as const;
+  return {
+    west: Math.max(0, ...points.map((p) => -p[0])),
+    east: Math.max(0, ...points.map((p) => p[0])),
+    north: Math.max(0, ...points.map((p) => -p[1])),
+    south: Math.max(0, ...points.map((p) => p[1])),
+  };
+}
+
+/**
+ * `state` with the target moved onto the map, the zoom into range and the yaw into -PI..PI.
+ *
+ * @param aspect width of the view divided by its height. With it, the
+ *   target also keeps its distance from the edges of the map
+ *   ({@link viewMargins}), so that the view does not show a broad strip of
+ *   the table beside the map. Where the map is narrower than the view,
+ *   which nothing can help, the target stays on the map's middle line.
+ */
+export function clampCamera(state: CameraState, limits: CameraLimits, aspect?: number): CameraState {
   let yaw = state.yaw % (2 * Math.PI);
   if (yaw > Math.PI) yaw -= 2 * Math.PI;
   if (yaw < -Math.PI) yaw += 2 * Math.PI;
+  const distance = clamp(state.distance, limits.minDistance, limits.maxDistance);
+  let minX = limits.minX;
+  let maxX = limits.maxX;
+  let minZ = limits.minZ;
+  let maxZ = limits.maxZ;
+  if (aspect !== undefined && aspect > 0) {
+    const margins = viewMargins(distance, yaw, limits, aspect);
+    minX += margins.west;
+    maxX -= margins.east;
+    minZ += margins.north;
+    maxZ -= margins.south;
+    if (minX > maxX) minX = maxX = (limits.minX + limits.maxX) / 2 + (margins.west - margins.east) / 2;
+    if (minZ > maxZ) minZ = maxZ = (limits.minZ + limits.maxZ) / 2 + (margins.north - margins.south) / 2;
+  }
   return {
-    x: clamp(state.x, limits.minX, limits.maxX),
-    z: clamp(state.z, limits.minZ, limits.maxZ),
-    distance: clamp(state.distance, limits.minDistance, limits.maxDistance),
+    x: clamp(state.x, minX, maxX),
+    z: clamp(state.z, minZ, maxZ),
+    distance,
     yaw,
   };
 }
@@ -190,4 +261,34 @@ export function rayAtHeight(ray: Ray, y: number): { x: number; z: number } | nul
   const t = (y - ray.origin[1]) / dy;
   if (t <= 0) return null;
   return { x: ray.origin[0] + ray.direction[0] * t, z: ray.origin[2] + ray.direction[2] * t };
+}
+
+/**
+ * Where a world point appears in a view: the inverse of {@link screenRay}.
+ *
+ * @param width of the view in pixels.
+ * @param height of the view in pixels.
+ * @returns the point in pixels from the top left corner and its distance in front of the camera, or `null` behind it.
+ */
+export function screenPoint(
+  pose: CameraPose,
+  fovDegrees: number,
+  width: number,
+  height: number,
+  point: Vec3,
+): { x: number; y: number; depth: number } | null {
+  const forward = normalize([
+    pose.target[0] - pose.position[0],
+    pose.target[1] - pose.position[1],
+    pose.target[2] - pose.position[2],
+  ]);
+  const right = normalize(cross(forward, [0, 1, 0]));
+  const up = cross(right, forward);
+  const d: Vec3 = [point[0] - pose.position[0], point[1] - pose.position[1], point[2] - pose.position[2]];
+  const depth = d[0] * forward[0] + d[1] * forward[1] + d[2] * forward[2];
+  if (depth <= 1e-9) return null;
+  const halfHeight = Math.tan((fovDegrees * Math.PI) / 360);
+  const sx = (d[0] * right[0] + d[1] * right[1] + d[2] * right[2]) / depth / (halfHeight * (width / height));
+  const sy = (d[0] * up[0] + d[1] * up[1] + d[2] * up[2]) / depth / halfHeight;
+  return { x: (sx * 0.5 + 0.5) * width, y: (0.5 - sy * 0.5) * height, depth };
 }

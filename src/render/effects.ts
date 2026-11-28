@@ -106,7 +106,7 @@ export function createEffects(): Effects {
   particleMesh.name = 'particles';
   particleMesh.count = 0;
   particleMesh.frustumCulled = false;
-  particleMesh.renderOrder = 6;
+  particleMesh.renderOrder = 9.5;
   particleMesh.visible = false;
 
   // projectiles: thin boxes along their flight

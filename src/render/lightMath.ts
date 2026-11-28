@@ -126,8 +126,81 @@ const SHOW_FULL = 0.7;
 /** Opacity of the thickest cloud at the farthest zoom. */
 const MAX_OPACITY = 0.5;
 
+/** How far the cloud layer has come into view at a zoom fraction, 0 to 1. */
+export function cloudLayerShare(zoom: number): number {
+  const t = Math.min(Math.max((zoom - SHOW_FROM) / (SHOW_FULL - SHOW_FROM), 0), 1);
+  return t * t * (3 - 2 * t);
+}
+
 /** How opaque the cloud layer is at a zoom fraction. */
 export function cloudLayerOpacity(zoom: number): number {
-  const t = Math.min(Math.max((zoom - SHOW_FROM) / (SHOW_FULL - SHOW_FROM), 0), 1);
-  return t * t * (3 - 2 * t) * MAX_OPACITY;
+  return cloudLayerShare(zoom) * MAX_OPACITY;
+}
+
+/**
+ * The cloud pattern is two layers of the noise texture's fourth channel,
+ * read at these scales in hex sizes and mixed in these shares
+ * (`cloudCover` in `shaderLib.ts`).
+ */
+export const CLOUD_SCALES: readonly [large: number, small: number] = [58, 23];
+export const CLOUD_WEIGHTS: readonly [large: number, small: number] = [0.65, 0.35];
+export const CLOUD_SMALL_OFFSET: readonly [u: number, v: number] = [0.37, 0.11];
+
+/** Between which values of the pattern cloud thickens from none to full: `[from, to]`. */
+export type CloudEdges = readonly [from: number, to: number];
+/**
+ * Near the ground, where only the shadows of the clouds show: broad, soft
+ * shadows over two thirds of the land.
+ */
+export const CLOUD_SHADOW_EDGES: CloudEdges = [0.5, 0.72];
+/**
+ * The cloud layer seen from above: only the thick middles of those clouds,
+ * about a sixth of the land, so that the board under it stays in view.
+ */
+export const CLOUD_LAYER_EDGES: CloudEdges = [0.665, 0.83];
+
+/** How much cloud a value of the pattern makes, 0 to 1. */
+export function cloudDensity(pattern: number, edges: CloudEdges): number {
+  const t = Math.min(Math.max((pattern - edges[0]) / (edges[1] - edges[0]), 0), 1);
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * The edges the shadows of the clouds are cut with at a zoom fraction: the
+ * broad ones near the ground, the layer's own once the layer is in view, so
+ * that every shadow then lies under a cloud.
+ */
+export function cloudShadowEdges(zoom: number): CloudEdges {
+  const t = cloudLayerShare(zoom);
+  return [
+    CLOUD_SHADOW_EDGES[0] + (CLOUD_LAYER_EDGES[0] - CLOUD_SHADOW_EDGES[0]) * t,
+    CLOUD_SHADOW_EDGES[1] + (CLOUD_LAYER_EDGES[1] - CLOUD_SHADOW_EDGES[1]) * t,
+  ];
+}
+
+/**
+ * The share of the ground under any cloud of the layer, measured on the
+ * noise the shader reads.
+ *
+ * @param tile the noise texture as `buildNoiseTile` makes it, `size` pixels a side.
+ */
+export function cloudCoverage(tile: Uint8Array, size: number, edges: CloudEdges = CLOUD_LAYER_EDGES): number {
+  const at = (u: number, v: number): number => {
+    const i = ((Math.floor(u * size) % size) + size) % size;
+    const j = ((Math.floor(v * size) % size) + size) % size;
+    return (tile[(j * size + i) * 4 + 3] as number) / 255;
+  };
+  let covered = 0;
+  let total = 0;
+  // an area many repeats of both layers wide, in hex sizes
+  for (let z = 0; z < 700; z += 1.7) {
+    for (let x = 0; x < 700; x += 1.7) {
+      const pattern =
+        CLOUD_WEIGHTS[0] * at(x / CLOUD_SCALES[0], z / CLOUD_SCALES[0]) +
+        CLOUD_WEIGHTS[1] * at(x / CLOUD_SCALES[1] + CLOUD_SMALL_OFFSET[0], z / CLOUD_SCALES[1] + CLOUD_SMALL_OFFSET[1]);
+      if (cloudDensity(pattern, edges) > 0) covered++;
+      total++;
+    }
+  }
+  return covered / total;
 }

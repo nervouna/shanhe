@@ -19,7 +19,7 @@ import {
 import { hexToWorld, indexToOffset, worldToHex } from '../shared/hex.ts';
 import { getLanguage } from '../shared/i18n.ts';
 import type { Language } from '../shared/i18n.ts';
-import { Feature, NO_ZONE } from '../shared/mapData.ts';
+import { NO_ZONE } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
 import type { RenderBackend } from '../shared/types.ts';
 import { createAnimator } from './animator.ts';
@@ -49,10 +49,11 @@ import { createLighting } from './lighting.ts';
 import { createMapTextures } from './mapTextures.ts';
 import { createOverlays } from './overlays.ts';
 import { createPartBatch } from './partBatch.ts';
-import { pickHexOnRay } from './picking.ts';
+import { pickHexOnRay, pickMarkerOnRay } from './picking.ts';
+import { pieceFit, steppedScale } from './pieceLayout.ts';
 import { createPieces } from './pieces.ts';
 import { placePoliticalNames } from './politicalNames.ts';
-import { improvementParts, volcanoParts } from './props.ts';
+import { improvementParts } from './props.ts';
 import { resolveEffects } from './postEffects.ts';
 import type { PostEffect } from './postEffects.ts';
 import { createPostFx } from './postfx.ts';
@@ -160,7 +161,7 @@ export async function createRenderer(
 
   const hexCount = mapData.width * mapData.height;
 
-  /** Draws what stands on hexes besides cities: volcano cones and the buildings of improvements. */
+  /** Draws what stands on hexes besides cities: the buildings of improvements. */
   const showProps = (improvements: ReadonlyMap<number, number>): void => {
     const parts: Part[] = [];
     const place = (hex: number, local: readonly Part[]): void => {
@@ -179,9 +180,6 @@ export async function createRenderer(
         });
       }
     };
-    for (let hex = 0; hex < hexCount; hex++) {
-      if (mapData.feature[hex] === Feature.Volcano) place(hex, volcanoParts(hex));
-    }
     for (const [hex, kind] of improvements) {
       if (Number.isInteger(hex) && hex >= 0 && hex < hexCount) place(hex, improvementParts(kind, hex));
     }
@@ -285,6 +283,7 @@ export async function createRenderer(
   let groundStreamed = false;
   let streamFrames = Infinity;
   let cloudLayer = 0;
+  let cityView = { markerShare: 0, markerHalf: 0.5 * layout.size };
   const applyCamera = (state: CameraState, firstFrame: boolean): void => {
     const pose = poseOf(state);
     camera.position.set(...pose.position);
@@ -307,8 +306,10 @@ export async function createRenderer(
       Math.max(MIN_BORDER_PIXELS * perPixel - BORDER_WIDTH * layout.size, 0),
       0.42 * layout.size,
     );
-    cities.object.visible = (0.12 * layout.size) / perPixel >= MIN_HOUSE_PIXELS;
-    props.object.visible = cities.object.visible;
+    props.object.visible = (0.12 * layout.size) / perPixel >= MIN_HOUSE_PIXELS;
+    // models near, markers far; and no piece ever smaller than a readable size
+    cityView = cities.setView(state.distance, height, political);
+    pieces.setFit(steppedScale(pieceFit(state.distance, height, layout.size, political)));
     const update = terrain.update(camera.position, viewHeight, firstFrame ? Infinity : undefined);
     terrainBuilds = update.builds;
     const grown = vegetation.update(camera.position, firstFrame ? 64 : undefined);
@@ -338,7 +339,11 @@ export async function createRenderer(
     // the cloud that shades a point floats between it and the sun
     const sunward = (surface.field.maxY * 0.5 + CLOUD_HEIGHT * layout.size) / lighting.sunDirection.y;
     uniforms.cloudOffset.value.set(lighting.sunDirection.x * sunward, lighting.sunDirection.z * sunward);
-    shownLabels = labels.update(camera, Math.max(1, canvas.clientWidth), height, zoom, political);
+    shownLabels = labels.update(camera, Math.max(1, canvas.clientWidth), height, zoom, political, {
+      markers: pieces.markers,
+      cityMarkerShare: cityView.markerShare,
+      cityMarkerHalf: cityView.markerHalf,
+    });
     postfx.update(state.distance, zoom);
     cloudLayer = clouds.update(zoom);
   };
@@ -391,6 +396,10 @@ export async function createRenderer(
     shadowTriangles: 0,
     trees: 0,
     cloudLayer: 0,
+    pieceScale: 1,
+    pieceMarkers: 0,
+    pieceStacks: 0,
+    cityMarkers: 0,
   };
   const listeners = new Set<(stats: FrameStats) => void>();
   let lastTime: number | null = null;
@@ -399,6 +408,8 @@ export async function createRenderer(
   // a little slack, so that a cap at the display's own rate does not drop every other frame
   const minFrameMs = options.maxFps === undefined ? 0 : 1000 / options.maxFps - 2;
   let ownersKey = '';
+  let citySites: ReadonlySet<number> = new Set();
+  let citySitesKey = '';
   let fogged = false;
   let improvementsKey = '';
   let roadsKey = '';
@@ -453,6 +464,10 @@ export async function createRenderer(
       shadowTriangles: lighting.shadowTriangles,
       trees: shownTrees,
       cloudLayer,
+      pieceScale: pieces.zoom,
+      pieceMarkers: pieces.markers.length,
+      pieceStacks: pieces.stacks,
+      cityMarkers: cityView.markerShare,
     };
     for (const listener of listeners) listener(stats);
   };
@@ -484,6 +499,14 @@ export async function createRenderer(
       }
       // the new scene is drawn exactly: whatever animations left behind goes
       const repaint = animator.reset();
+      // a piece on a city's hex stands before the gate
+      citySites = new Set(next.cities.map((city) => city.hex));
+      pieces.setCitySites(citySites);
+      const sitesKey = [...citySites].join(',');
+      if (sitesKey !== citySitesKey) {
+        citySitesKey = sitesKey;
+        textures.setCities(citySites);
+      }
       pieces.setUnits(next.units);
       const cityLabels = cities.setCities(next.cities);
       if (cityLabels !== null) {
@@ -534,7 +557,9 @@ export async function createRenderer(
       const v = (clientY - bounds.top) / bounds.height;
       if (u < 0 || u > 1 || v < 0 || v > 1) return null;
       const ray = screenRay(poseOf(controller.state), CAMERA_FOV, bounds.width / bounds.height, u * 2 - 1, 1 - v * 2);
-      return pickHexOnRay(surface, ray);
+      // a piece that is drawn larger than its hex, or beside the middle of it, is picked by its face
+      const marker = pickMarkerOnRay(pieces.markers, ray, (m) => pieces.zoom > 1 || citySites.has(m.hex));
+      return marker === null ? pickHexOnRay(surface, ray) : marker.hex;
     },
     focusHex(hex, focus = {}) {
       if (!Number.isInteger(hex) || hex < 0 || hex >= mapData.width * mapData.height) {
@@ -551,7 +576,8 @@ export async function createRenderer(
         }
       }
       const to = distance === undefined ? { x: p.x, z: p.z } : { x: p.x, z: p.z, distance };
-      controller.moveTo(to, focus.immediate === true);
+      // a zone that is framed is centred on its hex: the frame was chosen to fit the zone around it
+      controller.moveTo(to, focus.immediate === true, focus.frame === 'zone' && focus.distance === undefined);
     },
     setHighlights(highlights) {
       overlays.setHighlights(highlights);
@@ -615,6 +641,13 @@ export async function createRenderer(
     },
     setCamera(state, immediate = false) {
       controller.moveTo(state, immediate);
+    },
+    getBoardLayout() {
+      return {
+        pieceScale: pieces.zoom,
+        markers: pieces.markers.map((m) => ({ unit: m.id, hex: m.hex, x: m.x, z: m.z, radius: m.radius, count: m.count })),
+        cityLabels: [...labels.citySides].map(([hex, side]) => ({ hex, side })),
+      };
     },
     getStats() {
       // an animation can start and end between two frames
