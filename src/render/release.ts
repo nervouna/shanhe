@@ -46,18 +46,21 @@ export interface LiveCounts {
   readonly geometries: number;
   /** Textures on the GPU, render targets and shadow maps included. */
   readonly textures: number;
+  /** Render pipelines (on WebGL: programs with their state) made so far and still held. */
+  readonly pipelines: number;
 }
 
 /** The parts of the renderer's internals the counts are read from. */
 interface RendererInternals {
   readonly _objects?: { readonly _renderObjects?: { readonly size: number } } | null;
+  readonly _pipelines?: { readonly caches?: { readonly size: number } } | null;
   readonly info: { readonly memory: { readonly geometries: number; readonly textures: number } };
 }
 
 /**
  * Reads the live counts from the renderer itself: its registry of render
- * objects and its memory statistics. `renderObjects` is -1 if the registry
- * is not where Three.js 0.187 keeps it.
+ * objects, its cache of pipelines and its memory statistics. `renderObjects`
+ * and `pipelines` are -1 if they are not where Three.js 0.187 keeps them.
  */
 export function liveCounts(renderer: WebGPURenderer): LiveCounts {
   const internals = renderer as unknown as RendererInternals;
@@ -65,5 +68,6 @@ export function liveCounts(renderer: WebGPURenderer): LiveCounts {
     renderObjects: internals._objects?._renderObjects?.size ?? -1,
     geometries: internals.info.memory.geometries,
     textures: internals.info.memory.textures,
+    pipelines: internals._pipelines?.caches?.size ?? -1,
   };
 }

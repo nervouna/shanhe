@@ -400,3 +400,100 @@ test('the default page draws frames and follows the language switch', async ({ p
   await drawFrames(page, 2);
   expect(errors).toEqual([]);
 });
+
+test('what the board can show is compiled while the page loads, and an unchanged scene builds nothing', async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.goto('/?map=fixture');
+  await waitForFrames(page, MIN_FRAMES);
+
+  const counters = (): Promise<{
+    pipelines: number;
+    renderObjects: number;
+    geometries: number;
+    cities: number;
+    props: number;
+    lines: number;
+    meshes: number;
+  }> =>
+    page.evaluate(() => {
+      const stats = window.__shanhe?.render.renderer.getStats();
+      if (stats === undefined) throw new Error('window.__shanhe is not set');
+      return { pipelines: stats.pipelines, renderObjects: stats.renderObjects, geometries: stats.geometries, ...stats.sceneBuilds };
+    });
+  const loaded = await counters();
+  expect(loaded.pipelines).toBeGreaterThan(5);
+  expect(loaded.renderObjects).toBeGreaterThan(0);
+  expect(loaded.geometries).toBeGreaterThan(0);
+
+  // a scene with one of everything, set by hand; `grown` makes the second city larger
+  const setScene = (grown: boolean): Promise<void> =>
+    page.evaluate((larger) => {
+      const shanhe = window.__shanhe;
+      if (shanhe === undefined) throw new Error('window.__shanhe is not set');
+      const map = shanhe.state.map;
+      const sites = map.zones.slice(0, 4).map((zone) => zone.siteHex);
+      const first = sites[0] as number;
+      shanhe.render.renderer.setScene({
+        units: [{ id: 1, hex: first + 1, polity: 0, character: '兵', unique: false, era: 0, hp: 1 }],
+        cities: sites.map((hex, i) => ({ hex, polity: i % 2, population: i === 1 && larger ? 14 : 5, name: `City ${i}`, walls: i === 0 })),
+        ownerOverrides: new Map(),
+        fog: null,
+        improvements: new Map([[first + 2, 1]]),
+        roads: new Map([
+          [first, 1],
+          [first + 1, 1],
+        ]),
+        routes: [{ path: [first, first + 1, first + 2], polity: 0, sea: false }],
+      });
+    }, grown);
+
+  await setScene(false);
+  const built = await counters();
+  expect(built.cities - loaded.cities).toBe(4);
+  expect(built.props - loaded.props).toBe(1);
+  expect(built.lines - loaded.lines).toBeGreaterThanOrEqual(2);
+
+  // the same scene again builds nothing
+  await setScene(false);
+  expect(await counters()).toEqual(built);
+  // one city changed: one city is generated, and nothing else
+  await setScene(true);
+  const changed = await counters();
+  expect(changed.cities - built.cities).toBe(1);
+  expect(changed.props).toBe(built.props);
+  expect(changed.lines).toBe(built.lines);
+
+  // first use of the aids for an order, an animation with its dust, the near view and the far view
+  const site = await page.evaluate(() => window.__shanhe?.state.map.zones[0]?.siteHex ?? 0);
+  await page.evaluate((hex) => {
+    const renderer = window.__shanhe?.render.renderer;
+    if (renderer === undefined) throw new Error('window.__shanhe is not set');
+    renderer.setHighlights([{ hex, color: 0xffcc00 }]);
+    renderer.setSelectionAids({ reachable: [hex, hex + 1, hex + 2], path: { hexes: [hex + 1, hex + 2], turnEnds: [1] }, attackTarget: hex + 2 });
+    renderer.focusHex(hex, { distance: 0, immediate: true });
+  }, site);
+  await drawFrames(page, 3);
+  await page.evaluate((hex) => window.__shanhe?.render.renderer.play([{ type: 'move', unit: 1, path: [hex + 1, hex + 2] }]), site);
+  await page.evaluate(() => window.__shanhe?.render.renderer.setCamera({ distance: Infinity }, true));
+  await drawFrames(page, 3);
+  const used = await counters();
+  // nothing had to be compiled for any of it
+  expect(used.pipelines).toBe(loaded.pipelines);
+
+  // near and far again: what the renderer holds is what it held the first time
+  const round = async (): Promise<{ renderObjects: number; geometries: number }> => {
+    await page.evaluate(() => window.__shanhe?.render.renderer.setCamera({ distance: 0 }, true));
+    await drawFrames(page, 3);
+    await page.evaluate(() => window.__shanhe?.render.renderer.setCamera({ distance: Infinity }, true));
+    await drawFrames(page, 3);
+    const now = await counters();
+    return { renderObjects: now.renderObjects, geometries: now.geometries };
+  };
+  const once = await round();
+  const twice = await round();
+  expect(twice.renderObjects).toBeLessThanOrEqual(once.renderObjects);
+  expect(twice.geometries).toBeLessThanOrEqual(once.geometries);
+  expect((await counters()).pipelines).toBe(loaded.pipelines);
+
+  expect(errors).toEqual([]);
+});

@@ -315,6 +315,13 @@ export interface FrameStats {
   readonly geometries: number;
   /** Textures on the GPU, render targets and shadow maps included, as Three.js counts them. */
   readonly textures: number;
+  /**
+   * Render pipelines the renderer has made and holds. What the board can
+   * show is drawn once while the page loads, so that its pipelines exist
+   * before the first frame: selecting a piece, an animation or a change of
+   * zoom adds none. A change of quality tier or of the effects does.
+   */
+  readonly pipelines: number;
   /** Whether terrain or trees were built in the last frame: the view is still coming in. */
   readonly streaming: boolean;
   /**

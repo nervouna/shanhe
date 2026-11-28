@@ -19,7 +19,7 @@ import {
 import { hexToWorld, indexToOffset, worldToHex } from '../shared/hex.ts';
 import { getLanguage } from '../shared/i18n.ts';
 import type { Language } from '../shared/i18n.ts';
-import { NO_ZONE } from '../shared/mapData.ts';
+import { Feature, NO_ZONE, isWaterTerrain } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
 import type { RenderBackend } from '../shared/types.ts';
 import { createAnimator } from './animator.ts';
@@ -165,6 +165,7 @@ export async function createRenderer(
   const postfx = createPostFx(renderer, scene, labelScene, camera);
 
   const hexCount = mapData.width * mapData.height;
+  const map2hex = (row: number, col: number): number => row * mapData.width + col;
 
   /** The buildings of an improvement, where they stand on the board. */
   const propModels = createKeyedCache<readonly [hex: number, kind: number], Part[]>(
@@ -401,6 +402,71 @@ export async function createRenderer(
   });
   let animationSpeed = 1;
 
+  /**
+   * Draws one of everything the board can show, near and from far away,
+   * before the first frame: every material meets the GPU here, behind the
+   * loading indicator, and not in the middle of the game when a piece is
+   * first selected, a city first comes into view or the first shot is fired.
+   * Nothing of it stays on the board.
+   */
+  const warmUp = (): void => {
+    // a hex with trees on it if there is one, so that the forests are drawn too
+    let site = map2hex(Math.floor(mapData.height / 2), Math.floor(mapData.width / 2));
+    for (let hex = 0; hex < hexCount; hex++) {
+      const feature = mapData.feature[hex];
+      if ((feature === Feature.Forest || feature === Feature.Jungle) && !isWaterTerrain(mapData.terrain[hex] as number)) {
+        site = hex;
+        break;
+      }
+    }
+    const { col, row } = indexToOffset(site, mapData.width);
+    const beside = map2hex(row, col + 1 < mapData.width ? col + 1 : col - 1);
+    const below = map2hex(row + 1 < mapData.height ? row + 1 : row - 1, col);
+    const at = hexToWorld({ col, row }, layout);
+    const ground = surfaceHeightAt(surface, at.x, at.z);
+
+    const cityUpdate = cities.setCities([{ hex: site, polity: 0, population: 12, name: '·', walls: true, era: 5, buildings: 9 }]);
+    labels.setCities(cityUpdate?.labels ?? []);
+    showProps(new Map([[beside, 1]]));
+    groundLines.setRoads(new Map([[site, 1], [beside, 2]]));
+    groundLines.setRoutes([{ path: [site, below], polity: 0, sea: false }]);
+    pieces.setCitySites(new Set([site]));
+    pieces.setUnits([{ id: 0, hex: below, polity: 0, character: '兵', unique: false, era: 0, hp: 1 }]);
+    overlays.setHighlights([{ hex: site, color: 0xffffff }]);
+    labels.setMarkers(overlays.setAids({ reachable: [site, beside], path: { hexes: [site, beside], turnEnds: [1] }, attackTarget: beside }));
+    overlays.setSweep([below], 0xffffff, 0.5);
+    effects.spawn({ x: at.x, y: ground + layout.size, z: at.z, vx: 0, vy: 0, vz: 0, life: 10, size: layout.size, endSize: layout.size, color: 0xffffff, opacity: 0.5 });
+    effects.setProjectiles([{ x: at.x, y: ground + layout.size, z: at.z, dx: 1, dy: 0, dz: 0, length: layout.size, thickness: 0.2 * layout.size, color: 0xffffff }]);
+
+    const draw = (zoom: number): void => {
+      applyCamera({ x: at.x, z: at.z, distance: distanceAtZoom(zoom, limits), yaw: 0 }, false);
+      effects.update(0, camera);
+      if (postfx.active) postfx.render();
+      else renderer.render(scene, camera);
+    };
+    // near, twice: the first frame builds the trees around the site; then from far away, where markers take over
+    draw(0.02);
+    draw(0.02);
+    draw(0.5);
+    draw(1);
+
+    cities.setCities([]);
+    labels.setCities([]);
+    showProps(NO_IMPROVEMENTS);
+    groundLines.setRoads(NO_IMPROVEMENTS);
+    groundLines.setRoutes([]);
+    pieces.setCitySites(new Set());
+    pieces.setUnits([]);
+    overlays.setHighlights([]);
+    labels.setMarkers(overlays.setAids(null));
+    overlays.setSweep([], 0xffffff, 0);
+    effects.clear();
+    effects.setProjectiles([]);
+    shadowAreas = [];
+    shadowDirty = true;
+    renderer.info.reset();
+  };
+
   let stats: FrameStats = {
     frames: 0,
     frameMs: 0,
@@ -426,6 +492,7 @@ export async function createRenderer(
     renderObjects: 0,
     geometries: 0,
     textures: 0,
+    pipelines: 0,
     streaming: false,
     sceneBuilds: { cities: 0, props: 0, lines: 0, meshes: 0 },
   };
@@ -520,6 +587,8 @@ export async function createRenderer(
     };
     for (const listener of listeners) listener(stats);
   };
+  // nothing is drawn while rendering is paused from the start: there the first frame warms up as it comes
+  if (!paused) warmUp();
   await renderer.setAnimationLoop(frame);
 
   /** Greatest distance from a hex to a hex of its zone, per hex asked for. */

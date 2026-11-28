@@ -90,6 +90,22 @@ export function createVegetation(surface: Surface, u: MapUniforms): Vegetation {
   material.roughnessNode = float(0.86);
   material.metalness = 0;
 
+  // Chunks of trees come and go, and Three.js drops a material's pipelines with the last mesh that
+  // uses them. One triangle without area stays for good, so that the first forest that comes into
+  // view, and the first after none was in view, compiles nothing.
+  const keeperGeometry = new BufferGeometry();
+  keeperGeometry.setAttribute('position', new BufferAttribute(new Float32Array(9), 3));
+  keeperGeometry.setAttribute('normal', new BufferAttribute(new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]), 3));
+  keeperGeometry.setAttribute('color', new BufferAttribute(new Float32Array(9), 3));
+  keeperGeometry.setAttribute('lift', new BufferAttribute(new Float32Array(3), 1));
+  keeperGeometry.setIndex([0, 1, 2]);
+  const keeper = new Mesh(keeperGeometry, material);
+  keeper.name = 'treePipelines';
+  castGroundShadow(keeper);
+  keeper.receiveShadow = true;
+  keeper.frustumCulled = false;
+  object.add(keeper);
+
   // which hexes grow anything, by chunk
   const chunks: Chunk[] = [];
   for (let row0 = 0; row0 < map.height; row0 += CHUNK_HEXES) {
@@ -253,6 +269,7 @@ export function createVegetation(surface: Surface, u: MapUniforms): Vegetation {
         free(chunk.detailed);
         free(chunk.coarse);
       }
+      releaseMesh(keeper);
       material.dispose();
     },
   };

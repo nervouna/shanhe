@@ -195,31 +195,37 @@ export function createCities(surface: Surface, u: MapUniforms): Cities {
   object.add(batch.object);
   const matrix = new Matrix4();
   const tint = new Color();
+  /** Instances the marker mesh has room for; it is made anew only when the cities outgrow it. */
+  let markerCapacity = 0;
   const showMarkers = (sites: readonly MarkerSite[]): void => {
-    if (markers !== null) {
-      releaseMesh(markers);
-      markers = null;
+    if (markers === null || sites.length > markerCapacity) {
+      if (markers !== null) releaseMesh(markers);
+      markerCapacity = 64;
+      while (markerCapacity < sites.length) markerCapacity *= 2;
+      const geometry = markerGeometry.clone();
+      geometry.setAttribute('markerColor', new InstancedBufferAttribute(new Float32Array(markerCapacity * 3), 3));
+      geometry.setAttribute('markerCapital', new InstancedBufferAttribute(new Float32Array(markerCapacity), 1));
+      markers = new InstancedMesh(geometry, markerMaterial, markerCapacity);
+      markers.name = 'cityMarkers';
+      markers.frustumCulled = false;
+      markers.renderOrder = MARKER_ORDER;
+      object.add(markers);
     }
-    if (sites.length === 0) return;
-    const geometry = markerGeometry.clone();
-    const colors = new Float32Array(sites.length * 3);
-    const capitals = new Float32Array(sites.length);
-    const created = new InstancedMesh(geometry, markerMaterial, sites.length);
+    const mesh = markers;
+    const colors = mesh.geometry.getAttribute('markerColor') as InstancedBufferAttribute;
+    const capitals = mesh.geometry.getAttribute('markerCapital') as InstancedBufferAttribute;
     sites.forEach((site, i) => {
       matrix.makeTranslation(site.x, site.y, site.z);
-      created.setMatrixAt(i, matrix);
+      mesh.setMatrixAt(i, matrix);
       tint.setHex(site.color);
-      colors.set([tint.r, tint.g, tint.b], i * 3);
-      capitals[i] = site.capital ? 1 : 0;
+      colors.setXYZ(i, tint.r, tint.g, tint.b);
+      capitals.setX(i, site.capital ? 1 : 0);
     });
-    geometry.setAttribute('markerColor', new InstancedBufferAttribute(colors, 3));
-    geometry.setAttribute('markerCapital', new InstancedBufferAttribute(capitals, 1));
-    created.name = 'cityMarkers';
-    created.frustumCulled = false;
-    created.renderOrder = MARKER_ORDER;
-    created.visible = markerShare.value > 0.002;
-    markers = created;
-    object.add(created);
+    mesh.count = sites.length;
+    mesh.instanceMatrix.needsUpdate = true;
+    colors.needsUpdate = true;
+    capitals.needsUpdate = true;
+    mesh.visible = sites.length > 0 && markerShare.value > 0.002;
   };
 
   return {
@@ -238,7 +244,7 @@ export function createCities(surface: Surface, u: MapUniforms): Cities {
       const half = cityMarkerHalf(distance, viewportHeight, size, political);
       markerShare.value = share;
       markerHalf.value = half;
-      if (markers !== null) markers.visible = share > 0.002;
+      if (markers !== null) markers.visible = markers.count > 0 && share > 0.002;
       // behind the marker the houses are specks: they are not drawn
       batch.object.visible = share < 0.998;
       return { markerShare: share, markerHalf: half };
