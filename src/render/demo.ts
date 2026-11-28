@@ -144,7 +144,12 @@ export function attachFrameReadout(renderer: Renderer): () => void {
       draws: stats.drawCalls,
       triangles: stats.triangles,
       labels: stats.labels,
-    })} · ${t('demo.stats.more', { trees: stats.trees, shadows: stats.shadowDraws })}`;
+    })} · ${t('demo.stats.more', { trees: stats.trees, shadows: stats.shadowDraws })} · ${t('demo.stats.board', {
+      scale: stats.pieceScale.toFixed(2),
+      markers: stats.pieceMarkers,
+      stacks: stats.pieceStacks,
+      cities: stats.cityMarkers.toFixed(2),
+    })}`;
   });
   return () => {
     stop();
@@ -169,6 +174,7 @@ export interface DemoStage {
 
 const ATTACKER_ID = 9001;
 const DEFENDER_ID = 9002;
+const FIRST_GARRISON_ID = 9100;
 
 /**
  * Finds room for the actors next to one of the scene's cities. `null` on a
@@ -269,7 +275,8 @@ export function createDemoStage(map: MapData, scene: RenderScene): DemoStage | n
  * `data-stage-hex`, the hex the animations start on, `data-stage`, the
  * actors as JSON (the unit ids of attacker and defender, the defender's hex
  * and the attacker's path), `data-gallery`, what the gallery holds, as
- * JSON, `data-effects`, the effects that run, as JSON, and `data-fog`.
+ * JSON (with the garrisons that stand before every other of its cities),
+ * `data-effects`, the effects that run, as JSON, and `data-fog`.
  *
  * @returns a function that removes the buttons.
  */
@@ -335,9 +342,23 @@ export function attachDemoControls(renderer: Renderer, map: MapData, scene: Rend
     (family, era) => t('demo.city', { family: t(`demo.family.${family}`), era: era + 1 }),
     stage?.attacker.hex ?? scene.cities[0]?.hex ?? 0,
   );
+  // a garrison before the gate of every other city of the gallery, in the city's era
+  const garrisons: RenderUnit[] = gallery.cities
+    .filter((_, i) => i % 2 === 0)
+    .map((city, i) => ({
+      id: FIRST_GARRISON_ID + i,
+      hex: city.hex,
+      polity: city.polity,
+      character: i % 3 === 0 ? '象' : '戍',
+      unique: i % 3 === 0,
+      era: city.era ?? PieceEra.Ancient,
+      hp: 1,
+    }));
   panel.dataset.gallery = JSON.stringify({
     cities: gallery.cities.length,
     firstCity: gallery.cities[0]?.hex ?? null,
+    garrisons: garrisons.length,
+    garrisonedCity: garrisons[0]?.hex ?? null,
     units: gallery.units.length,
     improvements: gallery.improvements.size,
     roads: gallery.roads.size,
@@ -345,9 +366,10 @@ export function attachDemoControls(renderer: Renderer, map: MapData, scene: Rend
   });
 
   // the board as the demo last set it
-  let units = stage === null ? [...scene.units, ...gallery.units] : [
+  let units = stage === null ? [...scene.units, ...gallery.units, ...garrisons] : [
     ...scene.units.filter((unit) => unit.hex !== stage.attacker.hex && unit.hex !== stage.defender.hex && !stage.path.includes(unit.hex)),
     ...gallery.units,
+    ...garrisons,
     stage.attacker,
     stage.defender,
   ];

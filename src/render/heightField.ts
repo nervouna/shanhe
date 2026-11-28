@@ -9,8 +9,12 @@
 
 import { hexIndex, hexNeighbor, hexToWorld, indexToOffset, worldToHex } from '../shared/hex.ts';
 import type { Offset } from '../shared/hex.ts';
-import { Terrain, isWaterTerrain } from '../shared/mapData.ts';
+import { Feature, Terrain, isWaterTerrain } from '../shared/mapData.ts';
 import type { MapData, WorldRect } from '../shared/mapData.ts';
+import { CITY_DEEP, CITY_NORTH, CITY_WIDE } from './cityLayout.ts';
+import { createLakeField } from './lakes.ts';
+import type { LakeField } from './lakes.ts';
+import { GARRISON_OFFSET } from './pieceLayout.ts';
 
 /** How much taller relief is drawn than it really is. */
 export const VERTICAL_EXAGGERATION = 10;
@@ -59,6 +63,12 @@ export interface Surface {
   readonly field: HeightField;
   /** Per hex: world height of the water surface, or `NaN` on land. */
   readonly waterLevel: Float32Array;
+  /**
+   * The lakes as shapes with natural shores, where the ground was built
+   * from a heightmap: their water reaches as far as these shapes do, which
+   * is not exactly as far as their hexes.
+   */
+  readonly lakes?: LakeField;
 }
 
 function inGrid(map: MapData, hex: Offset): boolean {
@@ -109,6 +119,38 @@ export function computeWaterLevels(map: MapData, keepBelowShore: boolean): Float
     for (const index of lake) levels[index] = metres * scale;
   }
   return levels;
+}
+
+/** The cone of a volcano, as fractions of the hex size: its foot, its height, and its crater's radius and depth. */
+export const VOLCANO_RADIUS = 0.84;
+export const VOLCANO_HEIGHT = 0.34;
+export const VOLCANO_CRATER = 0.17;
+const VOLCANO_CRATER_DEPTH = 0.11;
+
+/**
+ * How far the cone of a volcano rises over the ground at a point of its
+ * hex: steeper towards the top, furrowed by gullies, with a rim around a
+ * crater in the middle. In hex sizes.
+ *
+ * @param dx offset of the point from the middle of the hex, in hex sizes.
+ * @param dz likewise.
+ */
+export function volcanoRise(dx: number, dz: number): number {
+  const r = Math.hypot(dx, dz);
+  if (r >= VOLCANO_RADIUS) return 0;
+  // gullies run down the flanks; none on the rim
+  const gullies = 0.5 + 0.5 * Math.sin(Math.atan2(dz, dx) * 11 + valueNoise(dx * 3 + 40, dz * 3 - 12) * 7);
+  const flank = (from: number): number => {
+    const t = 1 - (from - VOLCANO_CRATER) / (VOLCANO_RADIUS - VOLCANO_CRATER);
+    return VOLCANO_HEIGHT * t ** 1.7;
+  };
+  if (r >= VOLCANO_CRATER) {
+    const furrow = (1 - gullies * 0.22 * smooth(VOLCANO_CRATER, VOLCANO_CRATER * 2.2, r));
+    // the foot runs out into the ground
+    return flank(r) * furrow * smooth(VOLCANO_RADIUS, VOLCANO_RADIUS * 0.8, r);
+  }
+  // inside the rim: a bowl
+  return VOLCANO_HEIGHT - VOLCANO_CRATER_DEPTH * smooth(VOLCANO_CRATER, VOLCANO_CRATER * 0.35, r);
 }
 
 /** A lake stays this far below the lowest land hex next to it. */
@@ -243,17 +285,59 @@ export function heightFieldFromHexes(
         const amount = reliefSum / weightSum;
         height += amount * (ridgedNoise(x * noiseScale, z * noiseScale) - 0.35);
       }
+      if (inGrid(map, centre) && map.feature[hexIndex(centre.col, centre.row, map.width)] === Feature.Volcano) {
+        const p = hexToWorld(centre, layout);
+        height += volcanoRise((x - p.x) / layout.size, (z - p.z) / layout.size) * layout.size;
+      }
       heights[j * cols + i] = height;
     }
   }
   return fieldFromHeights(cols, rows, rect, heights);
 }
 
+/** The bed of a lake falls from the shore by this many metres per hex size, down to the lake's depth. */
+const SHORE_SLOPE_METRES = 130;
+/**
+ * The bank of a lake stands this many metres over the water at most: so
+ * little that the water, which is drawn a touch nearer than it lies
+ * (`water.ts`), also covers the bank where a coarse mesh of the ground,
+ * with only every few samples, would cut into the lake. The shore is then
+ * where the water's own shader finds the ground, at every level of detail.
+ */
+export const BANK_TOP_METRES = 2;
+/**
+ * The ground around a lake is kept above the water over this distance from
+ * the shore, in hex sizes: farther than the lake's sheet of water reaches
+ * (`water.ts`), so that the sheet never shows outside the shore.
+ */
+export const LAKE_BANK = 1.15;
+/** A lake's level is taken from the ground this far outside its shore, in hex sizes. */
+const SHORE_RING: readonly [number, number] = [0.1, 0.6];
+/** The share of that ground that may lie below the lake's level: the bank lifts it. */
+const SHORE_LOW_SHARE = 0.12;
+/** Land with no sea beside it is at least this high: no stray pools where the data dips below sea level. */
+const INLAND_FLOOR_METRES = 4;
+/** In a land hex by the sea the real coast is kept this far from the hexes without sea beside them, and filled in nearer to them: in hex sizes. */
+const COAST_KEEP: readonly [number, number] = [0.65, 1];
+
+function smooth(from: number, to: number, value: number): number {
+  const t = Math.min(Math.max((value - from) / (to - from), 0), 1);
+  return t * t * (3 - 2 * t);
+}
+
 /**
  * Builds the ground from the samples of the map's heightmap file (see
- * `MapHeightmap` for the layout). Water hexes whose samples are not below
- * the water surface, as in a heightmap without sea floor, are lowered so
- * that the water has something to cover.
+ * `MapHeightmap` for the layout), and fits it to the water of the hexes:
+ *
+ * - Sea hexes whose samples are not below the water surface, as in a
+ *   heightmap without sea floor, are lowered so that the water has
+ *   something to cover.
+ * - Every lake (`lakes.ts`) gets its level from the ground around its
+ *   shore, a bed dug inside the shore and a bank raised outside it: the
+ *   water is one sheet from shore to shore, whatever the data holds there.
+ *   `waterLevel` and `lakes.levels` are updated with the levels.
+ * - Land away from the sea is kept above sea level, so that ground the
+ *   data puts below it (a delta, a depression) does not fill with sea.
  *
  * @throws if `samples` does not have `heightmap.width * heightmap.height` entries.
  */
@@ -261,26 +345,151 @@ export function heightFieldFromHeightmap(
   map: MapData,
   samples: Uint16Array,
   waterLevel: Float32Array,
+  lakes?: LakeField,
 ): HeightField {
   const { width: cols, height: rows, metresPerUnit, baseMetres, world } = map.heightmap;
   if (samples.length !== cols * rows) {
     throw new Error(`heightmap: ${samples.length} samples, expected ${cols * rows}`);
   }
   const layout = map.projection.hexLayout;
+  const size = layout.size;
   const scale = unitsPerMetre(map);
   const shallow = MIN_WATER_DEPTH_METRES * scale;
   const heights = new Float32Array(cols * rows);
+  const xAt = (i: number): number => world.minX + ((world.maxX - world.minX) * i) / Math.max(1, cols - 1);
+  const zAt = (j: number): number => world.minZ + ((world.maxZ - world.minZ) * j) / Math.max(1, rows - 1);
+  const rawAt = (i: number, j: number): number => (baseMetres + (samples[j * cols + i] as number) * metresPerUnit) * scale;
+  const count = map.width * map.height;
+
+  if (lakes !== undefined) {
+    // the level of every lake: just under the ground around its shore
+    lakes.bodies.forEach((body, b) => {
+      let minX = Infinity;
+      let minZ = Infinity;
+      let maxX = -Infinity;
+      let maxZ = -Infinity;
+      let lowest = Infinity;
+      for (const index of body.hexes) {
+        const p = hexToWorld(indexToOffset(index, map.width), layout);
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minZ = Math.min(minZ, p.z);
+        maxZ = Math.max(maxZ, p.z);
+        lowest = Math.min(lowest, map.elevation[index] as number);
+      }
+      const reach = 2.2 * size;
+      const i0 = Math.max(0, Math.floor(((minX - reach - world.minX) / (world.maxX - world.minX)) * (cols - 1)));
+      const i1 = Math.min(cols - 1, Math.ceil(((maxX + reach - world.minX) / (world.maxX - world.minX)) * (cols - 1)));
+      const j0 = Math.max(0, Math.floor(((minZ - reach - world.minZ) / (world.maxZ - world.minZ)) * (rows - 1)));
+      const j1 = Math.min(rows - 1, Math.ceil(((maxZ + reach - world.minZ) / (world.maxZ - world.minZ)) * (rows - 1)));
+      const shore: number[] = [];
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          const x = xAt(i);
+          const z = zAt(j);
+          const sample = lakes.at(x, z);
+          if (sample === null || sample.body !== b) continue;
+          if (sample.distance < SHORE_RING[0] * size || sample.distance > SHORE_RING[1] * size) continue;
+          const hex = worldToHex({ x, z }, layout);
+          if (!inGrid(map, hex) || isWaterTerrain(map.terrain[hexIndex(hex.col, hex.row, map.width)] as number)) continue;
+          shore.push(rawAt(i, j));
+        }
+      }
+      shore.sort((p, q) => p - q);
+      // without any ground around it (a map of nothing but lake), the lowest elevation of its hexes
+      let level = shore.length === 0 ? lowest * scale : (shore[Math.floor(shore.length * SHORE_LOW_SHARE)] as number);
+      // no lake of these maps lies under the sea, whatever the ground around it says
+      level = Math.max(level, SEA_LEVEL + 1.5 * scale);
+      lakes.levels[b] = level;
+      for (const index of body.hexes) waterLevel[index] = level;
+    });
+  }
+
+  // land hexes with no sea beside them
+  const inland = new Uint8Array(count);
+  for (let index = 0; index < count; index++) {
+    if (isWaterTerrain(map.terrain[index] as number)) continue;
+    let sea = false;
+    const hex = indexToOffset(index, map.width);
+    for (let d = 0; d < 6 && !sea; d++) {
+      const n = hexNeighbor(hex, d);
+      if (!inGrid(map, n)) continue;
+      const terrain = map.terrain[hexIndex(n.col, n.row, map.width)] as number;
+      sea = terrain === Terrain.Ocean || terrain === Terrain.Coast;
+    }
+    if (!sea) inland[index] = 1;
+  }
+  const floor = INLAND_FLOOR_METRES * scale;
+  const halfWidth = (SQRT3 / 2) * size;
+  const sites = new Set(map.zones.map((zone) => zone.siteHex));
+  /** Per volcano hex: the height its cone stands on. */
+  const shoulders = new Map<number, number>();
+
   for (let j = 0; j < rows; j++) {
-    const z = world.minZ + ((world.maxZ - world.minZ) * j) / Math.max(1, rows - 1);
+    const z = zAt(j);
     for (let i = 0; i < cols; i++) {
-      const x = world.minX + ((world.maxX - world.minX) * i) / Math.max(1, cols - 1);
-      let height = (baseMetres + (samples[j * cols + i] as number) * metresPerUnit) * scale;
+      const x = xAt(i);
+      let height = rawAt(i, j);
       const hex = worldToHex({ x, z }, layout);
       if (inGrid(map, hex)) {
-        const level = waterLevel[hexIndex(hex.col, hex.row, map.width)] as number;
-        // a water hex may still hold real land; only flat water is lowered
-        if (!Number.isNaN(level) && height >= level - shallow && height <= level + scale) {
-          height = level - shallow;
+        const index = hexIndex(hex.col, hex.row, map.width);
+        const terrain = map.terrain[index] as number;
+        const level = waterLevel[index] as number;
+        const lake = lakes?.at(x, z, index) ?? null;
+        const sea = terrain === Terrain.Ocean || terrain === Terrain.Coast;
+        // (a lake by the sea ends where the sea's hexes begin)
+        if (lake !== null && lake.distance < LAKE_BANK * size && !sea) {
+          const surface = lakes?.levels[lake.body] as number;
+          const across = lake.distance / size;
+          if (across < 0) {
+            // the bed: under water from the shore inwards, down to the lake's depth
+            height = Math.min(height, surface - Math.min(-across * SHORE_SLOPE_METRES, LAKE_DEPTH_METRES) * scale);
+          } else {
+            // the bank: above the water from the shore outwards
+            height = Math.max(height, surface + Math.min(across * SHORE_SLOPE_METRES, BANK_TOP_METRES) * scale);
+          }
+        } else if (terrain === Terrain.Lake && lakes === undefined) {
+          if (height >= level - shallow && height <= level + scale) height = level - shallow;
+        } else if (sea) {
+          // a water hex may still hold real land; only flat water is lowered
+          if (height >= level - shallow && height <= level + scale) height = level - shallow;
+        } else if (height < floor) {
+          // how much of the floor applies: all of it inland, none by the sea but near the inland hexes
+          let share = 1;
+          if (inland[index] === 0) {
+            let nearest = Infinity;
+            for (let d = 0; d < 6; d++) {
+              const n = hexNeighbor(hex, d);
+              if (!inGrid(map, n) || inland[hexIndex(n.col, n.row, map.width)] === 0) continue;
+              const p = hexToWorld(n, layout);
+              nearest = Math.min(nearest, Math.hypot(p.x - x, p.z - z) - halfWidth);
+            }
+            share = 1 - smooth(COAST_KEEP[0] * size, COAST_KEEP[1] * size, nearest);
+          }
+          height += (floor - height) * share;
+        }
+        if (sites.has(index) && height < floor) {
+          // a city and the yard before its gate stand on dry ground, also on a hex that is half sea
+          const p = hexToWorld(hex, layout);
+          const dx = (x - p.x) / size;
+          const dz = (z - p.z) / size;
+          const town = Math.hypot(dx / (0.64 * CITY_WIDE), (dz + CITY_NORTH) / (0.64 * CITY_DEEP));
+          const yard = Math.hypot(dx, dz - GARRISON_OFFSET) / 0.62;
+          height += (floor - height) * (1 - smooth(1.05, 1.5, Math.min(town, yard)));
+        }
+        if (map.feature[index] === Feature.Volcano) {
+          const p = hexToWorld(hex, layout);
+          // the cone stands on a shoulder as high as the middle of its hex: its rim is level
+          let shoulder = shoulders.get(index);
+          if (shoulder === undefined) {
+            const ci = Math.round(((p.x - world.minX) / (world.maxX - world.minX)) * (cols - 1));
+            const cj = Math.round(((p.z - world.minZ) / (world.maxZ - world.minZ)) * (rows - 1));
+            shoulder = Math.max(rawAt(Math.min(Math.max(ci, 0), cols - 1), Math.min(Math.max(cj, 0), rows - 1)), floor);
+            shoulders.set(index, shoulder);
+          }
+          const r = Math.hypot(x - p.x, z - p.z) / size;
+          height += (shoulder - height) * smooth(VOLCANO_RADIUS, VOLCANO_RADIUS * 0.45, r);
+          height += volcanoRise((x - p.x) / size, (z - p.z) / size) * size;
         }
       }
       heights[j * cols + i] = height;
@@ -318,18 +527,27 @@ export function sampleHeight(field: HeightField, x: number, z: number): number {
 export function createSurface(map: MapData, heightmapSamples?: Uint16Array): Surface {
   if (heightmapSamples !== undefined) {
     const waterLevel = computeWaterLevels(map, false);
-    return { map, waterLevel, field: heightFieldFromHeightmap(map, heightmapSamples, waterLevel) };
+    const lakes = createLakeField(map);
+    return { map, waterLevel, lakes, field: heightFieldFromHeightmap(map, heightmapSamples, waterLevel, lakes) };
   }
   const waterLevel = computeWaterLevels(map, true);
   return { map, waterLevel, field: heightFieldFromHexes(map, waterLevel) };
 }
 
-/** Water level of the hex that contains a world point, or `NaN` on land and outside the map. */
+/**
+ * Water level at a world point: that of its hex, or of the lake whose shore
+ * it lies inside; `NaN` on land and outside the map.
+ */
 export function waterLevelAt(surface: Surface, x: number, z: number): number {
   const { map } = surface;
   const hex = worldToHex({ x, z }, map.projection.hexLayout);
   if (!inGrid(map, hex)) return Number.NaN;
-  return surface.waterLevel[hexIndex(hex.col, hex.row, map.width)] as number;
+  const level = surface.waterLevel[hexIndex(hex.col, hex.row, map.width)] as number;
+  if (surface.lakes === undefined) return level;
+  // a lake's water ends at its shore, which wanders around the edges of its hexes
+  const lake = surface.lakes.levelAt(x, z);
+  if (!Number.isNaN(lake)) return lake;
+  return map.terrain[hexIndex(hex.col, hex.row, map.width)] === Terrain.Lake ? Number.NaN : level;
 }
 
 /** Height of whatever is on top at a world point: the ground, or the water over it. */

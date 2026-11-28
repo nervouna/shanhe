@@ -83,3 +83,33 @@ export function pickHexOnRay(surface: Surface, ray: Ray): number | null {
   if (hex.col < 0 || hex.col >= map.width || hex.row < 0 || hex.row >= map.height) return null;
   return hexIndex(hex.col, hex.row, map.width);
 }
+
+/** A disc that lies level: the top face of a piece. */
+export interface LevelDisc {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly radius: number;
+}
+
+/**
+ * The disc `ray` goes through first, or `null`.
+ *
+ * @param eligible which discs count; all if omitted.
+ */
+export function pickMarkerOnRay<T extends LevelDisc>(discs: readonly T[], ray: Ray, eligible: (disc: T) => boolean = () => true): T | null {
+  const [ox, oy, oz] = ray.origin;
+  const [dx, dy, dz] = ray.direction;
+  if (Math.abs(dy) < 1e-9) return null;
+  let best: T | null = null;
+  let nearest = Infinity;
+  for (const disc of discs) {
+    const t = (disc.y - oy) / dy;
+    if (t <= 0 || t >= nearest) continue;
+    if (Math.hypot(ox + dx * t - disc.x, oz + dz * t - disc.z) > disc.radius) continue;
+    if (!eligible(disc)) continue;
+    nearest = t;
+    best = disc;
+  }
+  return best;
+}

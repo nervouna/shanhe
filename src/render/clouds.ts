@@ -5,10 +5,10 @@
  * their shadows show.
  */
 
-import { float, mix, positionWorld, smoothstep, vec3 } from 'three/tsl';
+import { float, mix, positionWorld, smoothstep, vec2, vec3 } from 'three/tsl';
 import { Mesh, MeshBasicNodeMaterial, PlaneGeometry } from 'three/webgpu';
 import type { WorldRect } from '../shared/mapData.ts';
-import { cloudLayerOpacity } from './lightMath.ts';
+import { CLOUD_LAYER_EDGES, cloudLayerOpacity, cloudShadowEdges } from './lightMath.ts';
 import { cloudCover, noiseTile } from './shaderLib.ts';
 import type { MapUniforms } from './shaderLib.ts';
 
@@ -30,10 +30,11 @@ export function createClouds(u: MapUniforms, rect: WorldRect, height: number): C
   const geometry = new PlaneGeometry(rect.maxX - rect.minX, rect.maxZ - rect.minZ).rotateX(-Math.PI / 2);
   const material = new MeshBasicNodeMaterial();
   const xz = positionWorld.xz;
-  const cover = cloudCover(u, xz);
-  // thicker cloud is brighter in the middle and grey at its thin edge
+  // only the thick middles of the clouds whose shadows drift over the ground: about a sixth of the land
+  const cover = cloudCover(u, xz, vec2(CLOUD_LAYER_EDGES[0], CLOUD_LAYER_EDGES[1]));
+  // thicker cloud is brighter in the middle and grey at its thin edge; never the blue-white of snow
   const billow = noiseTile(u, xz.div(u.hexSize).div(7).add(u.clock.mul(0.004))).g;
-  material.colorNode = vec3(mix(vec3(0.78, 0.8, 0.84), vec3(1, 1, 1), smoothstep(0.1, 0.9, cover.mul(0.7).add(billow.mul(0.3)))));
+  material.colorNode = vec3(mix(vec3(0.66, 0.68, 0.73), vec3(1, 0.985, 0.95), smoothstep(0.1, 0.9, cover.mul(0.7).add(billow.mul(0.3)))));
   // thin over the political map, which has to stay readable
   material.opacityNode = cover.mul(mix(float(0.7), float(1), billow)).mul(u.cloudLayer).mul(mix(float(1), float(0.4), u.political));
   material.transparent = true;
@@ -49,6 +50,8 @@ export function createClouds(u: MapUniforms, rect: WorldRect, height: number): C
     update(zoom) {
       const opacity = cloudLayerOpacity(zoom);
       u.cloudLayer.value = opacity;
+      const edges = cloudShadowEdges(zoom);
+      u.cloudEdges.value.set(edges[0], edges[1]);
       object.visible = opacity > 0.002;
       return opacity;
     },

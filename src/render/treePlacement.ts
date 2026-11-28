@@ -42,7 +42,7 @@ export const JUNGLE_TREES = 58;
 const OASIS_TREES = 6;
 const MARSH_TREES = 3;
 /** A city site keeps this much of its hex clear, as a fraction of the hex size. */
-const SITE_CLEARING = 0.45;
+const SITE_CLEARING = 0.95;
 /** Tree heights as fractions of the hex size, per family. */
 const HEIGHTS: readonly number[] = [0.2, 0.16, 0.19, 0.2, 0.22];
 

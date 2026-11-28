@@ -26,11 +26,18 @@ import type { PerspectiveCamera } from 'three/webgpu';
 import {
   PRIORITY_MARKER,
   PRIORITY_POLITICAL,
+  characterRect,
   cityLabelPriority,
   cityLabelShown,
   declutter,
+  discRect,
+  placeCityLabel,
+  unionRect,
 } from './labelLayout.ts';
-import type { CityTierId, LabelBox } from './labelLayout.ts';
+import { CityTier } from './labelLayout.ts';
+import type { CityTierId, LabelBox, LabelSide, ScreenRect } from './labelLayout.ts';
+import { CAPITAL_MARKER_FACTOR } from './cityLayout.ts';
+import type { DrawnMarker } from './pieces.ts';
 import { fitName } from './politicalNames.ts';
 import type { NamePlacement } from './politicalNames.ts';
 
@@ -38,12 +45,26 @@ export interface CityLabel {
   readonly name: string;
   /** Colour of the dot in front of the name, as `0xRRGGBB`. */
   readonly color: number;
-  /** The point the label stands on. */
+  /** The city's hex, and the middle of that hex on the ground. */
+  readonly hex: number;
   readonly x: number;
   readonly y: number;
   readonly z: number;
+  /** The ground the city covers, in world units: an ellipse `z` south of the middle of the hex (negative: north). */
+  readonly footprint: { readonly z: number; readonly halfWidth: number; readonly halfDepth: number };
+  /** Height of its tallest roof over the ground, in world units. */
+  readonly height: number;
   readonly tier: CityTierId;
   readonly population: number;
+}
+
+/** What the labels have to keep off, and how the cities are drawn, in the view they are laid out for. */
+export interface LabelView {
+  /** The pieces and stacks as drawn: no label covers the character of one. */
+  readonly markers: readonly DrawnMarker[];
+  /** How far the cities have turned into markers, 0 to 1, and half the side of a marker in world units. */
+  readonly cityMarkerShare: number;
+  readonly cityMarkerHalf: number;
 }
 
 export interface NameLabel {
@@ -77,7 +98,9 @@ export interface Labels {
    * @param political how far the view has turned into the political map, 0 to 1.
    * @returns the number of labels shown.
    */
-  update(camera: PerspectiveCamera, width: number, height: number, zoom: number, political: number): number;
+  update(camera: PerspectiveCamera, width: number, height: number, zoom: number, political: number, view: LabelView): number;
+  /** Where the city labels of the last layout sit: `below`, `right`, `left` or `above` their city, by the city's hex. */
+  readonly citySides: ReadonlyMap<number, LabelSide>;
   dispose(): void;
 }
 
@@ -272,7 +295,9 @@ export function createLabels(): Labels {
   let atlasDirty = true;
   let layoutDirty = true;
   let shown = 0;
-  const lastView = new Float64Array(37);
+  let lastMarkers: readonly DrawnMarker[] | null = null;
+  let citySides = new Map<number, LabelSide>();
+  const lastView = new Float64Array(39);
 
   const cityKey = (label: CityLabel): string => `c:${label.color}:${label.name}`;
   const nameKey = (label: NameLabel): string => `n:${label.muted ? 1 : 0}:${label.name}`;
@@ -360,10 +385,24 @@ export function createLabels(): Labels {
       atlasDirty = true;
       layoutDirty = true;
     },
-    update(camera, width, height, zoom, political) {
-      // the same view and the same labels: nothing to do
-      let same = !layoutDirty;
-      const view = [...camera.matrixWorld.elements, ...camera.projectionMatrix.elements, width, height, zoom, political, 0];
+    get citySides() {
+      return citySides;
+    },
+    update(camera, width, height, zoom, political, labelView) {
+      // the same view, the same labels and the same pieces: nothing to do
+      let same = !layoutDirty && labelView.markers === lastMarkers;
+      lastMarkers = labelView.markers;
+      const view = [
+        ...camera.matrixWorld.elements,
+        ...camera.projectionMatrix.elements,
+        width,
+        height,
+        zoom,
+        political,
+        labelView.cityMarkerShare,
+        labelView.cityMarkerHalf,
+        0,
+      ];
       for (let i = 0; i < view.length; i++) {
         if (lastView[i] !== view[i]) same = false;
         lastView[i] = view[i] as number;
@@ -489,18 +528,70 @@ export function createLabels(): Labels {
       }
       // city names fade as the political map comes up
       const cityAlpha = Math.min(1, Math.max(0, 1 - (political - 0.15) / (POLITICAL_NAMES_FROM - 0.15)));
-      for (const label of cities) {
-        if (!cityLabelShown(label.tier, zoom, politicalNames)) continue;
-        billboard(
-          cityKey(label),
-          label.x,
-          label.y,
-          label.z,
-          CITY_HEIGHT,
-          4,
-          cityLabelPriority(label.tier, label.population),
-          cityAlpha,
-        );
+      // the characters of the pieces in view: no city label may cover one
+      const pixelsPerUnit = 1 / perPixel;
+      const characters: ScreenRect[] = [];
+      const garrisons = new Map<number, DrawnMarker>();
+      for (const marker of labelView.markers) {
+        garrisons.set(marker.hex, marker);
+        const rect = characterRect(project, pixelsPerUnit, marker);
+        if (rect !== null && rect.maxX > -200 && rect.minX < width + 200 && rect.maxY > -200 && rect.minY < height + 200) {
+          characters.push(rect);
+        }
+      }
+      const asMarkers = labelView.cityMarkerShare >= 0.5;
+      const sides = new Map<number, LabelSide>();
+      if (cityAlpha > 0.01) {
+        for (const label of cities) {
+          if (!cityLabelShown(label.tier, zoom, politicalNames)) continue;
+          const slot = slots.get(cityKey(label));
+          const at = project(label.x, label.y, label.z);
+          if (slot === undefined || at === null) continue;
+          // what the label names: the city (or its marker) together with the piece before its gate
+          const half = labelView.cityMarkerHalf * (label.tier === CityTier.Capital ? CAPITAL_MARKER_FACTOR : 1);
+          const city = asMarkers
+            ? discRect(project, { x: label.x, y: label.y, z: label.z - half, radius: half })
+            : discRect(
+                project,
+                { x: label.x, y: label.y, z: label.z + label.footprint.z, radius: label.footprint.halfWidth, radiusZ: label.footprint.halfDepth },
+                label.height,
+              );
+          if (city === null) continue;
+          const garrison = garrisons.get(label.hex);
+          let around = city;
+          if (garrison !== undefined) {
+            // the whole piece, from its foot to its face
+            around = unionRect(around, discRect(project, garrison));
+            around = unionRect(around, discRect(project, { ...garrison, y: garrison.y - garrison.height }));
+          }
+          const widthPixels = (CITY_HEIGHT * slot.width) / slot.height;
+          const placed = placeCityLabel(around, widthPixels, CITY_HEIGHT, characters);
+          if (placed === null) continue;
+          const box = { ...placed.rect, priority: cityLabelPriority(label.tier, label.population) };
+          if (!onScreen(box)) continue;
+          boxes.push(box);
+          const side = placed.side;
+          const hex = label.hex;
+          candidates.push({
+            slot,
+            opacity: cityAlpha,
+            place() {
+              sides.set(hex, side);
+              // from the middle of the hex on screen to the middle of the label, in world units at that depth
+              const scale = perPixel * at.depth;
+              const dx = ((box.minX + box.maxX) / 2 - at.x) * scale;
+              const dy = (at.y - (box.minY + box.maxY) / 2) * scale;
+              xAxis.copy(right).multiplyScalar(widthPixels * scale);
+              yAxis.copy(up).multiplyScalar(CITY_HEIGHT * scale);
+              matrix.makeBasis(xAxis, yAxis, forward);
+              matrix.setPosition(
+                label.x + right.x * dx + up.x * dy,
+                label.y + right.y * dx + up.y * dy,
+                label.z + right.z * dx + up.z * dy,
+              );
+            },
+          });
+        }
       }
       markers.forEach((label, i) => {
         billboard(markerKey(label), label.x, label.y, label.z, MARKER_HEIGHT, -MARKER_HEIGHT / 2, PRIORITY_MARKER - i, 1);
@@ -526,6 +617,7 @@ export function createLabels(): Labels {
         opacities.setX(count, candidate.opacity);
         count++;
       });
+      citySides = sides;
       mesh.count = count;
       mesh.instanceMatrix.needsUpdate = true;
       regions.needsUpdate = true;

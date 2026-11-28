@@ -40,8 +40,8 @@ import {
   pathCourse,
   resampleCourse,
   riverCourses,
+  riverLine,
   roadCourses,
-  smoothCourse,
   splineCourse,
 } from './ribbon.ts';
 import type { Ribbon } from './ribbon.ts';
@@ -156,7 +156,9 @@ export function createGroundLines(surface: Surface, u: MapUniforms): GroundLines
 
   const riverRibbon = emptyRibbon();
   for (const course of riverCourses(map)) {
-    appendRibbon(riverRibbon, resampleCourse(smoothCourse(course, 2), SPACING * size), RIVER_HALF * size);
+    // the hex edges are smoothed out of the course, and the river widens downstream
+    const line = riverLine(course, size, SPACING * size);
+    appendRibbon(riverRibbon, line.course, RIVER_HALF * size, true, line.widths);
   }
   const noExtras = (ribbon: Ribbon): Extras => ({
     kind: new Array<number>(ribbon.across.length).fill(0),
