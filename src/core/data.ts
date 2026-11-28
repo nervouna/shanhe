@@ -1153,6 +1153,37 @@ export const CITY_STATE = {
   navalXp: 8,
 } as const;
 
+// ------------------------------------------------------------- difficulty
+
+/** The five difficulty levels, easiest first. */
+export const DIFFICULTY_LEVELS = ['relaxed', 'easy', 'standard', 'hard', 'severe'] as const;
+export type DifficultyLevel = (typeof DIFFICULTY_LEVELS)[number];
+/** The middle level: the AI plays by the same rules as the player. */
+export const DEFAULT_DIFFICULTY: DifficultyLevel = 'standard';
+
+/** What a level gives one side: a percentage on every city yield, and on the strength of its units and cities. */
+export interface DifficultyBonus {
+  readonly yieldPercent: number;
+  readonly strengthPercent: number;
+}
+
+/**
+ * What each level gives the player and what it gives the AI's major nations.
+ * Below the middle level the player is helped, above it the AI majors are;
+ * nobody else is ever touched.
+ */
+export const DIFFICULTY: Readonly<Record<DifficultyLevel, { readonly player: DifficultyBonus; readonly ai: DifficultyBonus }>> = {
+  relaxed: { player: { yieldPercent: 30, strengthPercent: 20 }, ai: { yieldPercent: 0, strengthPercent: 0 } },
+  easy: { player: { yieldPercent: 15, strengthPercent: 10 }, ai: { yieldPercent: 0, strengthPercent: 0 } },
+  standard: { player: { yieldPercent: 0, strengthPercent: 0 }, ai: { yieldPercent: 0, strengthPercent: 0 } },
+  hard: { player: { yieldPercent: 0, strengthPercent: 0 }, ai: { yieldPercent: 15, strengthPercent: 10 } },
+  severe: { player: { yieldPercent: 0, strengthPercent: 0 }, ai: { yieldPercent: 30, strengthPercent: 20 } },
+};
+
+export function isDifficultyLevel(value: unknown): value is DifficultyLevel {
+  return typeof value === 'string' && (DIFFICULTY_LEVELS as readonly string[]).includes(value);
+}
+
 // ----------------------------------------------------------------- tribes
 
 /** One tribe per this many hexes of a wasteland zone, at least one per zone. */

@@ -20,6 +20,8 @@ import {
 } from './context.ts';
 import type { Ctx } from './context.ts';
 import { makeVassal, polityGone, releaseVassals } from './diplomacy.ts';
+import { lookAround } from './fog.ts';
+import { KIT } from './kits.ts';
 import { cityMatches, cityMods, fightPercent, modsOf, percentOf, unitMods } from './modifiers.ts';
 import type { Fight } from './modifiers.ts';
 import { isNation } from './relations.ts';
@@ -392,6 +394,7 @@ export function captureCity(ctx: Ctx, city: City, unit: Unit): void {
       victor.cultureProgress += culture;
     }
   }
+  lookAround(ctx, to, site, KIT.cityVision);
   routesAfterCapture(ctx, city);
   const remaining = state.cities.filter((other): other is City => other !== null && other.owner === from);
   if (remaining.length === 0) {

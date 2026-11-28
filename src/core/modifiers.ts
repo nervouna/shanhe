@@ -10,8 +10,19 @@
  * put it in a table (`POLICIES`, `KITS`, `UNIQUE_*`).
  */
 
-import { BUILDINGS, COMBAT, FIREARM_UNITS, IMPROVEMENTS, MODERN_LAND_ERA, POLICIES, baseBuilding, baseImprovement, unitDef } from './data.ts';
-import type { PolicyDef, PolicyId, UnitDef, Yields } from './data.ts';
+import {
+  BUILDINGS,
+  COMBAT,
+  DIFFICULTY,
+  FIREARM_UNITS,
+  IMPROVEMENTS,
+  MODERN_LAND_ERA,
+  POLICIES,
+  baseBuilding,
+  baseImprovement,
+  unitDef,
+} from './data.ts';
+import type { DifficultyBonus, PolicyDef, PolicyId, UnitDef, Yields } from './data.ts';
 import { at, atWar, ownerOf, polityOf, warCount } from './context.ts';
 import type { Ctx } from './context.ts';
 import { KIT, kitOfNation } from './kits.ts';
@@ -110,6 +121,34 @@ export function roadUpgradeOf(ctx: Ctx, polity: number): RoadUpgradeSpec | null 
   return spec !== undefined && polityOf(ctx, polity).techs.includes(spec.tech) ? spec : null;
 }
 
+/**
+ * What the difficulty level gives `polity`, or null: the player's bonus for
+ * the player, the AI's for every other major nation.
+ */
+export function difficultyBonus(ctx: Ctx, polity: number): DifficultyBonus | null {
+  const { state } = ctx;
+  const level = DIFFICULTY[state.difficulty];
+  const bonus = polity === state.player ? level.player : state.majors.includes(polity) ? level.ai : null;
+  return bonus === null || (bonus.yieldPercent === 0 && bonus.strengthPercent === 0) ? null : bonus;
+}
+
+const difficultyCache = new Map<DifficultyBonus, readonly Modifier[]>();
+
+/** A difficulty bonus as modifiers: every city yield, and the strength of units and cities. */
+function difficultyModifiers(bonus: DifficultyBonus): readonly Modifier[] {
+  let list = difficultyCache.get(bonus);
+  if (list === undefined) {
+    const each = bonus.yieldPercent;
+    list = [
+      { type: 'cityPercent', percent: { food: each, production: each, gold: each, science: each, culture: each } },
+      { type: 'strength', percent: bonus.strengthPercent },
+      { type: 'cityStrength', percent: bonus.strengthPercent },
+    ];
+    difficultyCache.set(bonus, list);
+  }
+  return list;
+}
+
 function buildIndex(ctx: Ctx, polity: number): ModIndex {
   const index: ModIndex = {};
   const add = (list: readonly Modifier[]): void => {
@@ -123,6 +162,8 @@ function buildIndex(ctx: Ctx, polity: number): ModIndex {
     const road = roadUpgradeOf(ctx, polity);
     if (road !== null) add(road.modifiers);
   }
+  const bonus = difficultyBonus(ctx, polity);
+  if (bonus !== null) add(difficultyModifiers(bonus));
   return index;
 }
 

@@ -12,6 +12,7 @@ import type {
   AgreementKind,
   BuildingId,
   CityStateType,
+  DifficultyLevel,
   Focus,
   ImprovementId,
   PolicyId,
@@ -35,6 +36,11 @@ export interface GameSetup {
   readonly majors?: readonly string[];
   /** Length of the game in turns. Default {@link GAME_TURNS}. */
   readonly turns?: number;
+  /**
+   * The difficulty level (`DIFFICULTY` in `data.ts`). Default `standard`, at
+   * which the AI plays by the same rules as the player.
+   */
+  readonly difficulty?: DifficultyLevel;
 }
 
 /** Something a city can build. */
@@ -287,6 +293,8 @@ export interface GameState {
   readonly player: number;
   /** The major nations, ascending. Fixed at setup. */
   readonly majors: readonly number[];
+  /** The difficulty level. Fixed at setup. */
+  readonly difficulty: DifficultyLevel;
   /** Per polity, in the order of `map.polities`. */
   readonly polities: readonly Readonly<PolityState>[];
   /** Per zone: the polity that owns it, or `NO_POLITY` for unsettled wasteland. */
@@ -317,6 +325,13 @@ export interface GameState {
   readonly roadLinks: Readonly<Record<string, number>>;
   /** Pillaged improvements by hex index: the last turn in which the improvement yields nothing. */
   readonly pillaged: Readonly<Record<string, number>>;
+  /**
+   * Fog of war. Per polity, in the order of `map.polities`: the hexes it has
+   * seen, as `encodeHexSet` in `fog.ts` writes them. Only the major nations
+   * and the player keep one; everybody else has the empty string. Read it
+   * with `rememberedBy` in `game.ts`.
+   */
+  readonly explored: readonly string[];
   readonly stats: Readonly<GameStats>;
   /** Null while the game runs. Once set, nothing changes any more. */
   readonly result: GameResult | null;

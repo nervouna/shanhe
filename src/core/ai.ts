@@ -58,6 +58,7 @@ import {
 import { at, atWar, bordersOpen, cityAtHex, polityOf, relationOf, terrainAllows } from './context.ts';
 import type { Ctx } from './context.ts';
 import { dealPriceFrom, wantsResource } from './diplomacy.ts';
+import { canSee, knowsCity } from './fog.ts';
 import { personalityOf } from './kits.ts';
 import type { Personality } from './kits.ts';
 import { nationOf } from './modifiers.ts';
@@ -529,7 +530,8 @@ function buyDefenders(ctx: Ctx, polity: number, cities: City[], act: Act): void 
         unit.owner !== polity &&
         atWar(ctx, polity, unit.owner) &&
         isMilitary(unit) &&
-        hexesApart(ctx, unit.hex, site) <= AI.threatRange,
+        hexesApart(ctx, unit.hex, site) <= AI.threatRange &&
+        canSee(ctx, polity, unit.hex),
     );
     if (threatened) act({ type: 'buy', polity, city: city.zone, item: infantry(ctx, polity) });
   }
@@ -594,9 +596,9 @@ function navyTarget(ctx: Ctx, polity: number, cities: City[], budget: number): n
   if (coastal === 0 || bestUnit(ctx, polity, 'naval') === null) return 0;
   let wanted = coastal * AI.shipsPerCoastalCity;
   for (const unit of state.units) {
-    if (unit.owner !== NO_POLITY && unit.owner !== polity && atWar(ctx, polity, unit.owner) && isWarship(unit)) {
-      wanted += AI.shipsPerEnemyShip;
-    }
+    if (unit.owner === NO_POLITY || unit.owner === polity || !atWar(ctx, polity, unit.owner) || !isWarship(unit)) continue;
+    // Only the ships it can see.
+    if (canSee(ctx, polity, unit.hex)) wanted += AI.shipsPerEnemyShip;
   }
   const focus = polityOf(ctx, polity).aiTarget;
   if (focus >= 0 && state.cities[focus] !== null && overseas(ctx, focus, cities)) wanted += AI.shipsForSeaTarget;
@@ -714,7 +716,8 @@ function settleTargetNear(ctx: Ctx, from: number, polity: number): number {
   for (let zone = 0; zone < state.cities.length; zone++) {
     if (state.zoneOwner[zone] !== NO_POLITY || state.cities[zone] !== null) continue;
     const site = at(map.zones, zone).siteHex;
-    if (ctx.unitAt.get(site)?.owner === NO_POLITY) continue;
+    // A tribe on the site keeps settlers away, where it has been seen.
+    if (ctx.unitAt.get(site)?.owner === NO_POLITY && canSee(ctx, polity, site)) continue;
     const distance = hexesApart(ctx, from, site);
     if (distance < bestDistance) {
       bestDistance = distance;
@@ -900,7 +903,12 @@ function chooseTarget(ctx: Ctx, unit: Unit, focus: number, resting: boolean): nu
   return best;
 }
 
-/** The enemy city the army marches on: the one already chosen, or the nearest to one of its own cities. */
+/**
+ * The enemy city the army marches on: the one already chosen, or the nearest
+ * to one of its own cities among those it knows of. With none known it
+ * marches on the nearest city site in enemy land: sites and borders are on
+ * the map.
+ */
 function chooseFocus(ctx: Ctx, polity: number, cities: City[]): number {
   const { state, map } = ctx;
   const self = polityOf(ctx, polity);
@@ -908,14 +916,18 @@ function chooseFocus(ctx: Ctx, polity: number, cities: City[]): number {
   if (current !== undefined && current !== null && atWar(ctx, polity, current.owner)) return self.aiTarget;
   let best = -1;
   let bestDistance = Infinity;
+  let bestKnown = false;
   for (const city of state.cities) {
     if (city === null || !atWar(ctx, polity, city.owner)) continue;
+    const known = knowsCity(ctx, polity, city);
+    if (bestKnown && !known) continue;
     const site = at(map.zones, city.zone).siteHex;
     for (const own of cities) {
       const distance = hexesApart(ctx, site, at(map.zones, own.zone).siteHex);
-      if (distance < bestDistance) {
+      if (distance < bestDistance || (known && !bestKnown)) {
         bestDistance = distance;
         best = city.zone;
+        bestKnown = known;
       }
     }
   }
@@ -1046,7 +1058,7 @@ function fleetField(ctx: Ctx, polity: number, cities: City[], units: Unit[], foc
     const ports = cities.filter((city) => topo.coastal[city.zone] === true).map((city) => at(map.zones, city.zone).siteHex);
     for (const unit of state.units) {
       if (unit.owner === NO_POLITY || unit.owner === polity || !atWar(ctx, polity, unit.owner)) continue;
-      if (topo.water[unit.hex] !== 1 || unitDef(unit.type).strength <= 0) continue;
+      if (topo.water[unit.hex] !== 1 || unitDef(unit.type).strength <= 0 || !canSee(ctx, polity, unit.hex)) continue;
       if (!ports.some((port) => hexesApart(ctx, port, unit.hex) <= AI.patrolRange)) continue;
       for (const hex of watersBy(ctx, unit.hex)) goals.add(hex);
     }

@@ -12,6 +12,7 @@ import {
   CITY_STATE,
   CITY_STATE_TYPES,
   DEAL,
+  DIFFICULTY_LEVELS,
   ERAS,
   FAVOUR,
   FOCUSES,
@@ -26,12 +27,14 @@ import type {
   AgreementKind,
   BuildingId,
   CityStateType,
+  DifficultyLevel,
   Focus,
   ImprovementId,
   PolicyId,
   TechId,
   Yields,
 } from '../core/data.ts';
+import { decodeHexSet } from '../core/fog.ts';
 import { STATE_VERSION, saveGame } from '../core/game.ts';
 import { policySlotsFor } from '../core/policies.ts';
 import type {
@@ -501,6 +504,21 @@ function roadLinks(value: unknown, bounds: Bounds): Record<string, number> {
   return out;
 }
 
+/**
+ * Fog of war: one set of seen hexes per polity, as the rules write it. Only
+ * the major nations and the player have one.
+ */
+function explored(value: unknown, bounds: Bounds, majors: readonly number[], player: number): string[] {
+  const sets = list(value, 'explored', bounds.polities);
+  if (sets.length !== bounds.polities) fail('explored count');
+  return sets.map((entry, index) => {
+    if (typeof entry !== 'string') fail('explored set');
+    if (entry !== '' && index !== player && !majors.includes(index)) fail('explored set of a polity that keeps none');
+    if (decodeHexSet(entry, bounds.hexes) === null) fail('explored set');
+    return entry;
+  });
+}
+
 /** The state in `data`, rebuilt field by field in the rules' own field order. */
 function rebuild(data: Json, map: MapData): GameState {
   const bounds: Bounds = { hexes: map.width * map.height, zones: map.zones.length, polities: map.polities.length };
@@ -551,6 +569,7 @@ function rebuild(data: Json, map: MapData): GameState {
     rng: int(data.rng, 0, UINT32, 'rng'),
     player,
     majors,
+    difficulty: oneOf<DifficultyLevel>(data.difficulty, DIFFICULTY_LEVELS, 'difficulty'),
     polities,
     zoneOwner,
     cities,
@@ -567,6 +586,7 @@ function rebuild(data: Json, map: MapData): GameState {
     roads: indexed(data.roads, bounds.hexes - 1, 'roads', (level) => int(level, 1, 2, 'road level')),
     roadLinks: roadLinks(data.roadLinks, bounds),
     pillaged: indexed(data.pillaged, bounds.hexes - 1, 'pillaged', (until) => int(until, 1, MAX_TURNS, 'pillaged until')),
+    explored: explored(data.explored, bounds, majors, player),
     stats: stats(data.stats),
     result: result(data.result, bounds),
   };

@@ -19,6 +19,7 @@ import { at, atWar, dropKey, ownerOf, polityOf, removeUnit, warCount } from './c
 import type { Ctx } from './context.ts';
 import { processInfluence } from './cityStates.ts';
 import { endDeal, processDiplomacy } from './diplomacy.ts';
+import { rememberSight } from './fog.ts';
 import { hexMatches, modsOf, percentOf, unitMatches } from './modifiers.ts';
 import { followWorld, processResearch, worldEra } from './tech.ts';
 import { processRoads, processRoutes } from './trade.ts';
@@ -259,6 +260,9 @@ export function endRound(ctx: Ctx): void {
     unit.acted = false;
     unit.moves = unitDef(unit.type).moves;
   }
+
+  // Everybody with a memory adds what it sees now that all have moved.
+  rememberSight(ctx);
 
   const result = findResult(ctx);
   if (result !== null) {
