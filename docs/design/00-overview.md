@@ -52,4 +52,4 @@ The user asked for a realistic 3D experience in the manner of the Civilization s
 
 ## Status
 
-Design locked on 2026-11-28. No code yet. The first build step is a terrain rendering prototype, the riskiest and most visible part of the game.
+Design locked on 2026-11-28 and implemented since. What is built, what is not, and what is still weak are tracked in the repository's tracking issue; rules that the build changed or added are written back into these documents.
