@@ -994,6 +994,12 @@ const zh = {
   'family.japanese': '和式',
   'family.southeastAsian': '南洋',
   'family.siberian': '西伯利亚木屋',
+  // City projects and "repeat last item" (issue #38).
+  'building.festival': '庆典',
+  'building.minting': '铸钱',
+  'building.compilation': '修书',
+  'city.repeat': '重复上一项',
+  'reject.alreadySet': '已经是这样了',
 };
 
 export type TranslationKey = keyof typeof zh;
@@ -1987,6 +1993,12 @@ const en: Record<TranslationKey, string> = {
   'family.japanese': 'Japanese',
   'family.southeastAsian': 'Southeast Asian',
   'family.siberian': 'Siberian log house',
+  // City projects and "repeat last item" (issue #38).
+  'building.festival': 'Festival',
+  'building.minting': 'Minting',
+  'building.compilation': 'Compilation',
+  'city.repeat': 'Repeat last item',
+  'reject.alreadySet': 'It is already set that way',
 };
 
 export const LANGUAGES = ['zh', 'en'] as const;

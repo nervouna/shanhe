@@ -443,8 +443,6 @@ export function demandVassalage(ctx: Ctx, unit: Unit, target: number): void {
   unit.status = 'ready';
   city.hp = Math.floor(maxCityHp(city) * CITY.captureHpFraction);
   city.attackedOn = ctx.state.turn;
-  const victor = polityOf(ctx, unit.owner);
-  victor.warWeariness = Math.max(0, victor.warWeariness - WAR.wearinessPerVassalMade);
   makeVassal(ctx, city.owner, unit.owner, true);
 }
 

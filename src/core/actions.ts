@@ -28,6 +28,7 @@ import type { UnitDef } from './data.ts';
 import {
   assignCitizens,
   canImprove,
+  cityProjectOf,
   checkItem,
   deliverItem,
   foundCity,
@@ -231,6 +232,7 @@ export function buyCost(ctx: Ctx, city: City, item: BuildItem): number {
 /** Why the city cannot buy the item, or null. */
 function checkBuy(ctx: Ctx, city: City, item: BuildItem): RejectReason | null {
   if (item.kind !== 'unit' && item.kind !== 'building') return 'cannotBuy';
+  if (cityProjectOf(item) !== null) return 'cannotBuy';
   if (city.unrest > 0) return 'inUnrest';
   const reason = checkItem(ctx, city, item, true);
   if (reason !== null) return reason;
@@ -259,7 +261,7 @@ export function acceptsPeace(ctx: Ctx, polity: number, proposer: number): boolea
   const conquering = ambitionOf(ctx.state.seed, polity, nationOf(ctx, polity)) === 'conquest';
   if (self.warWeariness >= (conquering ? AI.conquestPeaceWeariness : AI.peaceWeariness)) return true;
   const progress = Math.max(relation.since, polityOf(ctx, proposer).cityLostOn);
-  if (ctx.state.turn - progress >= AI.stalemateTurns) return true;
+  if (ctx.state.turn - progress >= (conquering ? AI.conquestStalemateTurns : AI.stalemateTurns)) return true;
   return militaryStrength(ctx, polity) < militaryStrength(ctx, proposer) * AI.warStrengthRatio;
 }
 
@@ -346,6 +348,12 @@ export function validate(ctx: Ctx, action: Action): RejectReason | null {
       if (typeof city === 'string') return city;
       if (typeof action.item !== 'object' || action.item === null) return 'badItem';
       return checkItem(ctx, city, action.item);
+    }
+    case 'setRepeat': {
+      const city = ownCity(ctx, polity, action.city);
+      if (typeof city === 'string') return city;
+      if (typeof action.repeat !== 'boolean') return 'badAction';
+      return city.repeat === action.repeat ? 'alreadySet' : null;
     }
     case 'unqueueBuild': {
       const city = ownCity(ctx, polity, action.city);
@@ -536,6 +544,9 @@ function perform(ctx: Ctx, action: Action): void {
       (state.cities[action.city] as City).queue.push(item);
       return;
     }
+    case 'setRepeat':
+      (state.cities[action.city] as City).repeat = action.repeat;
+      return;
     case 'unqueueBuild': {
       const city = state.cities[action.city] as City;
       city.queue.splice(action.index, 1);
@@ -555,7 +566,7 @@ function perform(ctx: Ctx, action: Action): void {
       const relation = relationOf(ctx, action.polity, action.target);
       if (relation === undefined) return;
       const theirOffer = relation.a === action.target ? relation.offerA : relation.offerB;
-      if (action.target === state.player && theirOffer === 0) {
+      if (action.target === state.player && theirOffer <= 0) {
         // A human decides for themselves: leave an offer they can take up.
         if (relation.a === action.polity) relation.offerA = state.turn;
         else relation.offerB = state.turn;
@@ -735,6 +746,7 @@ export function legalActions(ctx: Ctx, polity: number): Action[] {
       if (item.kind === 'unit' || item.kind === 'building') offer({ type: 'buy', polity, city: city.zone, item });
     }
     city.queue.forEach((_, index) => out.push({ type: 'unqueueBuild', polity, city: city.zone, index }));
+    out.push({ type: 'setRepeat', polity, city: city.zone, repeat: !city.repeat });
     if (hasBuilding(city, (building) => building.airStrike) && !city.airStruck) {
       for (const offset of hexRange(indexToOffset(at(map.zones, city.zone).siteHex, map.width), AIR_STRIKE.range)) {
         if (offset.col < 0 || offset.col >= map.width || offset.row < 0 || offset.row >= map.height) continue;

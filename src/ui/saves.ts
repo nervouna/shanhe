@@ -8,6 +8,7 @@
 import {
   AGREEMENT_KINDS,
   BUILDING_IDS,
+  isCityProject,
   CITY,
   CITY_STATE,
   CITY_STATE_TYPES,
@@ -168,6 +169,8 @@ function city(value: unknown, zone: number, bounds: Bounds): City | null {
     oneOf<BuildingId>(id, BUILDING_IDS, 'building'),
   );
   if (new Set(buildings).size !== buildings.length) fail('building listed twice');
+  // A city project is queued like a building but never stands in a city.
+  if (buildings.some(isCityProject)) fail('city project among the buildings');
   return {
     zone: int(data.zone, zone, zone, 'city zone'),
     owner: int(data.owner, 0, bounds.polities - 1, 'city owner'),
@@ -179,6 +182,7 @@ function city(value: unknown, zone: number, bounds: Bounds): City | null {
     buildings,
     queue: list(data.queue, 'city queue', 256).map((item) => buildItem(item, bounds)),
     progress: num(data.progress, 0, BIG, 'city progress'),
+    repeat: bool(data.repeat, 'city repeat'),
     unrest: int(data.unrest, 0, MAX_TURNS, 'city unrest'),
     morale: num(data.morale, 0, 100, 'city morale'),
     struck: bool(data.struck, 'city struck'),
@@ -238,6 +242,12 @@ function polity(value: unknown, index: number, kind: PolityKind, id: string, bou
     id === null ? null : oneOf<PolicyId>(id, policies, 'slotted policy'),
   );
   if (slots.length !== slotCount) fail('policy slot count');
+  // Per slot, the turn it was last emptied: only an empty slot carries one.
+  const slotFreedOn = list(data.slotFreedOn, 'slot freed on', slotCount).map((turn) => int(turn, 0, MAX_TURNS, 'slot freed on'));
+  if (slotFreedOn.length !== slotCount) fail('slot freed on count');
+  slotFreedOn.forEach((turn, slot) => {
+    if (turn > 0 && slots[slot] !== null) fail('slot freed on of a filled slot');
+  });
   const held = slots.filter((id) => id !== null);
   if (new Set(held).size !== held.length) fail('policy slotted twice');
 
@@ -262,6 +272,7 @@ function polity(value: unknown, index: number, kind: PolityKind, id: string, bou
     slots,
     freeSwaps: int(data.freeSwaps, 0, POLICY_IDS.length, 'free swaps'),
     swapReadyOn: int(data.swapReadyOn, 0, MAX_TURNS, 'swap ready on'),
+    slotFreedOn,
     overlord,
     cityStateType: cityState
       ? oneOf<CityStateType>(data.cityStateType, CITY_STATE_TYPES, 'city-state type')
@@ -302,8 +313,9 @@ function relations(value: unknown, bounds: Bounds): Record<string, Relation> {
       b,
       atWar: bool(data.atWar, 'relation at war'),
       since: int(data.since, 0, MAX_TURNS, 'relation since'),
-      offerA: int(data.offerA, 0, MAX_TURNS, 'relation offer'),
-      offerB: int(data.offerB, 0, MAX_TURNS, 'relation offer'),
+      // A negative number is the turn in which the last offer lapsed, negated.
+      offerA: int(data.offerA, -MAX_TURNS, MAX_TURNS, 'relation offer'),
+      offerB: int(data.offerB, -MAX_TURNS, MAX_TURNS, 'relation offer'),
     };
   }
   return out;

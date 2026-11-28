@@ -20,6 +20,7 @@ import {
   POLICIES,
   baseBuilding,
   baseImprovement,
+  scienceBonus,
   unitDef,
 } from './data.ts';
 import type { DifficultyBonus, PolicyDef, PolicyId, UnitDef, Yields } from './data.ts';
@@ -134,13 +135,13 @@ export function difficultyBonus(ctx: Ctx, polity: number): DifficultyBonus | nul
 
 const difficultyCache = new Map<DifficultyBonus, readonly Modifier[]>();
 
-/** A difficulty bonus as modifiers: every city yield, and the strength of units and cities. */
+/** A difficulty bonus as modifiers: the city yields (science at its own rate), and the strength of units and cities. */
 function difficultyModifiers(bonus: DifficultyBonus): readonly Modifier[] {
   let list = difficultyCache.get(bonus);
   if (list === undefined) {
     const each = bonus.yieldPercent;
     list = [
-      { type: 'cityPercent', percent: { food: each, production: each, gold: each, science: each, culture: each } },
+      { type: 'cityPercent', percent: { food: each, production: each, gold: each, science: scienceBonus(bonus), culture: each } },
       { type: 'strength', percent: bonus.strengthPercent },
       { type: 'cityStrength', percent: bonus.strengthPercent },
     ];
