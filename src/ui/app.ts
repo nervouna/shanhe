@@ -54,6 +54,8 @@ import {
   yieldName,
 } from './names.ts';
 import { canPoint, noteDrafts } from './notes.ts';
+import { FOLLOW_MS, followTarget, goTo } from './observer.ts';
+import type { Away } from './observer.ts';
 import type { NoteOffer } from './notes.ts';
 import { policyOverlay, politiesOverlay, standingName, techOverlay, victoryOverlay } from './overlays.ts';
 import type { OverlayKind, PolicyOverlayState, PolitiesOverlayState } from './overlays.ts';
@@ -153,8 +155,17 @@ export interface UiSnapshot {
   readonly selectedUnit: number | null;
   /** True while turns are being played. */
   readonly busy: boolean;
-  /** Observer mode's controls, or null in a player's game. */
-  readonly observer: { readonly paused: boolean; readonly speed: number } | null;
+  /**
+   * Observer mode's controls, or null in a player's game. `watching` is the
+   * hex its camera went to for an event and has not come back from, or null;
+   * `returns` counts the times it came back to the view it had left.
+   */
+  readonly observer: {
+    readonly paused: boolean;
+    readonly speed: number;
+    readonly watching: number | null;
+    readonly returns: number;
+  } | null;
   /** `kind` is a stable code; `label` is the text on the button in the current language. */
   readonly mainButton: { readonly kind: MainButtonKind; readonly label: string };
   readonly notifications: number;
@@ -348,6 +359,9 @@ export function createApp(options: AppOptions): App {
   let paused = false;
   let speed: (typeof SPEEDS)[number] = 1;
   let observerTimer: number | null = null;
+  /** Observer mode's camera, away at an event, with the timer that brings it back. */
+  let away: (Away<ReturnType<Renderer['getCamera']>> & { readonly timer: number }) | null = null;
+  let cameraReturns = 0;
   /** Turns are being run by a caller of {@link App.runTurns}: observer mode's own clock stands still. */
   let automated = false;
   let hoverHex: number | null = null;
@@ -446,8 +460,25 @@ export function createApp(options: AppOptions): App {
     }, 2600);
   };
 
+  /**
+   * Ends the stay of observer mode's camera at an event.
+   *
+   * @param back true to go back to the view it left; false when the observer has taken the camera themselves.
+   */
+  const endWatch = (back: boolean): void => {
+    if (away === null) return;
+    window.clearTimeout(away.timer);
+    const { home } = away;
+    away = null;
+    if (!back) return;
+    cameraReturns++;
+    board.renderer.setCamera(home);
+  };
+
   const flyTo = (hex: number): void => {
     if (hex < 0) return;
+    // where the camera goes now is the viewer's choice: it is not taken back from there
+    endWatch(false);
     board.renderer.focusHex(hex);
   };
 
@@ -588,18 +619,22 @@ export function createApp(options: AppOptions): App {
 
   /**
    * Observer mode's camera follows the action: it goes to where a city fell,
-   * or else where a war began. Returns the hex it went to, or -1.
+   * or else where a war began, close enough to show the city and its land,
+   * stays a moment and goes back to the view it left. Returns the hex it
+   * went to, or -1.
    */
   const followEvents = (events: readonly GameEvent[]): number => {
-    let hex = -1;
-    for (const event of events) {
-      if (event.type === 'cityCaptured') {
-        hex = siteOf(event.city);
-        break;
-      }
-      if (event.type === 'warDeclared' && hex < 0) hex = capitalHex(event.on);
-    }
-    flyTo(hex);
+    const hex = followTarget(events, siteOf, capitalHex);
+    if (hex < 0) return -1;
+    if (away !== null) window.clearTimeout(away.timer);
+    const next = goTo(away, hex, board.renderer.getCamera());
+    board.renderer.focusHex(hex, { frame: 'zone' });
+    away = {
+      ...next,
+      timer: window.setTimeout(() => {
+        endWatch(true);
+      }, FOLLOW_MS),
+    };
     return hex;
   };
 
@@ -1028,6 +1063,8 @@ export function createApp(options: AppOptions): App {
         el('span', { class: 'stat-label', text: label }),
         el('span', { class: 'slot-value', text: value }),
       );
+    // research and policies are the player's: an observer has no use for the two buttons
+    slots.hidden = observing();
     const research = researchText();
     const policy = policyText();
     fillWhen(slots, [getLanguage(), research, policy, overlay, observing()].join('|'), () => [
@@ -1577,6 +1614,7 @@ export function createApp(options: AppOptions): App {
   };
 
   const enterGame = (): void => {
+    endWatch(false);
     screen = state().result === null ? 'game' : 'end';
     select(null);
     cityPanel = null;
@@ -1607,6 +1645,7 @@ export function createApp(options: AppOptions): App {
   };
 
   const leaveGame = (): void => {
+    endWatch(false);
     host.reset();
     screen = 'start';
     chosenNation = null;
@@ -2084,8 +2123,10 @@ export function createApp(options: AppOptions): App {
 
   const lensBar = el('div', { class: 'segmented', id: 'lenses' });
   const drawLenses = (): void => {
+    // relations are the player's: an observer has no diplomacy lens
+    if (observing() && lens === 'diplomacy') lens = 'political';
     fillWhen(lensBar, [getLanguage(), lens, observing()].join('|'), () =>
-      LENSES.map((entry) => {
+      LENSES.filter((entry) => entry !== 'diplomacy' || !observing()).map((entry) => {
         const key: TranslationKey = `lens.${entry}`;
         return button(t(key), () => {
           lens = entry;
@@ -2093,7 +2134,6 @@ export function createApp(options: AppOptions): App {
         }, {
           class: entry === lens ? 'active' : '',
           data: { lens: entry },
-          disabled: entry === 'diplomacy' && observing(),
           pressed: entry === lens,
         });
       }),
@@ -2243,6 +2283,7 @@ export function createApp(options: AppOptions): App {
     };
 
     canvas.addEventListener('pointerdown', (event) => {
+      endWatch(false);
       // a second finger makes it a pinch or a twist: no tap, no long press
       const second = press !== null && press.pointer !== event.pointerId;
       endPress();
@@ -2315,7 +2356,10 @@ export function createApp(options: AppOptions): App {
       clearHover();
       drawHighlights();
     }, { signal });
-    canvas.addEventListener('wheel', hideCard, { signal, passive: true });
+    canvas.addEventListener('wheel', () => {
+      hideCard();
+      endWatch(false);
+    }, { signal, passive: true });
 
     minimap = createMinimap(board.map, (hex) => {
       flyTo(hex);
@@ -2533,7 +2577,7 @@ export function createApp(options: AppOptions): App {
         polity: polityPanel,
         selectedUnit: selection,
         busy: host.busy,
-        observer: screen === 'game' && observing() ? { paused, speed } : null,
+        observer: screen === 'game' && observing() ? { paused, speed, watching: away?.hex ?? null, returns: cameraReturns } : null,
         mainButton: { kind: current.kind, label: current.label },
         notifications: notes.length,
         map: board.source,

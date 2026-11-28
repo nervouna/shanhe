@@ -71,7 +71,7 @@ Pending proposals and peace offers also appear as notifications with the same tw
 
 ## Animation
 
-What the player's own actions and the other polities' turns do on the board is played before the board takes the new state: pieces slide, strike and fall, cities shoot, a captured zone changes colour. Only what is in view is played. Many events in one turn play faster, so that a long turn does not hold the player up. Holding Space speeds the animations up; Escape skips them. Observer mode's camera goes to where a city fell or a war began. Runs of many turns and automated browsers play nothing.
+What the player's own actions and the other polities' turns do on the board is played before the board takes the new state: pieces slide, strike and fall, cities shoot, a captured zone changes colour. Only what is in view is played. Many events in one turn play faster, so that a long turn does not hold the player up. Holding Space speeds the animations up; Escape skips them. Observer mode's camera goes to where a city fell or a war began: it moves in until the city and its land fill the view, stays a few seconds and goes back to the view it left. If another event comes while it is away it goes on to that one, and still returns to the first view. Once the observer moves the camera themselves (a drag, the wheel, the minimap, a notification) it is theirs and is not taken back. Runs of many turns and automated browsers play nothing.
 
 ## Fog of war
 
@@ -84,6 +84,10 @@ A player sees what their nation sees (doc 03, "Fog of war"); the observer sees e
 - **The camera** never moves by itself to a hex the player has not seen. Where the player looks is theirs to choose: the terrain is open.
 - **The minimap** lays a light veil over what the player has seen but does not see now, and a darker one over what they have never seen. Its lenses show borders, resources and relations, which fog does not hide.
 - **The list of polities** shows favour, army strength and distance: all public (doc 03).
+
+## Observer's HUD
+
+An observer has no research, no policies and no relations: the two buttons in the top left and the diplomacy lens are not shown, rather than shown disabled.
 
 ## Camera at the start
 

@@ -83,6 +83,11 @@ test('an observer game on the fixture map runs to its end', async ({ page }) => 
   // research and policies are the player's: an observer has neither overlay
   await page.keyboard.press('t');
   expect(await page.evaluate(() => window.__shanhe?.ui.overlay)).toBeNull();
+  // nor does the observer's HUD show a control that does nothing
+  await expect(page.locator('#slots')).toBeHidden();
+  await expect(page.locator('#lenses button')).toHaveCount(2);
+  await expect(page.locator('#lenses [data-lens="diplomacy"]')).toHaveCount(0);
+  expect(await page.evaluate(() => [...document.querySelectorAll('#game button:disabled')].filter((node) => node.getClientRects().length > 0).length)).toBe(0);
   // the observer's clock redraws the HUD every turn, but the buttons of the top bar and the speed
   // control are not rebuilt: they are the same nodes turns later, and an ordinary click lands on them
   await page.evaluate(() => {
@@ -708,6 +713,29 @@ test('a player game opens on the capital, framed with its zone', async ({ page }
   expect(view.opened.z).toBeCloseTo(view.z, 3);
   // close enough to show one zone, not the whole map
   expect(view.opened.distance).toBeLessThan(view.farthest * 0.8);
+  expect(errors).toEqual([]);
+});
+
+test('observer mode: the camera goes to where a war begins or a city falls, and comes back', async ({ page }) => {
+  const errors = collectErrors(page);
+  await open(page, '/?map=fixture&render=off');
+  await page.evaluate(() => window.__shanhe?.startGame({ observe: true, seed: 1, map: 'fixture' }));
+  // paused, so that only this test ends turns
+  await page.click('#main-action');
+  expect(await page.evaluate(() => window.__shanhe?.ui.observer)).toEqual({ paused: true, speed: 1, watching: null, returns: 0 });
+  let watching: number | null = null;
+  for (let turn = 0; turn < 150 && watching === null; turn++) {
+    watching = await page.evaluate(async () => {
+      await window.__shanhe?.endTurn();
+      return window.__shanhe?.ui.observer?.watching ?? null;
+    });
+  }
+  expect(watching, 'the game had no war and no fallen city').not.toBeNull();
+  // it went to a city: the capital of the polity attacked, or the city that fell
+  expect(await page.evaluate((hex) => window.__shanhe?.state.map.zones.some((zone) => zone.siteHex === hex), watching)).toBe(true);
+  // nobody touches the camera: after its stay it goes back to the view it left
+  await page.waitForFunction(() => window.__shanhe?.ui.observer?.returns === 1);
+  expect(await page.evaluate(() => window.__shanhe?.ui.observer?.watching)).toBeNull();
   expect(errors).toEqual([]);
 });
 
