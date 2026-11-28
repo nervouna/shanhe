@@ -7,6 +7,7 @@ import { createFixtureMap } from '../shared/fixtureMap.ts';
 import { createHost, createInlineRunner } from './host.ts';
 import type { HostChange } from './host.ts';
 import { findPath } from './path.ts';
+import { sightOf } from './sight.ts';
 
 const map = createFixtureMap();
 const topo = topologyOf(map);
@@ -139,6 +140,32 @@ describe('createHost', () => {
     expect(host.state.units.find((unit) => unit.id === id)?.hex).not.toBe(hex);
     expect(host.orders.has(id)).toBe(false);
     void enemy;
+  });
+
+  it('treats a hex with an enemy the player does not see like an empty one', () => {
+    let far = -1;
+    const { host, id } = hostWith('warrior', (state) => {
+      const visible = sightOf(state)!.visible;
+      far = topo.zoneHexes[capitalZone]!.find(
+        (candidate) =>
+          visible[candidate] === 0 && isPlainGround(map, candidate) && findPath(state, state.units.at(-1)!.id, candidate) !== null,
+      )!;
+      return apply(state, { type: 'declareWar', polity: JIA, target: YI });
+    });
+    expect(far).toBeGreaterThanOrEqual(0);
+    const empty = host.state;
+    const asEmpty = host.order(id, far);
+    // the same order with an enemy standing there, out of sight
+    host.resume(edit(empty, (draft) => {
+      put(draft, 'warrior', YI, far);
+    }));
+    expect(sightOf(host.state)!.visible[far]).toBe(0);
+    const order = host.order(id, far);
+    expect(order.ok).toBe(true);
+    expect(order).toEqual(asEmpty);
+    expect(order.ok && order.events.some((event) => event.type === 'combat')).toBe(false);
+    // it is a walk onto the hex, not a walk up to a target
+    expect(host.orders.get(id)).toEqual({ target: far, within: 0 });
   });
 
   it('skips a unit for the rest of the turn only', async () => {

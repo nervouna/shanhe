@@ -7,10 +7,12 @@
 
 import { applyAction, createGame, endTurn, NO_POLITY } from '../core/game.ts';
 import type { Action, ActionResult, GameEvent, GameResult, GameSetup, GameState, RejectReason } from '../core/game.ts';
+import { hexDistance } from '../core/query.ts';
 import type { MapData } from '../shared/mapData.ts';
 import { attackReach, findPath, previewAttack } from './path.ts';
 import { pendingItems } from './pending.ts';
 import type { PendingItem } from './pending.ts';
+import { inSight, knownState, sightOf } from './sight.ts';
 
 /** One finished turn. */
 export interface TurnReport {
@@ -61,8 +63,8 @@ export interface MoveOrder {
 
 export type OrderResult =
   | { readonly ok: true; readonly events: GameEvent[] }
-  /** `noPath`: the unit cannot get there. */
-  | { readonly ok: false; readonly reason: RejectReason | 'noPath' };
+  /** `noPath`: the unit cannot get there. `unseen`: the enemy is in reach, but the player's nation does not see it. */
+  | { readonly ok: false; readonly reason: RejectReason | 'noPath' | 'unseen' };
 
 export type HostChange =
   /** A new or loaded game replaced the state. */
@@ -107,6 +109,11 @@ export interface Host {
    * Orders a unit of the player towards a hex: it attacks an enemy there if
    * it can reach it, otherwise it moves as far as it gets this turn and keeps
    * going on later turns.
+   *
+   * The order is planned on what the player knows (fog of war): a unit the
+   * fog hides is neither attacked nor walked around, and the walk stops in
+   * front of it when the rules refuse the step. An enemy city out of sight
+   * is walked up to and attacked once it is seen.
    */
   order(unit: number, target: number): OrderResult;
   /** Leaves a unit alone for the rest of the turn. */
@@ -162,7 +169,7 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
       orders.delete(id);
       return;
     }
-    const path = findPath(state, id, order.target, order.within);
+    const path = findPath(knownState(state), id, order.target, order.within);
     if (path === null) {
       orders.delete(id);
       return;
@@ -281,21 +288,23 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
         return result;
       };
 
-      if (previewAttack(state, id, target) !== null) {
+      if (previewAttack(knownState(state), id, target) !== null) {
         const attack: Action = { type: 'attack', polity, unit: id, target };
-        let result = applyAction(state, attack);
-        if (!result.ok && !['notAdjacent', 'outOfRange', 'noMovesLeft'].includes(result.reason)) {
+        const within = attackReach(state, id);
+        // only what is in sight is attacked
+        let result = inSight(sightOf(state), target) ? applyAction(state, attack) : null;
+        if (result !== null && !result.ok && !['notAdjacent', 'outOfRange', 'noMovesLeft'].includes(result.reason)) {
           return { ok: false, reason: result.reason };
         }
-        if (!result.ok) {
-          // walk up to it, strike if there is movement left, otherwise keep walking next turn
-          const within = attackReach(state, id);
-          if (findPath(state, id, target, within) === null) return { ok: false, reason: 'noPath' };
+        if (result === null && hexDistance(state, unit.hex, target) <= within) return { ok: false, reason: 'unseen' };
+        if (result === null || !result.ok) {
+          // walk up to it, strike if it is in sight and there is movement left, otherwise keep walking next turn
+          if (findPath(knownState(state), id, target, within) === null) return { ok: false, reason: 'noPath' };
           orders.set(id, { target, within });
           advance(id, events);
-          result = applyAction(state, attack);
+          result = inSight(sightOf(state), target) ? applyAction(state, attack) : null;
         }
-        if (result.ok) {
+        if (result !== null && result.ok) {
           orders.delete(id);
           state = result.state;
           events.push(...result.events);
@@ -307,7 +316,7 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
         orders.delete(id);
         return done({ ok: true, events });
       }
-      if (findPath(state, id, target) === null) return { ok: false, reason: 'noPath' };
+      if (findPath(knownState(state), id, target) === null) return { ok: false, reason: 'noPath' };
       orders.set(id, { target, within: 0 });
       advance(id, events);
       return done({ ok: true, events });
