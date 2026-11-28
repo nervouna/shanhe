@@ -870,8 +870,7 @@ export function createApp(options: AppOptions): App {
         });
         nation.style.setProperty('--nation', cssColor(map().polities[player()]?.color ?? 0x888888));
         // the fighting units against what the cities supply, next to the gold the excess is paid from
-        const supplied = stat('unit', t('hud.supply'), supply.value, 'stat-supply');
-        supplied.title = supply.text;
+        const supplied = stat('fortify', supply.text, supply.value, 'stat-supply');
         supplied.setAttribute('aria-label', supply.text);
         supplied.classList.toggle('status', supply.over);
         supplied.dataset.used = String(supply.used);
