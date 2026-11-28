@@ -55,6 +55,21 @@ describe('a full treasury', () => {
     expect(state.polities[JIA]!.gold).toBeLessThan(5000);
   });
 
+  it('does not go to a human player', () => {
+    // The same game with Yi, one of Jia's neighbours, played by a human.
+    const watched = endTurn(rich(5000));
+    const got = (events: GameEvent[], to: number): number => of(events, 'goldGifted').filter((event) => event.from === JIA && event.to === to).length;
+    expect(got(watched.events, YI)).toBeGreaterThan(0);
+    const played = endTurn(
+      edit(createGame(map, { seed: 3, majors: ['jia'], player: 'yi' }), (draft) => {
+        draft.turn = AI.diplomacyInterval * 3 - JIA;
+        draft.polities[JIA]!.gold = 5000;
+      }),
+    );
+    expect(got(played.events, YI)).toBe(0);
+    expect(of(played.events, 'goldGifted').some((event) => event.from === JIA)).toBe(true);
+  });
+
   it('is left alone below that', () => {
     const state = rich(AI.goldReserve + AI.giftGold * AI.richGiftFactor - 1);
     const kept = AI.goldReserve + income(state) * AI.treasuryTurns;

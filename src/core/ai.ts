@@ -663,8 +663,9 @@ function statecraft(ctx: Ctx, polity: number, cities: City[], act: Act): void {
  * What a major nation holds beyond `AI.treasuryTurns` turns of its income
  * (and its reserve) it gives away for standing: to the city-states within
  * twice the usual courting range, the nearest first, up to the influence a
- * gift can still add, and then to the neighbours it is at peace with, the
- * one it stands worst with first, for favour.
+ * gift can still add, and then to the nations near it that it is at peace
+ * with, the one it stands worst with first, for favour. A human player gets
+ * none.
  */
 function spendSurplus(ctx: Ctx, polity: number, neighbours: readonly number[], act: Act): void {
   const { state, map } = ctx;
@@ -693,7 +694,8 @@ function spendSurplus(ctx: Ctx, polity: number, neighbours: readonly number[], a
   // Round after round, the one it stands worst with first, until all are well disposed or the surplus is gone.
   for (let round = 0; round < AI.giftRounds; round++) {
     const worstFirst = [...neighbours]
-      .filter((other) => !atWar(ctx, polity, other) && favourOf(ctx, polity, other) < AI.giftFavour)
+      // Not the human player: gold from a rich AI every few turns would be theirs for nothing.
+      .filter((other) => other !== state.player && !atWar(ctx, polity, other) && favourOf(ctx, polity, other) < AI.giftFavour)
       .sort((a, b) => favourOf(ctx, polity, a) - favourOf(ctx, polity, b) || a - b);
     if (worstFirst.length === 0) return;
     for (const other of worstFirst) {
