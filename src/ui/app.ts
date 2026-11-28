@@ -80,6 +80,8 @@ import type { BuildOption } from './rules.ts';
 import type { Region } from './names.ts';
 import { MAX_SAVE_BYTES, exportSave, importSave } from './saves.ts';
 import { SCALE_SETTINGS, uiScale } from './scale.ts';
+import { settlerSites } from './settle.ts';
+import type { SettlerSite } from './settle.ts';
 import type { ScaleSetting } from './scale.ts';
 import { ANIMATION_SPEEDS, QUALITY_OPTIONS, VOLUME_STEP, browserStorage, createSettingsStore } from './settings.ts';
 import type { Settings } from './settings.ts';
@@ -240,6 +242,12 @@ export interface UiSnapshot {
   readonly touchTarget: number | null;
   /** Orders given by a confirming second tap since the page was loaded. */
   readonly touchOrders: number;
+  /**
+   * The free city sites marked on the map and on the minimap for the
+   * selected settler, with the turns it needs to each. Null unless a
+   * settler of the player is selected.
+   */
+  readonly settleSites: readonly { readonly hex: number; readonly turns: number }[] | null;
 }
 
 export interface App {
@@ -257,6 +265,8 @@ export interface App {
 
 const VERMILION = 0xc8402d;
 const PAPER = 0xf2eee4;
+/** The map's own gold, as on a unique unit's piece: it marks the sites a settler can settle. */
+const GOLD = 0xf3cb52;
 /** Pointer travel, in pixels, below which a press is a click and not a drag. */
 const CLICK_SLOP = 6;
 /** Milliseconds between two turns in observer mode, by speed. */
@@ -370,6 +380,8 @@ export function createApp(options: AppOptions): App {
   let aidsShown: UiSnapshot['aids'] = null;
   let reach: number[] = [];
   let reachKey = '';
+  /** The free city sites in reach of the selected settler; null unless a settler of the player is selected. */
+  let sites: SettlerSite[] | null = null;
   let touchTarget: number | null = null;
   let touchOrders = 0;
   /** The details card on screen. */
@@ -650,6 +662,8 @@ export function createApp(options: AppOptions): App {
     } else if (unit !== undefined && screen === 'game') {
       const order = host.orders.get(unit.id);
       if (order !== undefined) list.push({ hex: order.target, color: VERMILION, opacity: 0.3 });
+      // where a selected settler can found a city
+      for (const site of sites ?? []) list.push({ hex: site.hex, color: GOLD, opacity: 0.6 });
       list.push({ hex: unit.hex, color: VERMILION, opacity: 0.65 });
     }
     board.renderer.setHighlights(list);
@@ -804,6 +818,10 @@ export function createApp(options: AppOptions): App {
     if (key !== reachKey) {
       reachKey = key;
       reach = unit === undefined || host.busy ? [] : reachableHexes(knownState(state()), unit.id);
+      sites =
+        unit === undefined || host.busy || unit.owner !== player() || unit.type !== SETTLER
+          ? null
+          : settlerSites(knownState(state()), unit.id);
     }
     drawHighlights();
   };
@@ -2102,7 +2120,7 @@ export function createApp(options: AppOptions): App {
       drawAction();
       drawOverlay();
       drawLenses();
-      minimap?.draw(state(), lens, player(), sightOf(state())?.fog ?? null);
+      minimap?.draw(state(), lens, player(), sightOf(state())?.fog ?? null, screen === 'game' ? (sites ?? []).map((site) => site.hex) : []);
     }
     // a layer holds the focus: what lies behind it can be neither reached nor pressed
     const layer = focusLayer();
@@ -2619,6 +2637,7 @@ export function createApp(options: AppOptions): App {
               },
         touchTarget,
         touchOrders,
+        settleSites: screen === 'game' ? sites : null,
       };
     },
     startGame,

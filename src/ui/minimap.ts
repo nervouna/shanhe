@@ -14,8 +14,9 @@ export interface Minimap {
    * Repaints the map through `lens`, as `viewer` (the player's polity, or -1) sees it.
    *
    * @param fog per hex a `FogState` value, or null without fog: hexes out of sight are dimmed, unseen ones more.
+   * @param sites hexes to mark over the lens: the city sites a selected settler can settle.
    */
-  draw(state: GameState, lens: Lens, viewer: number, fog?: Uint8Array | null): void;
+  draw(state: GameState, lens: Lens, viewer: number, fog?: Uint8Array | null, sites?: readonly number[]): void;
   /** Moves the camera mark to a point of the ground plane. */
   setCamera(x: number, z: number): void;
 }
@@ -25,6 +26,10 @@ const MAX_HEIGHT = 190;
 const SQRT3 = Math.sqrt(3);
 /** Under the resources lens a resource is drawn at least this large, in pixels, so that it shows on a big map. */
 const RESOURCE_MARK = 3;
+/** A city site a settler can settle is marked with a square this large, in pixels: gold with a dark rim. */
+const SITE_MARK = 5;
+const SITE_COLOR = '#f3cb52';
+const SITE_RIM = 'rgba(14, 16, 18, 0.9)';
 /** What is laid over a hex the player does not see: a light veil where they have been, a darker one where they have not. */
 const FOG_VEIL: Readonly<Record<number, string | null>> = {
   [FogState.Unseen]: 'rgba(14, 16, 18, 0.5)',
@@ -75,7 +80,7 @@ export function createMinimap(map: MapData, onPick: (hex: number) => void): Mini
 
   return {
     element,
-    draw(state, lens, viewer, fog = null) {
+    draw(state, lens, viewer, fog = null, sites = []) {
       const context = canvas.getContext('2d');
       if (context === null) return;
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -102,6 +107,16 @@ export function createMinimap(map: MapData, onPick: (hex: number) => void): Mini
         context.fillStyle = entry.color;
         context.fillRect(entry.x - RESOURCE_MARK / 2, entry.y - RESOURCE_MARK / 2, RESOURCE_MARK, RESOURCE_MARK);
       }
+      for (const hex of sites) {
+        const row = Math.floor(hex / map.width);
+        const x = ((hex % map.width) + (row % 2 === 1 ? 0.5 : 0) + 0.5) * cellW;
+        const y = (row + 0.5) * cellH;
+        context.fillStyle = SITE_RIM;
+        context.fillRect(x - SITE_MARK / 2 - 1, y - SITE_MARK / 2 - 1, SITE_MARK + 2, SITE_MARK + 2);
+        context.fillStyle = SITE_COLOR;
+        context.fillRect(x - SITE_MARK / 2, y - SITE_MARK / 2, SITE_MARK, SITE_MARK);
+      }
+      element.dataset.sites = String(sites.length);
     },
     setCamera(x, z) {
       const left = ((x - originX) / size + SQRT3 / 2) * scale;

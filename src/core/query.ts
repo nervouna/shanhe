@@ -42,6 +42,7 @@ import type {
   TradeRoute,
   Unit,
 } from './types.ts';
+import { isSettleSite } from './actions.ts';
 
 /**
  * The rules' working context of a state. The rules only read a context they
@@ -614,4 +615,19 @@ export function powerStandings(state: GameState): PowerRow[] {
     fear: balance.fear[polity] ?? 0,
     lead: balance.lead[polity] ?? null,
   }));
+}
+
+// ------------------------------------------------------------------ settling
+
+/**
+ * The hexes on which a settler could found a city now: the empty sites of
+ * unsettled wasteland, ascending. What the `settle` action accepts for a
+ * settler standing there. Borders are common knowledge, so this is too.
+ */
+export function settleSites(state: GameState): number[] {
+  const ctx = ctxOf(state);
+  return state.map.zones
+    .map((zone) => zone.siteHex)
+    .filter((hex) => isSettleSite(ctx, hex))
+    .sort((a, b) => a - b);
 }
