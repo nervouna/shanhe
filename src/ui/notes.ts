@@ -10,13 +10,14 @@
  */
 
 import { NO_POLITY } from '../core/game.ts';
-import type { GameEvent, GameState } from '../core/game.ts';
+import type { GameEvent, GameState, Offer } from '../core/game.ts';
 import { peaceMakesVassal } from '../core/query.ts';
 import { FogState } from '../render/scene.ts';
 import { t } from '../shared/i18n.ts';
 import { NO_ZONE } from '../shared/mapData.ts';
 import { offerText } from './diplomacy.ts';
 import { cityName, eraName, itemName, polityName, resourceName, techName, unitName } from './names.ts';
+import { peaceOffers } from './pending.ts';
 import { inSight } from './sight.ts';
 import type { Sight } from './sight.ts';
 
@@ -35,6 +36,22 @@ export interface NoteDraft {
 }
 
 /**
+ * The notifications that stay when there is room for `limit` of them: the
+ * newest, and every one that stands for a proposal, however many there are.
+ * A proposal waits for an answer, so news never pushes its notification out.
+ */
+export function keepNotes<T extends { readonly offer: NoteOffer | null }>(notes: readonly T[], limit: number): T[] {
+  let plain = Math.max(0, limit - notes.filter((note) => note.offer !== null).length);
+  const kept: T[] = [];
+  for (let index = notes.length - 1; index >= 0; index--) {
+    const note = notes[index] as T;
+    if (note.offer === null && plain-- <= 0) continue;
+    kept.unshift(note);
+  }
+  return kept;
+}
+
+/**
  * True if the interface may point the player at the hex: one they see or
  * have seen, or the site of a capital the map starts a polity with, which
  * everybody knows. The observer may be pointed anywhere.
@@ -44,6 +61,56 @@ export function canPoint(state: GameState, sight: Sight | null, hex: number): bo
   if (sight === null || sight.fog[hex] !== FogState.Unseen) return true;
   const { map } = state;
   return map.polities.some((polity) => polity.capitalZone !== NO_ZONE && map.zones[polity.capitalZone]?.siteHex === hex);
+}
+
+/** The hex of a polity's capital, or of the capital the map starts it with; -1 without one. */
+function capitalOf(state: GameState, polity: number): number {
+  const { map } = state;
+  const zone = state.polities[polity]?.capital ?? -1;
+  return map.zones[zone >= 0 ? zone : (map.polities[polity]?.capitalZone ?? -1)]?.siteHex ?? -1;
+}
+
+/** The notification of a proposal that waits for the player's answer. */
+function proposalDraft(state: GameState, sight: Sight | null, offer: Readonly<Offer>): NoteDraft {
+  const { map } = state;
+  const hex = capitalOf(state, offer.from);
+  return {
+    text: () => t('event.offerMade', { from: polityName(map, offer.from), what: offerText(map, offer) }),
+    hex: canPoint(state, sight, hex) ? hex : -1,
+    offer: { kind: 'offer', id: offer.id },
+    settles: [],
+  };
+}
+
+/** The notification of a peace offer of `from` to the player. */
+function peaceDraft(state: GameState, sight: Sight | null, from: number, now: () => GameState): NoteDraft {
+  const { map, player } = state;
+  const hex = capitalOf(state, from);
+  return {
+    // an offer that would make the other a vassal says so, for as long as that is what accepting it does
+    text: () => t(peaceMakesVassal(now(), player, from) ? 'note.offerVassal' : 'note.offer', { a: polityName(map, from) }),
+    hex: canPoint(state, sight, hex) ? hex : -1,
+    offer: { kind: 'peace', from },
+    settles: [from],
+  };
+}
+
+/**
+ * The notifications of everything that waits for the player's answer in
+ * `state`: every proposal made to them and every peace offer that stands,
+ * in that order. A game that is loaded (continued, imported) has no events
+ * to tell of them, so its notifications are made from this.
+ *
+ * @param sight the player's sight in `state`, or null for the observer, who is offered nothing.
+ * @param now the state at the time a text is drawn; `state` by default.
+ */
+export function pendingDrafts(state: GameState, sight: Sight | null, now: () => GameState = () => state): NoteDraft[] {
+  const me = state.player;
+  if (me === NO_POLITY) return [];
+  return [
+    ...state.offers.filter((offer) => offer.to === me).map((offer) => proposalDraft(state, sight, offer)),
+    ...peaceOffers(state).map((from) => peaceDraft(state, sight, from, now)),
+  ];
 }
 
 /**
@@ -95,15 +162,7 @@ export function noteDrafts(
         }
         break;
       case 'peaceOffered':
-        if (event.to === me) {
-          add(
-            // an offer that would make the other a vassal says so, for as long as that is what accepting it does
-            () => t(peaceMakesVassal(now(), me, event.from) ? 'note.offerVassal' : 'note.offer', { a: polityName(m, event.from) }),
-            capitalHex(event.from),
-            { kind: 'peace', from: event.from },
-            [event.from],
-          );
-        }
+        if (event.to === me) drafts.push(peaceDraft(state, sight, event.from, now));
         break;
       case 'cityCaptured':
         // a city that falls in the player's sight is news to them, whoever fought over it
@@ -194,16 +253,9 @@ export function noteDrafts(
       case 'eraStarted':
         add(() => t('note.era', { era: eraName(event.era) }), -1);
         break;
-      case 'offerMade': {
-        const { offer } = event;
-        if (offer.to !== me) break;
-        add(
-          () => t('event.offerMade', { from: polityName(m, offer.from), what: offerText(m, offer) }),
-          capitalHex(offer.from),
-          { kind: 'offer', id: offer.id },
-        );
+      case 'offerMade':
+        if (event.offer.to === me) drafts.push(proposalDraft(state, sight, event.offer));
         break;
-      }
       case 'vassalReleased':
         if (event.vassal === me || event.overlord === me) {
           add(

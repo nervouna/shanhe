@@ -53,7 +53,7 @@ import {
   unitName,
   yieldName,
 } from './names.ts';
-import { canPoint, noteDrafts } from './notes.ts';
+import { canPoint, keepNotes, noteDrafts, pendingDrafts } from './notes.ts';
 import { FOLLOW_MS, followTarget, goTo } from './observer.ts';
 import type { Away } from './observer.ts';
 import type { NoteOffer } from './notes.ts';
@@ -619,7 +619,7 @@ export function createApp(options: AppOptions): App {
 
   const addNote = (text: () => string, hex: number, offer: NoteOffer | null = null): void => {
     notes.push({ id: nextNoteId++, turn: state().turn, text, hex, offer });
-    if (notes.length > MAX_NOTES) notes = notes.slice(notes.length - MAX_NOTES);
+    notes = keepNotes(notes, MAX_NOTES);
   };
 
   const capitalHex = (polity: number): number => {
@@ -1713,6 +1713,8 @@ export function createApp(options: AppOptions): App {
     // a game that is continued brings back what the player remembered of the board
     memory = sightOf(state()) === null ? null : readMemory(board.source, state());
     look();
+    // what waited for an answer when the game was stored waits again: a loaded game has no events to tell of it
+    for (const draft of pendingDrafts(state(), sightOf(state()), state)) addNote(draft.text, draft.hex, draft.offer);
     if (state().result === null) save();
     // the game opens on the player's capital with its zone in view; an observer sees the whole map
     const home = observing() ? -1 : capitalHex(player());

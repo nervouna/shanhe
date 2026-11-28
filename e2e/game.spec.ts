@@ -9,6 +9,7 @@
  * another window size than the configuration's.
  */
 
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
@@ -832,6 +833,68 @@ test('the main button names a newly built unit before the city that built it', a
   // the city gets its project while the unit still waits: the button is back on the unit
   await page.click('#city-panel [data-build="unit:warrior"]');
   expect(await look()).toMatchObject({ main: 'unit', queue: 1 });
+  expect(errors).toEqual([]);
+});
+
+/** A save as the file holds it, as far as these tests change it. */
+interface SaveData {
+  turn: number;
+  nextId: number;
+  offers: Record<string, unknown>[];
+  relations: Record<string, { a: number; b: number; atWar: boolean; since: number; offerA: number; offerB: number }>;
+  polities: { gold: number }[];
+}
+
+/** Exports the game from the menu, lets `change` edit the save, and imports the result through the menu's file input. */
+async function reimport(page: Page, change: (save: SaveData) => void): Promise<void> {
+  await page.click('#menu-button');
+  const [download] = await Promise.all([page.waitForEvent('download'), page.click('#menu-export')]);
+  const save = JSON.parse(await readFile(await download.path(), 'utf8')) as SaveData;
+  change(save);
+  await page.setInputFiles('#import-file', { name: 'edited.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(save)) });
+  await page.waitForFunction((turn) => window.__shanhe?.state.turn === turn && window.__shanhe.ui.panel === null, save.turn);
+}
+
+/** The fixture's polities by index. */
+const YI = 1;
+const DING = 3;
+
+/** Yi proposes open borders; Ding, at war with the player (Jia) for twelve turns, offered peace last turn. */
+function withOffers(save: SaveData): void {
+  save.turn = Math.max(save.turn, 14);
+  save.relations[`0:${DING}`] = { a: 0, b: DING, atWar: true, since: save.turn - 12, offerA: 0, offerB: save.turn - 1 };
+  save.offers.push({ id: save.nextId, type: 'agreement', from: YI, to: 0, turn: save.turn, agreement: 'openBorders' });
+  save.nextId += 1;
+}
+
+test('a game that is imported or continued has a notification for every proposal and peace offer that waits', async ({ page }) => {
+  const errors = collectErrors(page);
+  await open(page, '/?map=fixture&render=off');
+  await page.evaluate(() => window.__shanhe?.startGame({ nation: 'jia', seed: 1, map: 'fixture' }));
+  const waiting = () =>
+    page.evaluate(() => {
+      const handle = window.__shanhe;
+      if (handle === undefined) throw new Error('window.__shanhe is not set');
+      return {
+        notifications: handle.ui.notifications,
+        kinds: [...document.querySelectorAll<HTMLElement>('#notifications .note')].map((note) => note.dataset.offerKind ?? ''),
+        answers: document.querySelectorAll('#notifications .note [data-offer="accept"]').length,
+        offers: handle.state.offers.length,
+      };
+    });
+  expect(await waiting()).toEqual({ notifications: 0, kinds: [], answers: 0, offers: 0 });
+  await reimport(page, withOffers);
+  const imported = { notifications: 2, kinds: ['offer', 'peace'], answers: 2, offers: 1 };
+  expect(await waiting()).toEqual(imported);
+  // the import was stored: after a reload, Continue brings the game back, and the two notifications with it
+  await open(page, '/?map=fixture&render=off');
+  await page.click('#continue');
+  expect(await page.evaluate(() => window.__shanhe?.ui.screen)).toBe('game');
+  expect(await waiting()).toEqual(imported);
+  // they answer as the ones the events made: accepting the proposal signs the agreement
+  await page.click('#notifications .note[data-offer-kind="offer"] [data-offer="accept"]');
+  expect(await page.evaluate(() => window.__shanhe?.state.agreements.filter((entry) => entry.kind === 'openBorders').length)).toBe(1);
+  expect((await waiting()).kinds).not.toContain('offer');
   expect(errors).toEqual([]);
 });
 

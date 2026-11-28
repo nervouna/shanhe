@@ -5,7 +5,8 @@ import { edit, put, withCity } from '../core/testUtil.ts';
 import { topologyOf } from '../core/topology.ts';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
 import { setLanguage } from '../shared/i18n.ts';
-import { canPoint, noteDrafts } from './notes.ts';
+import { canPoint, keepNotes, noteDrafts, pendingDrafts } from './notes.ts';
+import { exportSave, importSave } from './saves.ts';
 import { sightOf } from './sight.ts';
 
 const map = createFixtureMap();
@@ -142,5 +143,86 @@ describe('canPoint', () => {
     const drafts = noteDrafts(state, [fallen], sightOf(state));
     expect(drafts).toHaveLength(1);
     expect(drafts[0]!.hex).toBe(-1);
+  });
+});
+
+describe('pendingDrafts', () => {
+  const DING = 3;
+  /** Yi proposes open borders, Bing offers to sell horses, and Ding, at war with the player, offered peace last turn. */
+  const waiting = edit(played, (draft) => {
+    draft.turn = 14;
+    draft.offers.push({ id: draft.nextId++, type: 'agreement', from: YI, to: JIA, turn: 14, agreement: 'openBorders' });
+    draft.offers.push({ id: draft.nextId++, type: 'deal', from: BING, to: JIA, turn: 14, seller: BING, resource: 'horses', goldPerTurn: 3 });
+    draft.relations[`${JIA}:${DING}`] = { a: JIA, b: DING, atWar: true, since: 2, offerA: 0, offerB: 13 };
+  });
+  /** The game as a load brings it back: through the save format, onto the map. */
+  const load = (state: GameState): GameState => {
+    const result = importSave(exportSave(state), map);
+    if (!result.ok) throw new Error(`the save was refused: ${result.error}`);
+    return result.state;
+  };
+
+  it('gives a loaded game a notification for every proposal and every peace offer that waits for the player', () => {
+    const loaded = load(waiting);
+    const drafts = pendingDrafts(loaded, sightOf(loaded));
+    const [borders, horses] = loaded.offers;
+    expect(drafts.map((draft) => draft.offer)).toEqual([
+      { kind: 'offer', id: borders!.id },
+      { kind: 'offer', id: horses!.id },
+      { kind: 'peace', from: DING },
+    ]);
+    expect(drafts.map((draft) => draft.text())).toEqual(['乙国向你提议：开放边界', '丙国向你提议：出售马，每回合 3 金', '丁国求和']);
+    // each points at the capital of the nation that asks
+    expect(drafts.map((draft) => draft.hex)).toEqual([YI, BING, DING].map((polity) => site(map.polities[polity]!.capitalZone)));
+    setLanguage('en');
+    expect(drafts.map((draft) => draft.text())).toEqual([
+      'Yi proposes to you: Open borders',
+      'Bing proposes to you: sells you Horses for 3 gold a turn',
+      'Ding offers peace',
+    ]);
+  });
+
+  it('says the same as the notifications the events made when the offers came', () => {
+    const [borders, horses] = waiting.offers;
+    const events: GameEvent[] = [
+      { type: 'offerMade', offer: borders! },
+      { type: 'offerMade', offer: horses! },
+      { type: 'peaceOffered', from: DING, to: JIA },
+    ];
+    const made = noteDrafts(waiting, events, sightOf(waiting));
+    const again = pendingDrafts(waiting, sightOf(waiting));
+    expect(again.map((draft) => [draft.text(), draft.hex, draft.offer, draft.settles])).toEqual(
+      made.map((draft) => [draft.text(), draft.hex, draft.offer, draft.settles]),
+    );
+  });
+
+  it('has nothing for a game without offers, for a peace offer that has lapsed, or for the observer', () => {
+    expect(pendingDrafts(played, sightOf(played))).toEqual([]);
+    const stale = edit(waiting, (draft) => {
+      draft.turn = 16;
+      draft.offers.length = 0;
+    });
+    expect(pendingDrafts(stale, sightOf(stale))).toEqual([]);
+    const observed = edit(watched, (draft) => {
+      draft.offers.push({ id: draft.nextId++, type: 'agreement', from: YI, to: JIA, turn: 1, agreement: 'openBorders' });
+    });
+    expect(pendingDrafts(observed, sightOf(observed))).toEqual([]);
+  });
+});
+
+describe('keepNotes', () => {
+  const news = (id: number) => ({ id, offer: null });
+  const proposal = (id: number) => ({ id, offer: { kind: 'offer', id } as const });
+
+  it('keeps the newest notifications', () => {
+    expect(keepNotes([news(1), news(2), news(3)], 2).map((note) => note.id)).toEqual([2, 3]);
+    expect(keepNotes([news(1), news(2)], 7).map((note) => note.id)).toEqual([1, 2]);
+  });
+
+  it('never drops the notification of a proposal for news that came later', () => {
+    const notes = [proposal(1), news(2), proposal(3), news(4), news(5), news(6)];
+    expect(keepNotes(notes, 4).map((note) => note.id)).toEqual([1, 3, 5, 6]);
+    // more proposals than there is room for: all of them stay, and no news
+    expect(keepNotes(notes, 1).map((note) => note.id)).toEqual([1, 3]);
   });
 });
