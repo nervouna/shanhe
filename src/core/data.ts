@@ -7,6 +7,9 @@
  */
 
 import { Feature, Terrain } from '../shared/mapData.ts';
+import type { Modifier } from './mods.ts';
+import { UNIQUE_BUILDINGS, UNIQUE_IMPROVEMENTS, UNIQUE_UNITS } from './uniques.ts';
+import type { UniqueBuildingSpec, UniqueUnitSpec } from './uniques.ts';
 
 // ---------------------------------------------------------------- yields
 
@@ -221,12 +224,22 @@ export interface ImprovementDef {
   readonly river?: boolean;
   /** With this tech it may stand on hills whatever `hills` says. */
   readonly hillsTech?: TechId;
+  /** Id (`MapPolity.id`) of the only nation that may build it. */
+  readonly nation?: string;
+  /** The generic improvement it stands in for: its nation builds it instead, and it counts as one. */
+  readonly replaces?: string;
+  /** True if the hex must be next to water. */
+  readonly shore?: boolean;
+  /** True if it lays a road on its hex when it is built. */
+  readonly road?: boolean;
+  /** What it does for the units of the hex's owner that stand on it. */
+  readonly modifiers?: readonly Modifier[];
 }
 
 const OPEN = [Feature.None];
 const LAND = [Terrain.Plains, Terrain.Grassland, Terrain.Desert, Terrain.Tundra, Terrain.Snow];
 
-export const IMPROVEMENTS = {
+const GENERIC_IMPROVEMENTS = {
   farm: {
     cost: 30,
     yields: { food: 2, production: 0, gold: 0 },
@@ -281,8 +294,21 @@ export const IMPROVEMENTS = {
     river: true,
   },
 } as const satisfies Record<string, ImprovementDef>;
-export type ImprovementId = keyof typeof IMPROVEMENTS;
+export type GenericImprovementId = keyof typeof GENERIC_IMPROVEMENTS;
+export type ImprovementId = GenericImprovementId | keyof typeof UNIQUE_IMPROVEMENTS;
+/** Every improvement by id: the generic ones, then the unique ones of the nations (`uniques.ts`). */
+export const IMPROVEMENTS: Readonly<Record<ImprovementId, ImprovementDef>> = {
+  ...GENERIC_IMPROVEMENTS,
+  ...UNIQUE_IMPROVEMENTS,
+};
 export const IMPROVEMENT_IDS = Object.keys(IMPROVEMENTS) as ImprovementId[];
+/** The improvements every nation can build. */
+export const GENERIC_IMPROVEMENT_IDS = Object.keys(GENERIC_IMPROVEMENTS) as GenericImprovementId[];
+
+/** The generic kind an improvement is or replaces: what cards and traits that name a kind go by. */
+export function baseImprovement(id: ImprovementId): ImprovementId {
+  return (IMPROVEMENTS[id].replaces as ImprovementId | undefined) ?? id;
+}
 
 // -------------------------------------------------------------- buildings
 
@@ -313,6 +339,14 @@ export interface BuildingDef {
   readonly airStrike: boolean;
   /** Trade route slots the polity's first building of this kind adds. */
   readonly tradeRoutes: number;
+  /** Id (`MapPolity.id`) of the only nation that may build it, or null for everybody. */
+  readonly nation: string | null;
+  /** The generic building it stands in for: its nation builds it instead, and it counts as one. Null for the others. */
+  readonly replaces: string | null;
+  /** True if only the capital may have it. */
+  readonly capitalOnly: boolean;
+  /** What it does beyond the fields above, for its city. */
+  readonly modifiers: readonly Modifier[];
 }
 
 const BUILDING_BASE = {
@@ -325,9 +359,13 @@ const BUILDING_BASE = {
   waterYields: {},
   airStrike: false,
   tradeRoutes: 0,
+  nation: null,
+  replaces: null,
+  capitalOnly: false,
+  modifiers: [],
 } as const;
 
-export const BUILDINGS = {
+const GENERIC_BUILDINGS = {
   granary: { ...BUILDING_BASE, tech: 'farming', cost: 40, upkeep: 1, era: 0, yields: { food: 2 } },
   walls: {
     ...BUILDING_BASE, tech: 'fortification', cost: 50, upkeep: 0, era: 0,
@@ -366,8 +404,52 @@ export const BUILDINGS = {
     yields: { science: 6 }, percent: { science: 25 },
   },
 } as const satisfies Record<string, BuildingDef>;
-export type BuildingId = keyof typeof BUILDINGS;
+export type GenericBuildingId = keyof typeof GENERIC_BUILDINGS;
+export type BuildingId = GenericBuildingId | keyof typeof UNIQUE_BUILDINGS;
+
+/**
+ * A unique building as a full definition: one that replaces a generic
+ * building starts from it (cost, upkeep, tech and effects) and adds its own;
+ * an extra starts from nothing.
+ */
+function uniqueBuilding(spec: UniqueBuildingSpec): BuildingDef {
+  const base: BuildingDef | null =
+    spec.replaces === undefined ? null : (GENERIC_BUILDINGS as Record<string, BuildingDef>)[spec.replaces] ?? null;
+  const tech = spec.tech ?? base?.tech;
+  if (tech === undefined) throw new Error(`unique building of ${spec.nation} has no tech`);
+  return {
+    ...BUILDING_BASE,
+    ...(base ?? { cost: 0, upkeep: 0 }),
+    ...(spec.cost === undefined ? {} : { cost: spec.cost }),
+    ...(spec.upkeep === undefined ? {} : { upkeep: spec.upkeep }),
+    tech,
+    era: TECHS[tech].era,
+    cityHp: (base?.cityHp ?? 0) + (spec.cityHp ?? 0),
+    cityStrengthPercent: (base?.cityStrengthPercent ?? 0) + (spec.cityStrengthPercent ?? 0),
+    tradeRoutes: (base?.tradeRoutes ?? 0) + (spec.tradeRoutes ?? 0),
+    coastal: spec.coastal ?? base?.coastal ?? false,
+    nation: spec.nation,
+    replaces: spec.replaces ?? null,
+    capitalOnly: spec.capitalOnly ?? false,
+    modifiers: spec.modifiers,
+  };
+}
+
+/** Every building by id: the generic ones, then the unique ones of the nations (`uniques.ts`). */
+export const BUILDINGS: Readonly<Record<BuildingId, BuildingDef>> = {
+  ...GENERIC_BUILDINGS,
+  ...(Object.fromEntries(
+    Object.entries(UNIQUE_BUILDINGS as Record<string, UniqueBuildingSpec>).map(([id, spec]) => [id, uniqueBuilding(spec)]),
+  ) as Record<keyof typeof UNIQUE_BUILDINGS, BuildingDef>),
+};
 export const BUILDING_IDS = Object.keys(BUILDINGS) as BuildingId[];
+/** The buildings every nation can build. */
+export const GENERIC_BUILDING_IDS = Object.keys(GENERIC_BUILDINGS) as GenericBuildingId[];
+
+/** The generic kind a building is or replaces: what cards, traits and slots that name a kind go by. */
+export function baseBuilding(id: BuildingId): BuildingId {
+  return (BUILDINGS[id].replaces as BuildingId | null) ?? id;
+}
 
 // ------------------------------------------------------------------ units
 
@@ -400,6 +482,14 @@ export interface UnitDef {
   readonly cityAttackPercent: number;
   /** False for units that only exist by rule (tribes). */
   readonly buildable: boolean;
+  /** Id (`MapPolity.id`) of the only nation that builds it, or null for a generic unit. */
+  readonly nation: string | null;
+  /** The generic unit it replaces for its nation, or null. */
+  readonly replaces: string | null;
+  /** The character engraved on a unique unit's piece, or null. */
+  readonly piece: string | null;
+  /** What sets a unique unit apart: modifiers that apply to units of this type. */
+  readonly abilities: readonly Modifier[];
 }
 
 /** Strength of the era's generic units: 20 in the ancient era, a third more each era. */
@@ -494,6 +584,8 @@ export const TRIBE = 'tribe';
 /** Each settler a polity completes raises the cost of its next one by this percentage of the base cost. */
 export const SETTLER_COST_STEP_PERCENT = 50;
 
+const GENERIC_UNIT = { nation: null, replaces: null, piece: null, abilities: [] } as const;
+
 function buildUnits(): Record<string, UnitDef> {
   const units: Record<string, UnitDef> = {};
   for (const unitClass of COMBAT_CLASSES) {
@@ -515,8 +607,32 @@ function buildUnits(): Record<string, UnitDef> {
         domain: profile.domain,
         cityAttackPercent: profile.cityAttackPercent,
         buildable: true,
+        ...GENERIC_UNIT,
       };
     });
+  }
+  for (const [id, spec] of Object.entries(UNIQUE_UNITS as Record<string, UniqueUnitSpec>)) {
+    const replaces = ROSTER[spec.unitClass][spec.era];
+    if (replaces === undefined) throw new Error(`unique unit ${id} replaces nothing`);
+    const base = units[replaces] as UnitDef;
+    const scale = (value: number): number => Math.round((value * (spec.strengthPercent ?? 100)) / 100);
+    const eraStrength = ERA_STRENGTH[spec.era] as number;
+    units[id] = {
+      ...base,
+      id,
+      resource: spec.resource === undefined ? base.resource : spec.resource,
+      strength: scale(base.strength),
+      rangedStrength:
+        spec.rangedStrength === undefined ? scale(base.rangedStrength) : Math.round(eraStrength * spec.rangedStrength),
+      range: spec.range ?? base.range,
+      moves: spec.moves ?? base.moves,
+      cost: Math.round((base.cost * (spec.costPercent ?? 100)) / 100),
+      cityAttackPercent: spec.cityAttackPercent ?? base.cityAttackPercent,
+      nation: spec.nation,
+      replaces,
+      piece: spec.piece,
+      abilities: spec.abilities,
+    };
   }
   units[SETTLER] = {
     id: SETTLER,
@@ -533,6 +649,7 @@ function buildUnits(): Record<string, UnitDef> {
     domain: 'land',
     cityAttackPercent: 0,
     buildable: true,
+    ...GENERIC_UNIT,
   };
   units[TRIBE] = {
     id: TRIBE,
@@ -549,13 +666,58 @@ function buildUnits(): Record<string, UnitDef> {
     domain: 'land',
     cityAttackPercent: 0,
     buildable: false,
+    ...GENERIC_UNIT,
   };
   return units;
 }
 
-/** Every unit type by id: the 30 generic units, the settler and the tribe. */
+/** Every unit type by id: the 30 generic units, the settler, the tribe and the 50 unique units. */
 export const UNITS: Readonly<Record<string, UnitDef>> = buildUnits();
-export const UNIT_IDS: readonly string[] = Object.keys(UNITS);
+/** The units every nation shares: the generic roster, the settler and the tribe. */
+export const UNIT_IDS: readonly string[] = Object.keys(UNITS).filter((id) => (UNITS[id] as UnitDef).nation === null);
+/** The unique units of the nations (`uniques.ts`). */
+export const UNIQUE_UNIT_IDS: readonly string[] = Object.keys(UNITS).filter(
+  (id) => (UNITS[id] as UnitDef).nation !== null,
+);
+
+const UNIT_REPLACEMENTS = new Map<string, string>(
+  UNIQUE_UNIT_IDS.map((id) => {
+    const def = UNITS[id] as UnitDef;
+    return [`${def.nation ?? ''}:${def.replaces ?? ''}`, id];
+  }),
+);
+const BUILDING_REPLACEMENTS = new Map<string, BuildingId>(
+  BUILDING_IDS.flatMap((id): [string, BuildingId][] => {
+    const def = BUILDINGS[id];
+    return def.nation === null || def.replaces === null ? [] : [[`${def.nation}:${def.replaces}`, id]];
+  }),
+);
+const IMPROVEMENT_REPLACEMENTS = new Map<string, ImprovementId>(
+  IMPROVEMENT_IDS.flatMap((id): [string, ImprovementId][] => {
+    const def = IMPROVEMENTS[id];
+    return def.nation === undefined || def.replaces === undefined ? [] : [[`${def.nation}:${def.replaces}`, id]];
+  }),
+);
+
+/** The unit the nation (`MapPolity.id`) builds where others build `type`: its unique unit, or `type` itself. */
+export function unitFor(nation: string, type: string): string {
+  return UNIT_REPLACEMENTS.get(`${nation}:${type}`) ?? type;
+}
+
+/** The building the nation builds where others build `id`: its unique building, or `id` itself. */
+export function buildingFor(nation: string, id: BuildingId): BuildingId {
+  return BUILDING_REPLACEMENTS.get(`${nation}:${id}`) ?? id;
+}
+
+/** The improvement the nation builds where others build `id`: its unique improvement, or `id` itself. */
+export function improvementFor(nation: string, id: ImprovementId): ImprovementId {
+  return IMPROVEMENT_REPLACEMENTS.get(`${nation}:${id}`) ?? id;
+}
+
+/** The roster of a class as the nation builds it, eras in order: its unique unit stands where it replaces one. */
+export function rosterFor(nation: string, unitClass: keyof typeof ROSTER): string[] {
+  return ROSTER[unitClass].map((type) => unitFor(nation, type));
+}
 
 export function unitDef(type: string): UnitDef {
   const def = UNITS[type];
@@ -571,7 +733,7 @@ export function upgradeTarget(type: string): UnitDef | null {
   const def = unitDef(type);
   if (def.unitClass === 'civilian' || def.unitClass === 'tribe') return null;
   const next = ROSTER[def.unitClass][def.era + 1];
-  return next === undefined ? null : unitDef(next);
+  return next === undefined ? null : unitDef(unitFor(def.nation ?? '', next));
 }
 
 /** Gold per point of production cost difference when upgrading. */
@@ -595,6 +757,8 @@ export const COMBAT = {
   riverAttackPercent: -20,
   /** Strength of a land unit on water. */
   embarkedPercent: -50,
+  /** A melee land unit attacking from the water onto land. */
+  amphibiousPercent: -50,
   /** XP needed for levels 1, 2 and 3. */
   levelXp: [8, 20, 40],
   /** Strength per level. */
@@ -1083,4 +1247,16 @@ export const AI = {
   threatRange: 3,
   /** Candidate destinations it tries per free route slot. */
   routeTries: 8,
+  /** Warships a nation wants per coastal city... */
+  shipsPerCoastalCity: 0.5,
+  /** ...plus one per enemy warship afloat... */
+  shipsPerEnemyShip: 1,
+  /** ...plus this many while its army marches on a city it can only reach by sea. */
+  shipsForSeaTarget: 2,
+  /** Its navy is at most this share of the units it can pay for (but one ship is always allowed beside the garrisons). */
+  navyShare: 0.4,
+  /** A coastal city within this many hexes by water of one of its own is a neighbour by sea. */
+  seaReach: 12,
+  /** A fleet with nothing else to do hunts enemy ships and embarked units this close to its coastal cities. */
+  patrolRange: 8,
 } as const;

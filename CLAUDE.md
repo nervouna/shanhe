@@ -66,8 +66,8 @@ The development machine is shared with the owner's other work. Rules for every a
 | `src/shared/` | Types, hex maths (`hex.ts`), the `MapData` contract (`mapData.ts`), the fixture map (`fixtureMap.ts`), i18n (`i18n.ts`) |
 | `src/core/` | Rules. Pure functions on plain data; runs in Node |
 | `src/render/` | Three.js |
-| `src/ui/` | The game loop host (`host.ts`), the turn worker, and the interface in plain DOM (`app.ts`) |
-| `src/main.ts` | Wires the layers and exposes `window.__shanhe = { backend, state, render, ui, startGame({ nation, observe, seed, map }), endTurn(), runTurns(n) }` for automated checks |
+| `src/ui/` | The game loop host (`host.ts`), the turn worker, and the interface in plain DOM: `app.ts` wires it, `overlays.ts`, `polityPanel.ts` and `cityTrade.ts` draw the overlays and panels, and the modules without DOM (`pending.ts`, `techTree.ts`, `diplomacy.ts`, `routes.ts`, `animation.ts`, `scale.ts`, `lens.ts`, `rules.ts`, `path.ts`) hold what they show |
+| `src/main.ts` | Wires the layers and exposes `window.__shanhe = { backend, state, render, ui, startGame({ nation, observe, seed, map }), endTurn(), runTurns(n) }` for automated checks. `ui` is a snapshot: `screen`, `panel`, `overlay` (`tech`, `policy`, `polities`, `victory` or null), `city`, `polity`, `selectedUnit`, `busy`, `observer`, `mainButton`, `notifications`, `map`, `lens`, `scale`, `animating`, `targeting`, `routePreview`, `enterApplied` |
 | `tools/` | Node scripts (`sim.ts`, `check-assets.ts`) and `tools/pipeline/`, the build-time map pipeline |
 | `public/data/` | Generated map files: `.json` and `.bin` only |
 
@@ -84,8 +84,8 @@ Conventions that keep this working:
 
 - Relative imports carry the `.ts` extension and there are no path aliases, so Node can run `tools/*.ts` directly and the lint patterns cannot be bypassed.
 - Only erasable TypeScript syntax: no `enum`, no namespaces, no parameter properties. Use `as const` objects for codes.
-- The UI never changes a `GameState`: it sends actions to the host in `src/ui/host.ts` and redraws from the state that comes back. The turn worker (`src/ui/turnWorker.ts`) imports `src/core` and `src/shared` only; lint enforces it.
-- The page opens on the real map; `?map=fixture` opens the fixture map, `?demo=render` the render demo, and `?render=off` draws nothing. Under automation (`navigator.webdriver`) the renderer is capped at 4 frames per second, and `runTurns` pauses it while it runs.
+- The UI never changes a `GameState`: it sends actions to the host in `src/ui/host.ts` and redraws from the state that comes back. It reads the rules through the query functions of `src/core/query.ts`, which take a `GameState`; it does not build the rules' working context itself. The turn worker (`src/ui/turnWorker.ts`) imports `src/core` and `src/shared` only; lint enforces it.
+- The page opens on the real map; `?map=fixture` opens the fixture map, `?demo=render` the render demo, and `?render=off` draws nothing. Under automation (`navigator.webdriver`) the renderer is capped at 4 frames per second and the interface animates nothing (it never calls `renderer.play`), and `runTurns` pauses the renderer while it runs.
 - Every user-facing string goes through `t()` in `src/shared/i18n.ts`, with a Chinese and an English entry. Only `src/ui` touches `localStorage`.
 - Tests sit next to the code as `*.test.ts`.
 

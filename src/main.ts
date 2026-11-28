@@ -28,7 +28,7 @@ declare global {
         /** The whole renderer, for moving the camera and changing the scene. */
         readonly renderer: Renderer;
       };
-      /** What the interface shows: screen, open panel, main button. */
+      /** What the interface shows: screen, open panel and overlay, main button, minimap lens, interface size. */
       readonly ui: UiSnapshot;
       /** Starts a new game; without a nation, or with `observe`, in observer mode. */
       startGame(options?: StartOptions): Promise<void>;
@@ -89,6 +89,8 @@ const app = createApp({
   root: uiRoot,
   board,
   renderOff,
+  // a frame takes seconds under automation: nothing is animated there
+  animate: !automated,
   loadBoard: (source) => loadBoard(source, board),
   onBoard: (next) => {
     board = next;

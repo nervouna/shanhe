@@ -160,6 +160,8 @@ export interface PolityState {
   capital: number;
   /** AI memory: the enemy city (zone) its army is concentrating on, or -1. */
   aiTarget: number;
+  /** The turn in which it last lost a city to an enemy, or 0. */
+  cityLostOn: number;
 }
 
 /** State of a pair of polities that have been at war at least once. */
@@ -262,6 +264,10 @@ export interface GameStats {
   alliancesFormed: number;
   vassalsMade: number;
   routesEstablished: number;
+  /** Cities captured on a landmass where the captor held no city: its army came by sea. */
+  seaInvasions: number;
+  /** Fights with a ship on either side. */
+  navalBattles: number;
 }
 
 /** Everything that defines a game in progress. The public API never modifies a state it was given. */

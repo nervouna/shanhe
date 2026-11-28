@@ -128,7 +128,9 @@ describe('eras', () => {
   });
 
   it('give 30 generic units whose strength rises about a third per era from 20', () => {
-    const combat = Object.values(UNITS).filter((unit) => unit.unitClass !== 'civilian' && unit.unitClass !== 'tribe');
+    const combat = Object.values(UNITS).filter(
+      (unit) => unit.nation === null && unit.unitClass !== 'civilian' && unit.unitClass !== 'tribe',
+    );
     expect(combat).toHaveLength(30);
     const infantry = combat.filter((unit) => unit.unitClass === 'infantry').sort((a, b) => a.era - b.era);
     expect(infantry.map((unit) => unit.strength)).toEqual([20, 27, 36, 47, 63, 84]);
