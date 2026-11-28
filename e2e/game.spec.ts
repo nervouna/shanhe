@@ -739,6 +739,51 @@ test('observer mode: the camera goes to where a war begins or a city falls, and 
   expect(errors).toEqual([]);
 });
 
+test('the main button names a newly built unit before the city that built it', async ({ page }) => {
+  const errors = collectErrors(page);
+  await open(page, '/?map=fixture&render=off');
+  await page.evaluate(() => window.__shanhe?.startGame({ nation: 'jia', seed: 3, map: 'fixture' }));
+  const look = () =>
+    page.evaluate(() => {
+      const handle = window.__shanhe;
+      if (handle === undefined) throw new Error('window.__shanhe is not set');
+      const { state, ui } = handle;
+      const mine = state.units.filter((unit) => unit.owner === state.player);
+      const idle = mine.filter((unit) => unit.status === 'ready' && unit.moves > 0).map((unit) => unit.id);
+      const capital = state.cities[state.polities[state.player]?.capital ?? -1];
+      return { main: ui.mainButton.kind, selected: ui.selectedUnit, panel: ui.panel, units: mine.length, idle, queue: capital?.queue.length ?? -1, turn: state.turn };
+    });
+  // the capital is told to build one warrior, and nothing after it
+  expect((await look()).main).toBe('city');
+  await page.keyboard.press('Enter');
+  await page.click('#city-panel [data-build="unit:warrior"]');
+  await page.click('#city-close');
+  const before = await look();
+  expect(before).toMatchObject({ queue: 1, idle: [] });
+  // turns end until the warrior stands there: the turn begins with a unit that has no order and a city without a project
+  let now = before;
+  for (let turn = 0; turn < 40 && now.units === before.units; turn++) {
+    await page.evaluate(() => window.__shanhe?.endTurn());
+    await page.waitForFunction((last) => (window.__shanhe?.state.turn ?? 0) > last && window.__shanhe?.ui.busy === false, now.turn);
+    now = await look();
+  }
+  expect(now.units).toBe(before.units + 1);
+  expect(now.queue).toBe(0);
+  expect(now.idle).toHaveLength(1);
+  // nothing was pressed yet: the button names the unit, and nothing is selected by itself
+  expect(now).toMatchObject({ main: 'unit', selected: null });
+  await expect(page.locator('#main-action')).toHaveAttribute('data-kind', 'unit');
+  // one press goes to the unit; only then is the city next
+  await page.keyboard.press('Enter');
+  expect(await look()).toMatchObject({ selected: now.idle[0], main: 'city', panel: null });
+  await page.keyboard.press('Enter');
+  expect(await look()).toMatchObject({ selected: null, panel: 'city' });
+  // the city gets its project while the unit still waits: the button is back on the unit
+  await page.click('#city-panel [data-build="unit:warrior"]');
+  expect(await look()).toMatchObject({ main: 'unit', queue: 1 });
+  expect(errors).toEqual([]);
+});
+
 /** Points of the page, one for each hex of the list that is on the canvas and under no part of the interface. */
 async function hexPoints(page: Page, hexes: readonly number[]): Promise<Record<number, { x: number; y: number }>> {
   return page.evaluate((wanted) => {
@@ -825,6 +870,13 @@ test('resting the pointer on a hex shows its details, in both languages and with
   expect(english?.text).toContain(`HP ${setup.unit.hp}`);
   await expect(page.locator('#hex-card [data-line="unit"] .piece')).toHaveText('兵');
   await capture(page, 'card-en');
+
+  // a turn ends under the pointer: the card stays on its hex and says what is there now
+  const turnBefore = await page.evaluate(() => window.__shanhe?.state.turn ?? 0);
+  expect(await page.evaluate(() => window.__shanhe?.endTurn())).toBe(true);
+  await page.waitForFunction((turn) => (window.__shanhe?.state.turn ?? 0) > turn && window.__shanhe?.ui.busy === false, turnBefore);
+  expect(await card()).toMatchObject({ hex: setup.unit.hex, units: [setup.unit.id], by: 'hover' });
+  await expect(page.locator('#hex-card')).toBeVisible();
 
   // with the piece selected the order preview still comes, and the card with it
   await page.mouse.click(onUnit.x, onUnit.y);

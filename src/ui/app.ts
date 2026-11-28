@@ -563,6 +563,22 @@ export function createApp(options: AppOptions): App {
    * knows goes on it.
    */
   const showCard = (hex: number, clientX: number, clientY: number, by: 'hover' | 'press'): void => {
+    writeCard(hex, by);
+    // beside the pointer and clear of the order preview; above a finger, which would cover it
+    const width = cardBox.offsetWidth;
+    const height = cardBox.offsetHeight;
+    const maxX = window.innerWidth / scale - width - 8;
+    const maxY = window.innerHeight / scale - height - 8;
+    const x = by === 'press' ? clientX / scale - width / 2 : clientX / scale + 16;
+    const below = (clientY + 16) / scale + (tooltip.hidden ? 0 : tooltip.offsetHeight + 4);
+    const above = clientY / scale - height - 28;
+    const y = by === 'hover' ? below : above < 8 ? clientY / scale + 28 : above;
+    cardBox.style.left = `${Math.max(8, Math.min(maxX, x))}px`;
+    cardBox.style.top = `${Math.max(8, Math.min(maxY, y))}px`;
+  };
+
+  /** Fills the card with what the player knows about `hex` now, and shows it where it is. */
+  const writeCard = (hex: number, by: 'hover' | 'press'): void => {
     const card = hexCard(state(), hex, viewOf(state()));
     const lines = cardLines(card, map(), host.orders);
     cardShown = { card, by, text: lines.map((line) => line.parts.join(' · ')).join('\n') };
@@ -588,17 +604,6 @@ export function createApp(options: AppOptions): App {
     cardBox.dataset.knowledge = card.knowledge;
     cardBox.dataset.by = by;
     cardBox.hidden = false;
-    // beside the pointer and clear of the order preview; above a finger, which would cover it
-    const width = cardBox.offsetWidth;
-    const height = cardBox.offsetHeight;
-    const maxX = window.innerWidth / scale - width - 8;
-    const maxY = window.innerHeight / scale - height - 8;
-    const x = by === 'press' ? clientX / scale - width / 2 : clientX / scale + 16;
-    const below = (clientY + 16) / scale + (tooltip.hidden ? 0 : tooltip.offsetHeight + 4);
-    const above = clientY / scale - height - 28;
-    const y = by === 'hover' ? below : above < 8 ? clientY / scale + 28 : above;
-    cardBox.style.left = `${Math.max(8, Math.min(maxX, x))}px`;
-    cardBox.style.top = `${Math.max(8, Math.min(maxY, y))}px`;
   };
 
   /** Sends an action of the player and says why if the rules refuse it. */
@@ -2237,8 +2242,11 @@ export function createApp(options: AppOptions): App {
   const onChange = (change: HostChange): void => {
     const before = lastState;
     lastState = state();
-    // the card is about the state it was made from
-    if (change.kind !== 'attention' && change.kind !== 'busy') hideCard();
+    // the card follows the state: it stays on its hex and says what is there now. A pointer that is
+    // coming to rest is left to it, so that the card also comes up while an observer's game runs
+    if (change.kind === 'started') hideCard();
+    else if (cardShown !== null && screen === 'game') writeCard(cardShown.card.hex, cardShown.by);
+    else if (cardShown !== null) hideCard();
     switch (change.kind) {
       case 'started':
         playToken++;
@@ -2426,6 +2434,9 @@ export function createApp(options: AppOptions): App {
 
   async function startGame(start: StartOptions = {}): Promise<void> {
     const wanted: MapSource | undefined = start.map === undefined ? undefined : start.map === 'fixture' ? 'fixture' : 'file';
+    // the camera of the game that ends is not brought back: its renderer may be gone by then
+    endWatch(false);
+    hideCard();
     if (wanted !== undefined && wanted !== board.source) {
       if (observerTimer !== null) window.clearTimeout(observerTimer);
       observerTimer = null;

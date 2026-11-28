@@ -587,7 +587,7 @@ const zh = {
   'yield.gain': '{value}{name}',
   'queue.remove': '移出队列',
   'trade.cancel': '取消商路',
-  'note.dismiss': '不再提示',
+  'note.dismiss': '关闭',
   'region.short.north': '北方',
   'region.short.central': '西南华中',
   'region.short.east': '东部',

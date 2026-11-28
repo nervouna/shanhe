@@ -63,7 +63,7 @@ function sheet(id: string, title: string, view: View, extra: (Node | null)[], bo
  * a 1280 × 720 window.
  */
 const NODES = {
-  zh: { width: 150, height: 66, gapX: 44, gapY: 10, top: 26 },
+  zh: { width: 150, height: 70, gapX: 44, gapY: 8, top: 26 },
   en: { width: 182, height: 83, gapX: 28, gapY: 4, top: 26 },
 } as const;
 
