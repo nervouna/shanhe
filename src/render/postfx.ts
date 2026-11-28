@@ -8,7 +8,7 @@
  * finished picture, so that no effect blurs or darkens them.
  */
 
-import { abs, float, max, mix, pass, renderOutput, saturate, smoothstep, uniform, vec3, vec4 } from 'three/tsl';
+import { abs, convertToTexture, float, max, mix, pass, renderOutput, saturate, smoothstep, uniform, vec3, vec4 } from 'three/tsl';
 import { ACESFilmicToneMapping, NoToneMapping, RenderPipeline, SRGBColorSpace } from 'three/webgpu';
 import type { Camera, Node, Scene, WebGPURenderer } from 'three/webgpu';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
@@ -102,7 +102,10 @@ export function createPostFx(renderer: WebGPURenderer, scene: Scene, labelScene:
       SRGBColorSpace,
     );
     if (state.antialiasing) {
-      const smoothed = fxaa(output);
+      // the anti-aliasing reads the picture as a texture: the target it is drawn into is ours to free
+      const flat = convertToTexture(output);
+      passes.push(flat);
+      const smoothed = fxaa(flat);
       passes.push(smoothed);
       output = smoothed;
     }
