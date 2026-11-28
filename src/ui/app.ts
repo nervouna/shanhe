@@ -9,7 +9,7 @@ import { BUILDINGS, DEFAULT_DIFFICULTY, DIFFICULTY_LEVELS, FOCUSES, IMPROVEMENTS
 import type { DifficultyLevel, Yields } from '../core/data.ts';
 import { NO_POLITY, currentEra, hexOwner, nextPolicyCost } from '../core/game.ts';
 import type { Action, GameEvent, GameState, Unit } from '../core/game.ts';
-import { buyCostOf, hexDistance } from '../core/query.ts';
+import { buyCostOf, hexDistance, offerObstacle } from '../core/query.ts';
 import type { HexHighlight, Renderer, SelectionAids } from '../render/scene.ts';
 import { indexToOffset } from '../shared/hex.ts';
 import { getLanguage, setLanguage, t } from '../shared/i18n.ts';
@@ -21,8 +21,11 @@ import { pieceOf, remember, sceneOf, wholeMapView } from './board.ts';
 import type { BoardMemory, BoardView } from './board.ts';
 import { createTradeSection } from './cityTrade.ts';
 import { levelEffect, levelName } from './difficulty.ts';
+import { cardLines, hexCard } from './hexCard.ts';
+import type { HexCard, Knowledge } from './hexCard.ts';
 import { standingWith, vassalRoomText } from './diplomacy.ts';
 import { button, el, fill, fillWhen, iconButton, iconOnly, stat } from './dom.ts';
+import { focusMove, trapIndex } from './focus.ts';
 import { createHost } from './host.ts';
 import type { Host, HostChange, RunReport } from './host.ts';
 import { icon } from './icons.ts';
@@ -51,6 +54,8 @@ import {
   yieldName,
 } from './names.ts';
 import { canPoint, noteDrafts } from './notes.ts';
+import { FOLLOW_MS, followTarget, goTo } from './observer.ts';
+import type { Away } from './observer.ts';
 import type { NoteOffer } from './notes.ts';
 import { policyOverlay, politiesOverlay, standingName, techOverlay, victoryOverlay } from './overlays.ts';
 import type { OverlayKind, PolicyOverlayState, PolitiesOverlayState } from './overlays.ts';
@@ -75,13 +80,18 @@ import type { BuildOption } from './rules.ts';
 import type { Region } from './names.ts';
 import { MAX_SAVE_BYTES, exportSave, importSave } from './saves.ts';
 import { SCALE_SETTINGS, uiScale } from './scale.ts';
+import { settlerSites } from './settle.ts';
+import type { SettlerSite } from './settle.ts';
 import type { ScaleSetting } from './scale.ts';
 import { ANIMATION_SPEEDS, QUALITY_OPTIONS, VOLUME_STEP, browserStorage, createSettingsStore } from './settings.ts';
 import type { Settings } from './settings.ts';
 import { browserAudio, createSoundEngine, cuesFor, gameSound } from './sound.ts';
 import { inSight, knownState, sightOf, strikeTargets } from './sight.ts';
 import { clearAutosave, readAutosave, readMemory, writeAutosave, writeMemory } from './storage.ts';
+import { counted, gainText, majorRows, turnsText } from './text.ts';
 import type { MapSource } from './storage.ts';
+import { LONG_PRESS_MS, isTap, tapTarget } from './touchOrder.ts';
+import type { Press } from './touchOrder.ts';
 import { createWorkerRunner } from './turnRunner.ts';
 import { cssColor, signed } from './view.ts';
 import type { View } from './view.ts';
@@ -147,8 +157,17 @@ export interface UiSnapshot {
   readonly selectedUnit: number | null;
   /** True while turns are being played. */
   readonly busy: boolean;
-  /** Observer mode's controls, or null in a player's game. */
-  readonly observer: { readonly paused: boolean; readonly speed: number } | null;
+  /**
+   * Observer mode's controls, or null in a player's game. `watching` is the
+   * hex its camera went to for an event and has not come back from, or null;
+   * `returns` counts the times it came back to the view it had left.
+   */
+  readonly observer: {
+    readonly paused: boolean;
+    readonly speed: number;
+    readonly watching: number | null;
+    readonly returns: number;
+  } | null;
   /** `kind` is a stable code; `label` is the text on the button in the current language. */
   readonly mainButton: { readonly kind: MainButtonKind; readonly label: string };
   readonly notifications: number;
@@ -205,6 +224,30 @@ export interface UiSnapshot {
    * units of other polities are on it.
    */
   readonly fog: { readonly on: boolean; readonly hiddenUnits: number; readonly foreignUnits: number };
+  /**
+   * The details card on screen: the hex it is about, how well the player
+   * knows the hex, the ids of the units and the zone of the city it names,
+   * what brought it up (the pointer at rest, or a long press) and its text.
+   * Null while no card is shown.
+   */
+  readonly card: {
+    readonly hex: number;
+    readonly knowledge: Knowledge;
+    readonly units: readonly number[];
+    readonly city: number | null;
+    readonly by: 'hover' | 'press';
+    readonly text: string;
+  } | null;
+  /** The hex a first tap left pending as the target of an order (touch), or null. */
+  readonly touchTarget: number | null;
+  /** Orders given by a confirming second tap since the page was loaded. */
+  readonly touchOrders: number;
+  /**
+   * The free city sites marked on the map and on the minimap for the
+   * selected settler, with the turns it needs to each. Null unless a
+   * settler of the player is selected.
+   */
+  readonly settleSites: readonly { readonly hex: number; readonly turns: number }[] | null;
 }
 
 export interface App {
@@ -222,6 +265,8 @@ export interface App {
 
 const VERMILION = 0xc8402d;
 const PAPER = 0xf2eee4;
+/** The map's own gold, as on a unique unit's piece: it marks the sites a settler can settle. */
+const GOLD = 0xf3cb52;
 /** Pointer travel, in pixels, below which a press is a click and not a drag. */
 const CLICK_SLOP = 6;
 /** Milliseconds between two turns in observer mode, by speed. */
@@ -251,6 +296,8 @@ interface Placing {
   readonly hexes: readonly number[];
 }
 
+/** Milliseconds the pointer must rest on a hex before its details are shown. */
+const REST_MS = 350;
 /** How much faster animations run while Space is held. */
 const HURRY = 4;
 /** The view is sampled at this many points a side to find the hexes in it. */
@@ -322,6 +369,9 @@ export function createApp(options: AppOptions): App {
   let paused = false;
   let speed: (typeof SPEEDS)[number] = 1;
   let observerTimer: number | null = null;
+  /** Observer mode's camera, away at an event, with the timer that brings it back. */
+  let away: (Away<ReturnType<Renderer['getCamera']>> & { readonly timer: number }) | null = null;
+  let cameraReturns = 0;
   /** Turns are being run by a caller of {@link App.runTurns}: observer mode's own clock stands still. */
   let automated = false;
   let hoverHex: number | null = null;
@@ -330,7 +380,17 @@ export function createApp(options: AppOptions): App {
   let aidsShown: UiSnapshot['aids'] = null;
   let reach: number[] = [];
   let reachKey = '';
+  /** The free city sites in reach of the selected settler; null unless a settler of the player is selected. */
+  let sites: SettlerSite[] | null = null;
   let touchTarget: number | null = null;
+  let touchOrders = 0;
+  /** The details card on screen. */
+  let cardShown: { readonly card: HexCard; readonly by: 'hover' | 'press'; readonly text: string } | null = null;
+  let restTimer: number | null = null;
+  /** The layer that held the focus at the last redraw: an overlay's kind, `end` for the end screen, or null. */
+  let heldLayer: string | null = null;
+  /** The control that had the focus when that layer opened: it gets the focus back when the layer closes. */
+  let opener: string | null = null;
   let lastBurstRefresh = 0;
   let toastTimer: number | null = null;
 
@@ -382,13 +442,15 @@ export function createApp(options: AppOptions): App {
   );
   const toast = el('div', { id: 'toast', class: 'panel' });
   const tooltip = el('div', { id: 'tooltip', class: 'panel' });
+  const cardBox = el('div', { id: 'hex-card', class: 'panel' });
   const fileInput = el('input', { id: 'import-file' });
   fileInput.type = 'file';
   fileInput.accept = '.json,application/json';
   fileInput.hidden = true;
-  fill(root, game, startScreen, endScreen, toast, tooltip, fileInput);
+  fill(root, game, startScreen, endScreen, toast, tooltip, cardBox, fileInput);
   toast.hidden = true;
   tooltip.hidden = true;
+  cardBox.hidden = true;
   overlayBox.hidden = true;
 
   // ------------------------------------------------------------- helpers
@@ -410,8 +472,25 @@ export function createApp(options: AppOptions): App {
     }, 2600);
   };
 
+  /**
+   * Ends the stay of observer mode's camera at an event.
+   *
+   * @param back true to go back to the view it left; false when the observer has taken the camera themselves.
+   */
+  const endWatch = (back: boolean): void => {
+    if (away === null) return;
+    window.clearTimeout(away.timer);
+    const { home } = away;
+    away = null;
+    if (!back) return;
+    cameraReturns++;
+    board.renderer.setCamera(home);
+  };
+
   const flyTo = (hex: number): void => {
     if (hex < 0) return;
+    // where the camera goes now is the viewer's choice: it is not taken back from there
+    endWatch(false);
     board.renderer.focusHex(hex);
   };
 
@@ -434,6 +513,8 @@ export function createApp(options: AppOptions): App {
     scale = uiScale(settings.current.scale, window.innerWidth, window.innerHeight);
     root.style.setProperty('zoom', String(scale));
     root.dataset.scale = String(scale);
+    // the styles size touch targets in pixels of the screen: they divide by the scale
+    document.documentElement.style.setProperty('--ui-scale', String(scale));
   };
 
   /** Puts the settings in force: on the renderer of the current board, on the sound and on the interface. */
@@ -468,6 +549,63 @@ export function createApp(options: AppOptions): App {
     tooltip.style.top = `${(clientY + 16) / scale}px`;
   };
 
+  const hideCard = (): void => {
+    if (restTimer !== null) window.clearTimeout(restTimer);
+    restTimer = null;
+    if (cardShown === null) return;
+    cardShown = null;
+    cardBox.hidden = true;
+  };
+
+  /**
+   * Shows the details of a hex next to a point of the page: under the
+   * pointer at rest, above the finger of a long press. Only what the player
+   * knows goes on it.
+   */
+  const showCard = (hex: number, clientX: number, clientY: number, by: 'hover' | 'press'): void => {
+    writeCard(hex, by);
+    // beside the pointer and clear of the order preview; above a finger, which would cover it
+    const width = cardBox.offsetWidth;
+    const height = cardBox.offsetHeight;
+    const maxX = window.innerWidth / scale - width - 8;
+    const maxY = window.innerHeight / scale - height - 8;
+    const x = by === 'press' ? clientX / scale - width / 2 : clientX / scale + 16;
+    const below = (clientY + 16) / scale + (tooltip.hidden ? 0 : tooltip.offsetHeight + 4);
+    const above = clientY / scale - height - 28;
+    const y = by === 'hover' ? below : above < 8 ? clientY / scale + 28 : above;
+    cardBox.style.left = `${Math.max(8, Math.min(maxX, x))}px`;
+    cardBox.style.top = `${Math.max(8, Math.min(maxY, y))}px`;
+  };
+
+  /** Fills the card with what the player knows about `hex` now, and shows it where it is. */
+  const writeCard = (hex: number, by: 'hover' | 'press'): void => {
+    const card = hexCard(state(), hex, viewOf(state()));
+    const lines = cardLines(card, map(), host.orders);
+    cardShown = { card, by, text: lines.map((line) => line.parts.join(' · ')).join('\n') };
+    fill(
+      cardBox,
+      ...lines.map((line) => {
+        const row = el('div', { class: `card-line card-${line.kind}`, data: { line: line.kind } });
+        if (line.unit !== undefined) {
+          const look = pieceOf(line.unit.type);
+          row.append(
+            el('span', { class: `piece mini${look.unique ? ' unique' : ''}`, text: look.character, data: { era: look.era } }),
+          );
+        }
+        line.parts.forEach((part, index) => {
+          const named = index === 0 && (line.kind === 'unit' || line.kind === 'city');
+          row.append(el('span', { class: named ? 'title' : line.kind === 'owner' || index > 0 ? 'card-aside' : '', text: part }));
+        });
+        if (line.polity !== undefined) row.style.setProperty('--nation', cssColor(map().polities[line.polity]?.color ?? 0x888888));
+        return row;
+      }),
+    );
+    cardBox.dataset.hex = String(hex);
+    cardBox.dataset.knowledge = card.knowledge;
+    cardBox.dataset.by = by;
+    cardBox.hidden = false;
+  };
+
   /** Sends an action of the player and says why if the rules refuse it. */
   const act = (action: Action): boolean => {
     const result = host.act(action);
@@ -500,18 +638,22 @@ export function createApp(options: AppOptions): App {
 
   /**
    * Observer mode's camera follows the action: it goes to where a city fell,
-   * or else where a war began. Returns the hex it went to, or -1.
+   * or else where a war began, close enough to show the city and its land,
+   * stays a moment and goes back to the view it left. Returns the hex it
+   * went to, or -1.
    */
   const followEvents = (events: readonly GameEvent[]): number => {
-    let hex = -1;
-    for (const event of events) {
-      if (event.type === 'cityCaptured') {
-        hex = siteOf(event.city);
-        break;
-      }
-      if (event.type === 'warDeclared' && hex < 0) hex = capitalHex(event.on);
-    }
-    flyTo(hex);
+    const hex = followTarget(events, siteOf, capitalHex);
+    if (hex < 0) return -1;
+    if (away !== null) window.clearTimeout(away.timer);
+    const next = goTo(away, hex, board.renderer.getCamera());
+    board.renderer.focusHex(hex, { frame: 'zone' });
+    away = {
+      ...next,
+      timer: window.setTimeout(() => {
+        endWatch(true);
+      }, FOLLOW_MS),
+    };
     return hex;
   };
 
@@ -527,6 +669,8 @@ export function createApp(options: AppOptions): App {
     } else if (unit !== undefined && screen === 'game') {
       const order = host.orders.get(unit.id);
       if (order !== undefined) list.push({ hex: order.target, color: VERMILION, opacity: 0.3 });
+      // where a selected settler can found a city
+      for (const site of sites ?? []) list.push({ hex: site.hex, color: GOLD, opacity: 0.6 });
       list.push({ hex: unit.hex, color: VERMILION, opacity: 0.65 });
     }
     board.renderer.setHighlights(list);
@@ -681,6 +825,10 @@ export function createApp(options: AppOptions): App {
     if (key !== reachKey) {
       reachKey = key;
       reach = unit === undefined || host.busy ? [] : reachableHexes(knownState(state()), unit.id);
+      sites =
+        unit === undefined || host.busy || unit.owner !== player() || unit.type !== SETTLER
+          ? null
+          : settlerSites(knownState(state()), unit.id);
     }
     drawHighlights();
   };
@@ -751,17 +899,17 @@ export function createApp(options: AppOptions): App {
           text = exact.capture
             ? t('preview.capture')
             : t('preview.attack', { theirs: exact.toDefender, ours: exact.toAttacker });
-          if (path.total > 1) text += ` · ${t('count.turns', { turns: path.total })}`;
+          if (path.total > 1) text += ` · ${turnsText(path.total)}`;
         } else if (path !== null) {
           // a city out of sight: the way up to it, and nothing about a fight nobody can foresee
           hoverPlan = { path, attack: null };
-          text = path.total > 0 ? t('count.turns', { turns: path.total }) : rejectText('unseen');
+          text = path.total > 0 ? turnsText(path.total) : rejectText('unseen');
         }
       } else {
         const path = findPath(known, unit.id, hex);
         if (path !== null && path.total > 0) {
           hoverPlan = { path, attack: null };
-          text = t('count.turns', { turns: path.total });
+          text = turnsText(path.total);
         }
       }
       if (text !== '') {
@@ -802,15 +950,19 @@ export function createApp(options: AppOptions): App {
 
     if (touch && selection !== null && !ownUnit && !ownCity) {
       // touch has no right button: the first tap previews, the second one on the same hex orders
-      if (touchTarget === hex) orderTo(hex);
-      else {
+      const tap = tapTarget(touchTarget, hex, () => {
         preview(hex, clientX, clientY);
-        touchTarget = tooltip.hidden ? null : hex;
-        if (touchTarget === null) {
-          select(null);
-          refresh();
-        }
+        return !tooltip.hidden;
+      });
+      if (tap.effect === 'confirm') {
+        touchOrders++;
+        orderTo(hex);
+      } else if (tap.effect === 'deselect') {
+        select(null);
+        refresh();
       }
+      // `orderTo` and `select` have cleared the target; a preview or a dropped target keeps the piece selected
+      else touchTarget = tap.pending;
       return;
     }
 
@@ -909,7 +1061,7 @@ export function createApp(options: AppOptions): App {
     if (research === null) return '—';
     return research.turns === null
       ? techName(research.tech)
-      : t('hud.researching', { tech: techName(research.tech), turns: research.turns });
+      : counted('hud.researching', research.turns, { tech: techName(research.tech), turns: research.turns });
   };
 
   /** Culture stored towards the next policy card, over what the card costs. */
@@ -936,6 +1088,8 @@ export function createApp(options: AppOptions): App {
         el('span', { class: 'stat-label', text: label }),
         el('span', { class: 'slot-value', text: value }),
       );
+    // research and policies are the player's: an observer has no use for the two buttons
+    slots.hidden = observing();
     const research = researchText();
     const policy = policyText();
     fillWhen(slots, [getLanguage(), research, policy, overlay, observing()].join('|'), () => [
@@ -948,12 +1102,14 @@ export function createApp(options: AppOptions): App {
   const drawMajors = (): void => {
     const s = state();
     const me = player();
-    const zh = getLanguage() === 'zh';
+    const rows = majorRows(s.majors.length);
+    majorsBox.dataset.rows = String(rows);
+    root.style.setProperty('--majors-rows', String(rows));
     const standings = s.majors.map((polity) => {
       const alive = s.polities[polity]?.alive === true;
       return { polity, alive, standing: me === NO_POLITY || !alive ? null : standingWith(s, me, polity) };
     });
-    const signature = [zh, me, polityPanel, ...standings.map((item) => `${item.polity}:${item.alive}:${item.standing}`)].join('|');
+    const signature = [getLanguage(), me, polityPanel, ...standings.map((item) => `${item.polity}:${item.alive}:${item.standing}`)].join('|');
     fillWhen(majorsBox, signature, () =>
       standings.map(({ polity, alive, standing }) => {
         const entry = map().polities[polity];
@@ -961,7 +1117,7 @@ export function createApp(options: AppOptions): App {
         const node = el('button', {
           class: `major${alive ? '' : ' gone'}${polityPanel === polity ? ' active' : ''}`,
           title: standing === null || standing === 'self' ? name : `${name} · ${standingName(standing)}`,
-          text: zh ? name.slice(0, 2) : name.slice(0, 3),
+          text: name,
           data: { polity, standing: standing ?? '' },
           onClick: () => {
             if (polity === me) flyTo(capitalHex(polity));
@@ -994,17 +1150,24 @@ export function createApp(options: AppOptions): App {
             refresh();
           };
           row.dataset.offerKind = offer.kind;
+          // the rules take "accept" even when nothing can come of it: the button says why instead
+          const obstacle = offer.kind === 'offer' ? offerObstacle(state(), offer.id) : null;
           row.append(
             button(t('note.accept'), () => {
               answer(true);
-            }, { class: 'accent', data: { offer: 'accept' }, disabled: host.busy }),
+            }, {
+              class: 'accent',
+              data: { offer: 'accept', refused: obstacle ?? '' },
+              disabled: host.busy || obstacle !== null,
+              ...(obstacle === null ? {} : { title: rejectText(obstacle) }),
+            }),
             button(t('note.decline'), () => {
               answer(false);
             }, { data: { offer: 'decline' }, disabled: host.busy }),
           );
         } else {
           row.append(
-            iconOnly('close', t('menu.close'), () => {
+            iconOnly('close', t('note.dismiss'), () => {
               notes = notes.filter((other) => other.id !== note.id);
               refresh();
             }, { class: 'note-close' }),
@@ -1091,7 +1254,7 @@ export function createApp(options: AppOptions): App {
       { class: active ? 'option active' : 'option', data: { build: key }, onClick, disabled: host.busy },
       el('span', { class: 'option-name', text: label }),
       el('span', { class: 'option-cost', text: t('city.cost', { cost: option.cost }) }),
-      option.turns !== null && el('span', { class: 'option-turns', text: t('count.turns', { turns: option.turns }) }),
+      option.turns !== null && el('span', { class: 'option-turns', text: turnsText(option.turns) }),
     );
     return node;
   };
@@ -1149,7 +1312,7 @@ export function createApp(options: AppOptions): App {
       el('span', { text: t('city.pop', { pop: city.pop }) }),
       el('span', { text: t('city.hp', { hp: Math.round(city.hp), max: view.maxHp }) }),
       el('span', { text: `${t('hud.morale')} ${Math.round(city.morale)}` }),
-      city.unrest > 0 && el('span', { class: 'status', text: t('city.unrest', { turns: city.unrest }) }),
+      city.unrest > 0 && el('span', { class: 'status', text: counted('city.unrest', city.unrest, { turns: city.unrest }) }),
     );
     const yieldsRow = el(
       'div',
@@ -1178,8 +1341,8 @@ export function createApp(options: AppOptions): App {
             class: 'option-cost',
             text: index === 0 ? `${Math.floor(city.progress)}/${entry.cost}` : String(entry.cost),
           }),
-          entry.turns !== null && el('span', { class: 'option-turns', text: t('count.turns', { turns: entry.turns }) }),
-          iconOnly('close', t('menu.close'), () => {
+          entry.turns !== null && el('span', { class: 'option-turns', text: turnsText(entry.turns) }),
+          iconOnly('close', t('queue.remove'), () => {
             act({ type: 'unqueueBuild', polity: me, city: zone, index });
             refresh();
           }, { class: 'close', data: { unqueue: index }, disabled: host.busy }),
@@ -1254,7 +1417,7 @@ export function createApp(options: AppOptions): App {
         const gains = IMPROVEMENTS[option.improvement].yields;
         const gain = (['food', 'production', 'gold'] as const)
           .filter((name) => gains[name] !== 0)
-          .map((name) => `${signed(gains[name])}${yieldName(name)}`)
+          .map((name) => gainText(name, gains[name]))
           .join(' ');
         const active = placing !== null && placing.city === zone && placing.improvement === option.improvement;
         return optionButton(`${improvementName(option.improvement)} ${gain}`, option, `improvement:${option.improvement}`, () => {
@@ -1483,6 +1646,7 @@ export function createApp(options: AppOptions): App {
   };
 
   const enterGame = (): void => {
+    endWatch(false);
     screen = state().result === null ? 'game' : 'end';
     select(null);
     cityPanel = null;
@@ -1513,6 +1677,7 @@ export function createApp(options: AppOptions): App {
   };
 
   const leaveGame = (): void => {
+    endWatch(false);
     host.reset();
     screen = 'start';
     chosenNation = null;
@@ -1753,10 +1918,15 @@ export function createApp(options: AppOptions): App {
           'div',
           { class: 'chips', id: 'regions' },
           ...(['all', ...regions] as const).map((region) =>
-            button(region === 'all' ? t('start.all') : regionName(region), () => {
+            button(region === 'all' ? t('start.all') : t(`region.short.${region}`), () => {
               startRegion = region;
               refresh();
-            }, { class: region === startRegion ? 'chip active' : 'chip', data: { region }, pressed: region === startRegion }),
+            }, {
+              class: region === startRegion ? 'chip active' : 'chip',
+              data: { region },
+              pressed: region === startRegion,
+              ...(region === 'all' ? {} : { title: regionName(region) }),
+            }),
           ),
         ),
       rated &&
@@ -1927,9 +2097,21 @@ export function createApp(options: AppOptions): App {
     return null;
   };
 
+  /** The layer that holds the focus: a full-screen overlay or the end screen. Null if nothing does. */
+  const focusLayer = (): { readonly id: string; readonly box: HTMLElement } | null =>
+    screen === 'end' ? { id: 'end', box: endScreen } : screen === 'game' && overlay !== null ? { id: overlay, box: overlayBox } : null;
+
+  /** The controls of a layer that Tab stops at, in the order of the page. */
+  const controlsOf = (box: HTMLElement): HTMLElement[] =>
+    [...box.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])')].filter(
+      (node) => node.getClientRects().length > 0,
+    );
+
   function refresh(): void {
     // a redraw rebuilds most controls: a keyboard player keeps the focus on the one they were on
     const focused = keyboardNav ? controlKey(document.activeElement) : null;
+    // what has the focus when a layer opens gets it back when the layer closes
+    if (heldLayer === null && focusLayer() !== null) opener = controlKey(document.activeElement);
     document.documentElement.lang = getLanguage() === 'zh' ? 'zh-CN' : 'en';
     document.title = t('app.title');
     game.hidden = screen === 'start';
@@ -1952,17 +2134,31 @@ export function createApp(options: AppOptions): App {
       drawAction();
       drawOverlay();
       drawLenses();
-      minimap?.draw(state(), lens, player(), sightOf(state())?.fog ?? null);
+      minimap?.draw(state(), lens, player(), sightOf(state())?.fog ?? null, screen === 'game' ? (sites ?? []).map((site) => site.hex) : []);
     }
-    if (focused !== null && !root.contains(document.activeElement)) {
+    // a layer holds the focus: what lies behind it can be neither reached nor pressed
+    const layer = focusLayer();
+    for (const node of game.children) {
+      if (node instanceof HTMLElement && node !== overlayBox) node.inert = layer !== null;
+    }
+    const move = focusMove({ was: heldLayer, now: layer?.id ?? null, keyboard: keyboardNav });
+    heldLayer = layer?.id ?? null;
+    if (move === 'into' && layer !== null) {
+      controlsOf(layer.box)[0]?.focus({ preventScroll: true });
+    } else if (move === 'back') {
+      if (opener !== null) root.querySelector<HTMLElement>(opener)?.focus({ preventScroll: true });
+      opener = null;
+    } else if (focused !== null && !root.contains(document.activeElement)) {
       (root.querySelector<HTMLElement>(focused) ?? firstControl())?.focus({ preventScroll: true });
     }
   }
 
   const lensBar = el('div', { class: 'segmented', id: 'lenses' });
   const drawLenses = (): void => {
+    // relations are the player's: an observer has no diplomacy lens
+    if (observing() && lens === 'diplomacy') lens = 'political';
     fillWhen(lensBar, [getLanguage(), lens, observing()].join('|'), () =>
-      LENSES.map((entry) => {
+      LENSES.filter((entry) => entry !== 'diplomacy' || !observing()).map((entry) => {
         const key: TranslationKey = `lens.${entry}`;
         return button(t(key), () => {
           lens = entry;
@@ -1970,7 +2166,6 @@ export function createApp(options: AppOptions): App {
         }, {
           class: entry === lens ? 'active' : '',
           data: { lens: entry },
-          disabled: entry === 'diplomacy' && observing(),
           pressed: entry === lens,
         });
       }),
@@ -2047,6 +2242,11 @@ export function createApp(options: AppOptions): App {
   const onChange = (change: HostChange): void => {
     const before = lastState;
     lastState = state();
+    // the card follows the state: it stays on its hex and says what is there now. A pointer that is
+    // coming to rest is left to it, so that the card also comes up while an observer's game runs
+    if (change.kind === 'started') hideCard();
+    else if (cardShown !== null && screen === 'game') writeCard(cardShown.card.hex, cardShown.by);
+    else if (cardShown !== null) hideCard();
     switch (change.kind) {
       case 'started':
         playToken++;
@@ -2109,16 +2309,38 @@ export function createApp(options: AppOptions): App {
     const { canvas, renderer } = board;
     const control = new AbortController();
     const { signal } = control;
-    let press: { id: number; x: number; y: number; button: number } | null = null;
+    let press: (Press & { readonly button: number }) | null = null;
+    let pressTimer: number | null = null;
+    const endPress = (): void => {
+      if (pressTimer !== null) window.clearTimeout(pressTimer);
+      pressTimer = null;
+      press = null;
+    };
 
     canvas.addEventListener('pointerdown', (event) => {
-      press = { id: event.pointerId, x: event.clientX, y: event.clientY, button: event.button };
+      endWatch(false);
+      // a second finger makes it a pinch or a twist: no tap, no long press
+      const second = press !== null && press.pointer !== event.pointerId;
+      endPress();
+      if (second) return;
+      const { pointerId, clientX, clientY } = event;
+      press = { pointer: pointerId, x: clientX, y: clientY, button: event.button, long: false };
+      if (event.pointerType === 'mouse' || screen !== 'game') return;
+      // a finger that rests shows the details of the hex under it; its release is then no tap
+      pressTimer = window.setTimeout(() => {
+        pressTimer = null;
+        if (press === null || press.pointer !== pointerId || screen !== 'game') return;
+        const hex = renderer.pickHex(clientX, clientY);
+        if (hex === null) return;
+        press = { ...press, long: true };
+        showCard(hex, clientX, clientY, 'press');
+      }, LONG_PRESS_MS);
     }, { signal });
     canvas.addEventListener('pointerup', (event) => {
       const start = press;
-      press = null;
-      if (start === null || start.id !== event.pointerId) return;
-      if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > CLICK_SLOP) return;
+      const tapped = isTap(start, event.pointerId, event.clientX, event.clientY, CLICK_SLOP);
+      if (start !== null && start.pointer === event.pointerId) endPress();
+      if (start === null || !tapped) return;
       const hex = renderer.pickHex(event.clientX, event.clientY);
       if (hex === null) return;
       if (start.button === 2) {
@@ -2128,22 +2350,51 @@ export function createApp(options: AppOptions): App {
       }
     }, { signal });
     canvas.addEventListener('pointercancel', () => {
-      press = null;
+      endPress();
     }, { signal });
     canvas.addEventListener('pointermove', (event) => {
-      if (event.pointerType === 'touch' || event.buttons !== 0 || selection === null || screen !== 'game') return;
-      const hex = renderer.pickHex(event.clientX, event.clientY);
-      if (hex === hoverHex) {
-        placeTooltip(event.clientX, event.clientY);
+      if (event.pointerType !== 'mouse') {
+        // a finger that travels is dragging the map
+        if (
+          press !== null && press.pointer === event.pointerId && !press.long &&
+          Math.hypot(event.clientX - press.x, event.clientY - press.y) > CLICK_SLOP
+        ) {
+          endPress();
+        }
         return;
       }
-      preview(hex, event.clientX, event.clientY);
+      if (event.buttons !== 0 || screen !== 'game') return;
+      const { clientX, clientY } = event;
+      const hex = selection !== null || cardShown !== null ? renderer.pickHex(clientX, clientY) : null;
+      // the card is about one hex: it leaves when the pointer does, and comes once the pointer rests again
+      if (cardShown === null || cardShown.card.hex !== hex) {
+        hideCard();
+        restTimer = window.setTimeout(() => {
+          restTimer = null;
+          if (screen !== 'game') return;
+          const rested = renderer.pickHex(clientX, clientY);
+          if (rested !== null) showCard(rested, clientX, clientY, 'hover');
+        }, REST_MS);
+      }
+      if (selection === null) return;
+      if (hex === hoverHex) {
+        placeTooltip(clientX, clientY);
+        return;
+      }
+      preview(hex, clientX, clientY);
     }, { signal });
-    canvas.addEventListener('pointerleave', () => {
+    canvas.addEventListener('pointerleave', (event) => {
+      // a finger leaves the canvas whenever it lifts: what its tap left pending stays
+      if (event.pointerType !== 'mouse') return;
+      hideCard();
       if (hoverHex === null) return;
       clearHover();
       drawHighlights();
     }, { signal });
+    canvas.addEventListener('wheel', () => {
+      hideCard();
+      endWatch(false);
+    }, { signal, passive: true });
 
     minimap = createMinimap(board.map, (hex) => {
       flyTo(hex);
@@ -2183,6 +2434,9 @@ export function createApp(options: AppOptions): App {
 
   async function startGame(start: StartOptions = {}): Promise<void> {
     const wanted: MapSource | undefined = start.map === undefined ? undefined : start.map === 'fixture' ? 'fixture' : 'file';
+    // the camera of the game that ends is not brought back: its renderer may be gone by then
+    endWatch(false);
+    hideCard();
     if (wanted !== undefined && wanted !== board.source) {
       if (observerTimer !== null) window.clearTimeout(observerTimer);
       observerTimer = null;
@@ -2232,7 +2486,19 @@ export function createApp(options: AppOptions): App {
     'keydown',
     (event) => {
       if (hidden) return;
-      if (event.key === 'Tab') keyboardNav = true;
+      if (event.key === 'Tab') {
+        keyboardNav = true;
+        // Tab stays inside the layer that holds the focus
+        const layer = focusLayer();
+        if (layer !== null) {
+          const controls = controlsOf(layer.box);
+          const active = document.activeElement;
+          const at = active instanceof HTMLElement ? controls.indexOf(active) : -1;
+          event.preventDefault();
+          controls[trapIndex(controls.length, at, event.shiftKey)]?.focus({ preventScroll: true });
+        }
+      }
+      hideCard();
       sound.unlock();
     },
     { capture: true },
@@ -2242,6 +2508,7 @@ export function createApp(options: AppOptions): App {
     () => {
       if (hidden) return;
       keyboardNav = false;
+      hideCard();
       sound.unlock();
     },
     { capture: true },
@@ -2258,7 +2525,8 @@ export function createApp(options: AppOptions): App {
       if (event.key === 'Enter') {
         // Enter is the main button wherever the mouse left the focus, and only once per press
         event.preventDefault();
-        if (event.repeat) return;
+        // the main button lies behind an open overlay: Enter does not reach it
+        if (event.repeat || overlay !== null) return;
         // while the others move, one press is kept and applied when they are done
         if (host.busy && !observing()) enterQueued = true;
         else mainAction();
@@ -2347,7 +2615,7 @@ export function createApp(options: AppOptions): App {
         polity: polityPanel,
         selectedUnit: selection,
         busy: host.busy,
-        observer: screen === 'game' && observing() ? { paused, speed } : null,
+        observer: screen === 'game' && observing() ? { paused, speed, watching: away?.hex ?? null, returns: cameraReturns } : null,
         mainButton: { kind: current.kind, label: current.label },
         notifications: notes.length,
         map: board.source,
@@ -2376,6 +2644,20 @@ export function createApp(options: AppOptions): App {
         })(),
         aids: screen === 'game' ? aidsShown : null,
         fog: { on: shown.fog, hiddenUnits: shown.hidden, foreignUnits: shown.foreign },
+        card:
+          cardShown === null
+            ? null
+            : {
+                hex: cardShown.card.hex,
+                knowledge: cardShown.card.knowledge,
+                units: cardShown.card.units.map((unit) => unit.id),
+                city: cardShown.card.city?.zone ?? null,
+                by: cardShown.by,
+                text: cardShown.text,
+              },
+        touchTarget,
+        touchOrders,
+        settleSites: screen === 'game' ? sites : null,
       };
     },
     startGame,

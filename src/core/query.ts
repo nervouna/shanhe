@@ -42,6 +42,8 @@ import type {
   TradeRoute,
   Unit,
 } from './types.ts';
+import { isSettleSite } from './actions.ts';
+import { checkAgreement, checkDeal } from './diplomacy.ts';
 
 /**
  * The rules' working context of a state. The rules only read a context they
@@ -614,4 +616,39 @@ export function powerStandings(state: GameState): PowerRow[] {
     fear: balance.fear[polity] ?? 0,
     lead: balance.lead[polity] ?? null,
   }));
+}
+
+// ------------------------------------------------------------------ settling
+
+/**
+ * The hexes on which a settler could found a city now: the empty sites of
+ * unsettled wasteland, ascending. What the `settle` action accepts for a
+ * settler standing there. Borders are common knowledge, so this is too.
+ */
+export function settleSites(state: GameState): number[] {
+  const ctx = ctxOf(state);
+  return state.map.zones
+    .map((zone) => zone.siteHex)
+    .filter((hex) => isSettleSite(ctx, hex))
+    .sort((a, b) => a - b);
+}
+
+// -------------------------------------------------------------------- offers
+
+/**
+ * Why accepting the pending offer would come to nothing, or null if the
+ * agreement or the deal would be made. The rules take the answer either way
+ * and drop the offer; this says beforehand whether "accept" still means
+ * what the offer says: the buyer may no longer afford the price, a war may
+ * have begun, the agreement may already stand. `noSuchOffer` if no such
+ * offer waits.
+ */
+export function offerObstacle(state: GameState, offerId: number): RejectReason | null {
+  const offer = state.offers.find((entry) => entry.id === offerId);
+  if (offer === undefined) return 'noSuchOffer';
+  const ctx = ctxOf(state);
+  if (state.polities[offer.from]?.alive !== true) return 'badTarget';
+  return offer.type === 'agreement'
+    ? checkAgreement(ctx, offer.from, offer.to, offer.agreement)
+    : checkDeal(ctx, offer.from, offer.to, offer.seller, offer.resource, offer.goldPerTurn);
 }

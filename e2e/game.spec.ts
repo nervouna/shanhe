@@ -83,6 +83,11 @@ test('an observer game on the fixture map runs to its end', async ({ page }) => 
   // research and policies are the player's: an observer has neither overlay
   await page.keyboard.press('t');
   expect(await page.evaluate(() => window.__shanhe?.ui.overlay)).toBeNull();
+  // nor does the observer's HUD show a control that does nothing
+  await expect(page.locator('#slots')).toBeHidden();
+  await expect(page.locator('#lenses button')).toHaveCount(2);
+  await expect(page.locator('#lenses [data-lens="diplomacy"]')).toHaveCount(0);
+  expect(await page.evaluate(() => [...document.querySelectorAll('#game button:disabled')].filter((node) => node.getClientRects().length > 0).length)).toBe(0);
   // the observer's clock redraws the HUD every turn, but the buttons of the top bar and the speed
   // control are not rebuilt: they are the same nodes turns later, and an ordinary click lands on them
   await page.evaluate(() => {
@@ -428,6 +433,53 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
   await page.keyboard.press('Escape');
   expect((await ui()).panel).toBeNull();
 
+  // an overlay holds the focus. Opened from the keyboard, the focus goes into it
+  await page.locator('#victory-button').focus();
+  await page.keyboard.press('Shift+Tab');
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe('polities-button');
+  await page.keyboard.press('Enter');
+  expect((await ui()).overlay).toBe('polities');
+  const inside = (): Promise<boolean> => page.evaluate(() => document.activeElement?.closest('#overlay') !== null);
+  expect(await inside()).toBe(true);
+  // Tab goes through every control of the overlay and wraps; it never reaches what lies behind
+  const controls = await page.locator('#overlay button:not(:disabled)').count();
+  expect(controls).toBeGreaterThan(3);
+  const visited = new Set<string>();
+  for (let press = 0; press < controls + 2; press++) {
+    await page.keyboard.press('Tab');
+    expect(await inside()).toBe(true);
+    visited.add(
+      await page.evaluate(() => {
+        const node = document.activeElement;
+        return `${node?.id ?? ''}|${node?.closest('tr')?.getAttribute('data-polity') ?? ''}|${node?.getAttribute('data-sort') ?? ''}`;
+      }),
+    );
+  }
+  expect(visited.size).toBe(controls);
+  await page.keyboard.press('Shift+Tab');
+  expect(await inside()).toBe(true);
+  // the HUD behind it takes neither the focus nor a press
+  const behind = await page.evaluate(() => {
+    const button = document.querySelector<HTMLElement>('#main-action');
+    button?.focus();
+    const focused = document.activeElement === button;
+    button?.click();
+    return { focused, inert: [...document.querySelectorAll<HTMLElement>('#game > *')].filter((node) => node.id !== 'overlay' && !node.inert).length };
+  });
+  expect(behind).toEqual({ focused: false, inert: 0 });
+  const held = await page.evaluate(() => ({ turn: window.__shanhe?.state.turn, ui: window.__shanhe?.ui }));
+  // nor does Enter reach the main button from an overlay
+  await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  });
+  await page.keyboard.press('Enter');
+  expect(await page.evaluate(() => ({ turn: window.__shanhe?.state.turn, ui: window.__shanhe?.ui }))).toEqual(held);
+  // Escape closes it, and the focus is back on what opened it
+  await page.keyboard.press('Escape');
+  expect((await ui()).overlay).toBeNull();
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe('polities-button');
+  expect(await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('#game > *')].filter((node) => node.inert).length)).toBe(0);
+
   // the lenses of the minimap
   await page.click('#lenses [data-lens="diplomacy"]');
   expect((await ui()).lens).toBe('diplomacy');
@@ -662,6 +714,294 @@ test('a player game opens on the capital, framed with its zone', async ({ page }
   // close enough to show one zone, not the whole map
   expect(view.opened.distance).toBeLessThan(view.farthest * 0.8);
   expect(errors).toEqual([]);
+});
+
+test('observer mode: the camera goes to where a war begins or a city falls, and comes back', async ({ page }) => {
+  const errors = collectErrors(page);
+  await open(page, '/?map=fixture&render=off');
+  await page.evaluate(() => window.__shanhe?.startGame({ observe: true, seed: 1, map: 'fixture' }));
+  // paused, so that only this test ends turns
+  await page.click('#main-action');
+  expect(await page.evaluate(() => window.__shanhe?.ui.observer)).toEqual({ paused: true, speed: 1, watching: null, returns: 0 });
+  let watching: number | null = null;
+  for (let turn = 0; turn < 150 && watching === null; turn++) {
+    watching = await page.evaluate(async () => {
+      await window.__shanhe?.endTurn();
+      return window.__shanhe?.ui.observer?.watching ?? null;
+    });
+  }
+  expect(watching, 'the game had no war and no fallen city').not.toBeNull();
+  // it went to a city: the capital of the polity attacked, or the city that fell
+  expect(await page.evaluate((hex) => window.__shanhe?.state.map.zones.some((zone) => zone.siteHex === hex), watching)).toBe(true);
+  // nobody touches the camera: after its stay it goes back to the view it left
+  await page.waitForFunction(() => window.__shanhe?.ui.observer?.returns === 1);
+  expect(await page.evaluate(() => window.__shanhe?.ui.observer?.watching)).toBeNull();
+  expect(errors).toEqual([]);
+});
+
+test('the main button names a newly built unit before the city that built it', async ({ page }) => {
+  const errors = collectErrors(page);
+  await open(page, '/?map=fixture&render=off');
+  await page.evaluate(() => window.__shanhe?.startGame({ nation: 'jia', seed: 3, map: 'fixture' }));
+  const look = () =>
+    page.evaluate(() => {
+      const handle = window.__shanhe;
+      if (handle === undefined) throw new Error('window.__shanhe is not set');
+      const { state, ui } = handle;
+      const mine = state.units.filter((unit) => unit.owner === state.player);
+      const idle = mine.filter((unit) => unit.status === 'ready' && unit.moves > 0).map((unit) => unit.id);
+      const capital = state.cities[state.polities[state.player]?.capital ?? -1];
+      return { main: ui.mainButton.kind, selected: ui.selectedUnit, panel: ui.panel, units: mine.length, idle, queue: capital?.queue.length ?? -1, turn: state.turn };
+    });
+  // the capital is told to build one warrior, and nothing after it
+  expect((await look()).main).toBe('city');
+  await page.keyboard.press('Enter');
+  await page.click('#city-panel [data-build="unit:warrior"]');
+  await page.click('#city-close');
+  const before = await look();
+  expect(before).toMatchObject({ queue: 1, idle: [] });
+  // turns end until the warrior stands there: the turn begins with a unit that has no order and a city without a project
+  let now = before;
+  for (let turn = 0; turn < 40 && now.units === before.units; turn++) {
+    await page.evaluate(() => window.__shanhe?.endTurn());
+    await page.waitForFunction((last) => (window.__shanhe?.state.turn ?? 0) > last && window.__shanhe?.ui.busy === false, now.turn);
+    now = await look();
+  }
+  expect(now.units).toBe(before.units + 1);
+  expect(now.queue).toBe(0);
+  expect(now.idle).toHaveLength(1);
+  // nothing was pressed yet: the button names the unit, and nothing is selected by itself
+  expect(now).toMatchObject({ main: 'unit', selected: null });
+  await expect(page.locator('#main-action')).toHaveAttribute('data-kind', 'unit');
+  // one press goes to the unit; only then is the city next
+  await page.keyboard.press('Enter');
+  expect(await look()).toMatchObject({ selected: now.idle[0], main: 'city', panel: null });
+  await page.keyboard.press('Enter');
+  expect(await look()).toMatchObject({ selected: null, panel: 'city' });
+  // the city gets its project while the unit still waits: the button is back on the unit
+  await page.click('#city-panel [data-build="unit:warrior"]');
+  expect(await look()).toMatchObject({ main: 'unit', queue: 1 });
+  expect(errors).toEqual([]);
+});
+
+/** Points of the page, one for each hex of the list that is on the canvas and under no part of the interface. */
+async function hexPoints(page: Page, hexes: readonly number[]): Promise<Record<number, { x: number; y: number }>> {
+  return page.evaluate((wanted) => {
+    const handle = window.__shanhe;
+    if (handle === undefined) throw new Error('window.__shanhe is not set');
+    const sums = new Map<number, { x: number; y: number; count: number }>();
+    for (let y = 48; y < window.innerHeight - 8; y += 4) {
+      for (let x = 8; x < window.innerWidth - 8; x += 4) {
+        const hex = handle.render.pickHex(x, y);
+        if (hex === null || !wanted.includes(hex) || document.elementFromPoint(x, y)?.id !== 'map') continue;
+        const sum = sums.get(hex) ?? { x: 0, y: 0, count: 0 };
+        sums.set(hex, { x: sum.x + x, y: sum.y + y, count: sum.count + 1 });
+      }
+    }
+    const points: Record<number, { x: number; y: number }> = {};
+    for (const [hex, sum] of sums) {
+      const point = { x: Math.round(sum.x / sum.count), y: Math.round(sum.y / sum.count) };
+      // the middle of the samples must be the hex itself, on the bare canvas
+      if (handle.render.pickHex(point.x, point.y) === hex && document.elementFromPoint(point.x, point.y)?.id === 'map') points[hex] = point;
+    }
+    return points;
+  }, hexes);
+}
+
+test('resting the pointer on a hex shows its details, in both languages and with a piece selected', async ({ page }) => {
+  const errors = collectErrors(page);
+  await open(page, '/?map=fixture&render=off');
+  await page.evaluate(() => window.__shanhe?.startGame({ nation: 'jia', seed: 3, map: 'fixture' }));
+  const card = () => page.evaluate(() => window.__shanhe?.ui.card ?? null);
+  const setup = await page.evaluate(() => {
+    const state = window.__shanhe?.state;
+    if (state === undefined) throw new Error('no state');
+    const unit = state.units.find((entry) => entry.owner === state.player);
+    if (unit === undefined) throw new Error('the player has no unit');
+    const zone = state.polities[state.player]?.capital ?? -1;
+    const land = state.map.zone.reduce<number[]>((list, value, hex) => (value === zone && hex !== unit.hex ? [...list, hex] : list), []);
+    return { unit: { id: unit.id, hex: unit.hex, hp: unit.hp }, zone, site: state.map.zones[zone]?.siteHex ?? -1, land };
+  });
+  // the garrison stands in the capital: one hex with a piece and a city
+  expect(setup.unit.hex).toBe(setup.site);
+  const points = await hexPoints(page, [setup.unit.hex, ...setup.land]);
+  const onUnit = points[setup.unit.hex];
+  const groundHex = setup.land.find((hex) => points[hex] !== undefined);
+  if (onUnit === undefined || groundHex === undefined) throw new Error('the capital is not on screen');
+  const onGround = points[groundHex] as { x: number; y: number };
+
+  // nothing is selected: the pointer comes to rest on the piece, and the card names it
+  expect(await card()).toBeNull();
+  await page.mouse.move(onUnit.x, onUnit.y);
+  await page.waitForFunction(() => window.__shanhe?.ui.card !== null);
+  const first = await card();
+  expect(first).toMatchObject({ hex: setup.unit.hex, knowledge: 'visible', units: [setup.unit.id], city: setup.zone, by: 'hover' });
+  expect(first?.text).toContain('勇士 · 甲国');
+  expect(first?.text).toContain(`生命 ${setup.unit.hp}`);
+  expect(first?.text).toContain('甲都 · 甲国');
+  await expect(page.locator('#hex-card')).toBeVisible();
+  await expect(page.locator('#hex-card [data-line="unit"] .piece')).toHaveText('兵');
+  await expect(page.locator('#hex-card [data-line="city"]')).toHaveCount(1);
+  expect((await page.evaluate(() => window.__shanhe?.ui.selectedUnit)) ?? null).toBeNull();
+  await capture(page, 'card-zh');
+
+  // on bare ground it names the ground and whose land it is
+  await page.mouse.move(onGround.x, onGround.y);
+  await page.waitForFunction((hex) => window.__shanhe?.ui.card?.hex === hex, groundHex);
+  const ground = await card();
+  expect(ground).toMatchObject({ units: [], city: null, knowledge: 'visible' });
+  expect(ground?.text.split('\n').at(-1)).toBe('甲国');
+  await expect(page.locator('#hex-card [data-line="unit"]')).toHaveCount(0);
+
+  // a key or a press takes the card away
+  await page.keyboard.press('Shift');
+  expect(await card()).toBeNull();
+  await expect(page.locator('#hex-card')).toBeHidden();
+
+  // in English the piece keeps its character and the card names it
+  await page.click('#menu-button');
+  await page.click('#menu-language');
+  await page.click('#menu-close');
+  await page.mouse.move(onGround.x, onGround.y);
+  await page.mouse.move(onUnit.x, onUnit.y);
+  await page.waitForFunction((hex) => window.__shanhe?.ui.card?.hex === hex, setup.unit.hex);
+  const english = await card();
+  expect(english?.text).toContain('Warrior · Jia');
+  expect(english?.text).toContain(`HP ${setup.unit.hp}`);
+  await expect(page.locator('#hex-card [data-line="unit"] .piece')).toHaveText('兵');
+  await capture(page, 'card-en');
+
+  // a turn ends under the pointer: the card stays on its hex and says what is there now
+  const turnBefore = await page.evaluate(() => window.__shanhe?.state.turn ?? 0);
+  expect(await page.evaluate(() => window.__shanhe?.endTurn())).toBe(true);
+  await page.waitForFunction((turn) => (window.__shanhe?.state.turn ?? 0) > turn && window.__shanhe?.ui.busy === false, turnBefore);
+  expect(await card()).toMatchObject({ hex: setup.unit.hex, units: [setup.unit.id], by: 'hover' });
+  await expect(page.locator('#hex-card')).toBeVisible();
+
+  // with the piece selected the order preview still comes, and the card with it
+  await page.mouse.click(onUnit.x, onUnit.y);
+  expect(await page.evaluate(() => window.__shanhe?.ui.selectedUnit)).toBe(setup.unit.id);
+  expect(await card()).toBeNull();
+  await page.mouse.move(onGround.x, onGround.y);
+  const aids = await page.evaluate(() => window.__shanhe?.ui.aids);
+  expect(aids?.path).toBeGreaterThan(1);
+  await expect(page.locator('#tooltip')).toBeVisible();
+  await page.waitForFunction((hex) => window.__shanhe?.ui.card?.hex === hex, groundHex);
+  await expect(page.locator('#tooltip')).toBeVisible();
+  await page.click('#menu-button');
+  await page.click('#menu-language');
+  expect(errors).toEqual([]);
+});
+
+test('touch: a long press shows the details, a tap previews an order and a second tap gives it', async ({ browser }) => {
+  const context = await browser.newContext({ hasTouch: true, viewport: viewport ?? { width: 960, height: 540 } });
+  const page = await context.newPage();
+  const errors = collectErrors(page);
+  await open(page, '/?map=fixture&render=off');
+  await page.evaluate(() => window.__shanhe?.startGame({ nation: 'jia', seed: 3, map: 'fixture' }));
+  const session = await context.newCDPSession(page);
+  const touch = (type: 'touchStart' | 'touchEnd', point?: { x: number; y: number }): Promise<unknown> =>
+    session.send('Input.dispatchTouchEvent', { type, touchPoints: point === undefined ? [] : [{ x: point.x, y: point.y, id: 1 }] });
+  const snapshot = () =>
+    page.evaluate(() => {
+      const handle = window.__shanhe;
+      if (handle === undefined) throw new Error('window.__shanhe is not set');
+      const { ui, state } = handle;
+      const unit = state.units.find((entry) => entry.owner === state.player);
+      return { selected: ui.selectedUnit, target: ui.touchTarget, orders: ui.touchOrders, aids: ui.aids, card: ui.card, hex: unit?.hex ?? -1, moves: unit?.moves ?? -1 };
+    });
+  const setup = await page.evaluate(() => {
+    const state = window.__shanhe?.state;
+    if (state === undefined) throw new Error('no state');
+    const unit = state.units.find((entry) => entry.owner === state.player);
+    if (unit === undefined) throw new Error('the player has no unit');
+    const zone = state.polities[state.player]?.capital ?? -1;
+    const land = state.map.zone.reduce<number[]>((list, value, hex) => (value === zone && hex !== unit.hex ? [...list, hex] : list), []);
+    return { unit: { id: unit.id, hex: unit.hex }, land };
+  });
+  const points = await hexPoints(page, [setup.unit.hex, ...setup.land]);
+  const onUnit = points[setup.unit.hex];
+  const targets = setup.land.filter((hex) => points[hex] !== undefined);
+  const [targetHex, otherHex] = targets;
+  if (onUnit === undefined || targetHex === undefined || otherHex === undefined) throw new Error('the capital is not on screen');
+  const onTarget = points[targetHex] as { x: number; y: number };
+  const onOther = points[otherHex] as { x: number; y: number };
+  // the pointer events of every touch on the map, in order
+  await page.evaluate(() => {
+    const log: string[] = [];
+    (window as unknown as { touchLog: string[] }).touchLog = log;
+    const canvas = document.querySelector('#map');
+    for (const name of ['pointerdown', 'pointerup', 'pointercancel', 'pointerout', 'pointerleave']) {
+      canvas?.addEventListener(name, (event) => log.push(`${name}:${(event as PointerEvent).pointerType}`));
+    }
+  });
+  const events = () => page.evaluate(() => (window as unknown as { touchLog: string[] }).touchLog.splice(0));
+
+  // a finger that rests shows the details; lifting it selects nothing and gives no order
+  await touch('touchStart', onUnit);
+  await page.waitForFunction(() => window.__shanhe?.ui.card?.by === 'press');
+  expect((await snapshot()).card).toMatchObject({ hex: setup.unit.hex, units: [setup.unit.id], by: 'press' });
+  await touch('touchEnd');
+  expect(await snapshot()).toMatchObject({ selected: null, target: null, orders: 0 });
+  await events();
+
+  // a tap selects the piece
+  await page.touchscreen.tap(onUnit.x, onUnit.y);
+  expect(await snapshot()).toMatchObject({ selected: setup.unit.id, target: null, card: null });
+  await events();
+
+  // the first tap on a target previews the order. The finger lifts and leaves the canvas: the target stays
+  await page.touchscreen.tap(onTarget.x, onTarget.y);
+  expect(await events()).toEqual(['pointerdown:touch', 'pointerup:touch', 'pointerout:touch', 'pointerleave:touch']);
+  const previewed = await snapshot();
+  expect(previewed).toMatchObject({ selected: setup.unit.id, target: targetHex, orders: 0, hex: setup.unit.hex });
+  expect(previewed.aids?.path).toBeGreaterThan(1);
+  await expect(page.locator('#tooltip')).toBeVisible();
+  await capture(page, 'touch-preview');
+
+  // a tap elsewhere moves the target, and the piece stays where it is
+  await page.touchscreen.tap(onOther.x, onOther.y);
+  expect(await snapshot()).toMatchObject({ selected: setup.unit.id, target: otherHex, orders: 0, hex: setup.unit.hex });
+  await page.touchscreen.tap(onTarget.x, onTarget.y);
+  expect(await snapshot()).toMatchObject({ target: targetHex, orders: 0, hex: setup.unit.hex });
+
+  // the second tap on the same hex gives the order
+  await page.touchscreen.tap(onTarget.x, onTarget.y);
+  const ordered = await snapshot();
+  expect(ordered).toMatchObject({ target: null, orders: 1 });
+  expect(ordered.hex).not.toBe(setup.unit.hex);
+  expect(ordered.moves).toBeLessThan(previewed.moves);
+  await expect(page.locator('#tooltip')).toBeHidden();
+  await capture(page, 'touch-ordered');
+
+  // on a touch device every control is at least 36 pixels of the screen, whatever the interface is scaled to
+  expect(await page.evaluate(() => window.matchMedia('(pointer: coarse)').matches)).toBe(true);
+  const tooSmall = (): Promise<string[]> =>
+    page.evaluate(() => {
+      const found: string[] = [];
+      for (const node of document.querySelectorAll<HTMLElement>('#ui button, #ui input[type="range"]')) {
+        const box = node.getBoundingClientRect();
+        if (box.width === 0 || box.height === 0 || node.closest('[inert]') !== null) continue;
+        if (box.width < 35.9 || box.height < 35.9) found.push(`${node.id}|${node.className}|${Math.round(box.width)}x${Math.round(box.height)}`);
+      }
+      return found;
+    });
+  expect(await page.evaluate(() => window.__shanhe?.ui.scale.factor)).toBeLessThan(1);
+  expect(await tooSmall()).toEqual([]);
+  await page.locator('#menu-button').tap();
+  expect(await page.evaluate(() => window.__shanhe?.ui.panel)).toBe('menu');
+  expect(await tooSmall()).toEqual([]);
+  await page.locator('#menu-close').tap();
+  await page.locator('#polities-button').tap();
+  expect(await page.evaluate(() => window.__shanhe?.ui.overlay)).toBe('polities');
+  expect(await tooSmall()).toEqual([]);
+  await page.locator('#overlay-close').tap();
+  await page.locator('#slot-policy').tap();
+  expect(await page.evaluate(() => window.__shanhe?.ui.overlay)).toBe('policy');
+  expect(await tooSmall()).toEqual([]);
+  await page.locator('#overlay-close').tap();
+  expect(errors).toEqual([]);
+  await context.close();
 });
 
 /**
