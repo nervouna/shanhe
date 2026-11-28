@@ -1,15 +1,18 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { DIPLOMACY } from '../core/data.ts';
+import { BALANCE, DIPLOMACY, FAVOUR } from '../core/data.ts';
 import { applyAction, createGame } from '../core/game.ts';
 import type { GameState } from '../core/game.ts';
-import { edit, learn } from '../core/testUtil.ts';
+import { favourStanding } from '../core/query.ts';
+import { edit, learn, withAgreement } from '../core/testUtil.ts';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
 import { setLanguage } from '../shared/i18n.ts';
 import {
   agreementsBetween,
+  causeText,
   controlReasonText,
   dealsBetween,
   diplomaticControls,
+  favourRows,
   offersFrom,
   standingWith,
 } from './diplomacy.ts';
@@ -191,5 +194,64 @@ describe('standingWith and the lists between two polities', () => {
     });
     expect(offersFrom(offered, YI).map((offer) => offer.id)).toEqual([3]);
     expect(offersFrom(base, YI)).toEqual([]);
+  });
+});
+
+describe('the causes of favour', () => {
+  const BING = nation('bing');
+  /** All four nations are in the race, late in the game, and Jia has earned three times what the others have. */
+  const runaway = edit(createGame(map, { seed: 2, player: 'yi', majors: ['jia', 'yi', 'bing', 'ding'] }), (draft) => {
+    draft.turn = BALANCE.fullTurn + 10;
+    for (const polity of [JIA, YI, BING, DING]) draft.polities[polity]!.grossIncome = 1000;
+    draft.polities[JIA]!.grossIncome = 3000;
+  });
+  const sum = (state: GameState, a: number, b: number): number =>
+    favourRows(favourStanding(state, a, b)!).reduce((total, row) => total + row.value, 0);
+
+  afterEach(() => {
+    setLanguage('zh');
+  });
+
+  it('add up to the favour shown for a pair with a feared leader', () => {
+    const standing = favourStanding(runaway, YI, JIA)!;
+    const rows = favourRows(standing);
+    expect(rows).toContainEqual({ cause: 'leader', value: -BALANCE.maxFear, polity: JIA });
+    expect(sum(runaway, YI, JIA)).toBe(standing.target);
+    // the standing terms alone do not: that is what the panel used to show
+    expect(standing.terms.reduce((total, term) => total + term.value, 0)).toBe(standing.target + BALANCE.maxFear);
+    // with an alliance, a trade pact and a war between them as well
+    const tied = edit(withAgreement(withAgreement(runaway, 'alliance', YI, JIA), 'tradePact', YI, JIA), (draft) => {
+      draft.relations[`${Math.min(YI, BING)}:${Math.max(YI, BING)}`] = { a: Math.min(YI, BING), b: Math.max(YI, BING), atWar: true, since: 5, offerA: 0, offerB: 0 };
+    });
+    for (const other of [JIA, BING, DING]) {
+      const target = favourStanding(tied, YI, other)!.target;
+      expect(Math.abs(target)).toBeLessThan(FAVOUR.max);
+      expect(sum(tied, YI, other)).toBe(target);
+    }
+  });
+
+  it('add up for two nations that stand against the same leader, and name it', () => {
+    const standing = favourStanding(runaway, YI, BING)!;
+    const rows = favourRows(standing);
+    const threat = rows.find((row) => row.cause === 'commonThreat');
+    expect(threat).toEqual({ cause: 'commonThreat', value: BALANCE.commonThreat, polity: JIA });
+    expect(sum(runaway, YI, BING)).toBe(standing.target);
+    expect(causeText(map, threat!)).toBe(`共同的威胁：${map.polities[JIA]!.nameZh}`);
+    const leader = favourRows(favourStanding(runaway, YI, JIA)!).find((row) => row.cause === 'leader')!;
+    expect(causeText(map, leader)).toBe(`领先遭忌：${map.polities[JIA]!.nameZh}`);
+    setLanguage('en');
+    expect(causeText(map, threat!)).toBe(`A common threat: ${map.polities[JIA]!.nameEn}`);
+    expect(causeText(map, leader)).toBe(`Feared as the leader: ${map.polities[JIA]!.nameEn}`);
+    expect(causeText(map, { cause: 'border', value: -5, polity: -1 })).toBe('Shared border');
+    expect(causeText(map, { cause: 'alliance', value: 30, polity: -1 })).toBe('Alliance');
+  });
+
+  it('lists nothing of the balance of power while nobody is ahead', () => {
+    const level = edit(runaway, (draft) => {
+      draft.polities[JIA]!.grossIncome = 1000;
+    });
+    const standing = favourStanding(level, YI, JIA)!;
+    expect(favourRows(standing).map((row) => row.cause)).toEqual(standing.terms.map((term) => term.cause));
+    expect(sum(level, YI, JIA)).toBe(standing.target);
   });
 });

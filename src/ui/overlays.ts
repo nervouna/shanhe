@@ -21,6 +21,7 @@ import {
   unitName,
   yieldName,
 } from './names.ts';
+import { balanceRows } from './balance.ts';
 import { POLITY_SORTS, check, polityRows, politySummary, sortPolityRows, victoryView } from './rules.ts';
 import type { PolitySort, VictoryLine } from './rules.ts';
 import { layoutTechTree, techUnlocks, techViews } from './techTree.ts';
@@ -408,11 +409,37 @@ export function victoryOverlay(view: View): HTMLElement {
       }),
     ),
   );
+  // the balance of power: who is feared for a lead, and on which of the three tracks
+  const balance = el(
+    'table',
+    { id: 'balance', class: 'list' },
+    el(
+      'thead',
+      {},
+      el('tr', {}, el('th', { text: t('balance.title') }), el('th', { text: t('balance.lead') }), el('th', { text: t('balance.fear') })),
+    ),
+    el(
+      'tbody',
+      {},
+      ...balanceRows(state).map((row) => {
+        const nation = el('span', { class: 'swatch', text: polityName(map, row.polity) });
+        nation.style.setProperty('--nation', cssColor(map.polities[row.polity]?.color ?? 0x888888));
+        return el(
+          'tr',
+          { class: row.polity === player ? 'mine' : '', data: { polity: row.polity, fear: row.fear, lead: row.lead ?? '' } },
+          el('td', {}, nation),
+          el('td', { text: row.leadName ?? '—' }),
+          el('td', { text: String(row.fear) }),
+        );
+      }),
+    ),
+  );
+  balance.style.marginTop = 'var(--s5)';
   return sheet(
     'victory-overlay',
     t('hud.victory'),
     view,
     [el('span', { class: 'stat', id: 'victory-turns', text: t('victory.turnsLeft', { turns: progress.turnsLeft }) })],
-    el('div', { class: 'scroll sheet-body' }, table),
+    el('div', { class: 'scroll sheet-body' }, table, balance),
   );
 }
