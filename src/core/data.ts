@@ -79,11 +79,24 @@ export interface TechDef {
 }
 
 /** Science cost of a tech of each era. */
-export const TECH_ERA_COST: readonly number[] = [7, 32, 100, 250, 720, 1000];
+export const TECH_ERA_COST: readonly number[] = [7, 32, 100, 240, 560, 740];
 
 export const RESEARCH = {
   /** A tech known by any other living polity costs this much less. */
   catchUpPercent: 20,
+  /**
+   * Ahead of its time: a tech of an era the calendar has not reached yet
+   * ({@link eraOfTurn}) costs this much more for each era it is ahead.
+   */
+  aheadPercent: 100,
+  /** Common knowledge: a tech of an era the calendar has left behind costs this much less for each era, ... */
+  behindPercent: 30,
+  /** ...up to this many eras. */
+  behindEras: 2,
+  /** A large realm learns slowly: every city beyond the first adds this much to the cost of a tech, ... */
+  cityPercent: 15,
+  /** ...up to this many cities beyond the first. */
+  citiesCounted: 10,
   /** Techs of its current era a polity needs to enter the next. */
   techsToAdvance: 4,
   /** A polity on the simplified AI knows a tech once this share of the researching nations does. */
@@ -803,8 +816,10 @@ export const CITY = {
   garrisonShare: 0.25,
   /** Reach of the walls' counter-strike. */
   strikeRange: 2,
+  /** A new unit appears on the city's hex or on the nearest free hex this close to it. */
+  musterRadius: 3,
   /** HP a city regains in a turn in which nobody attacked it. */
-  heal: 15,
+  heal: 10,
   /** Turns of unrest after a capture: no production, lower morale. */
   unrestTurns: 8,
   unrestMorale: 30,
@@ -833,10 +848,14 @@ export const WAR = {
   minTurns: 10,
   /** Turns after a peace during which neither side can declare war on the other. */
   truceTurns: 10,
-  /** War weariness gained per turn for each war a polity is in. */
+  /** War weariness gained per turn at war, however many enemies there are. */
   wearinessPerWarTurn: 1,
   /** Gained by the loser of a city. */
   wearinessPerCityLost: 5,
+  /** Taken off the weariness of whoever takes a city: a victory lifts the mood. */
+  wearinessPerCityTaken: 3,
+  /** Taken off the weariness of whoever forces a nation to become its vassal. */
+  wearinessPerVassalMade: 10,
   /** Lost per turn at peace. */
   wearinessDecay: 2,
   wearinessMax: 60,
@@ -863,9 +882,9 @@ export const DEFAULT_MAJOR_NAMES_ZH: readonly string[] = [
 export const PROJECT = {
   id: 'tiangong',
   stages: [
-    { tech: 'rocketry', cost: 470 },
-    { tech: 'electronics', cost: 470 },
-    { tech: 'informationNetworks', cost: 470 },
+    { tech: 'rocketry', cost: 120 },
+    { tech: 'electronics', cost: 120 },
+    { tech: 'informationNetworks', cost: 120 },
   ],
 } as const satisfies { id: string; stages: readonly { tech: TechId; cost: number }[] };
 
@@ -1001,6 +1020,8 @@ export const DIPLOMACY = {
   offerTurns: 10,
   /** Share of its income (city gold and trade routes) a vassal pays its overlord, in percent. */
   vassalTributePercent: 20,
+  /** Vassals a nation can hold, by its era: a wider realm needs the means of a later age. */
+  vassalsByEra: [1, 2, 2, 3, 5, 5],
 } as const;
 
 /** Favour between two nations runs from `-max` to `max` and starts at 0. */
@@ -1066,13 +1087,13 @@ export const TRADE = {
   /** A land path counts a hex without a road as this many hexes with one, so it follows the roads. */
   offRoadFactor: 2,
   /** Income: `baseGold + path length / hexesPerGold + (both populations) / popPerGold + specialties`. */
-  baseGold: 2,
+  baseGold: 3,
   hexesPerGold: 5,
   popPerGold: 5,
   /** Per specialty found in the zone of one of the two cities and not the other. */
   specialtyGold: 2,
   /** What an off-map port adds in place of a second city. */
-  portGold: 4,
+  portGold: 6,
   /** A route between two cities of the same polity earns this share. */
   domesticPercent: 50,
   /** Added to a route to a city of a trade-pact partner. */
@@ -1153,6 +1174,37 @@ export const CITY_STATE = {
   navalXp: 8,
 } as const;
 
+// ------------------------------------------------------------- difficulty
+
+/** The five difficulty levels, easiest first. */
+export const DIFFICULTY_LEVELS = ['relaxed', 'easy', 'standard', 'hard', 'severe'] as const;
+export type DifficultyLevel = (typeof DIFFICULTY_LEVELS)[number];
+/** The middle level: the AI plays by the same rules as the player. */
+export const DEFAULT_DIFFICULTY: DifficultyLevel = 'standard';
+
+/** What a level gives one side: a percentage on every city yield, and on the strength of its units and cities. */
+export interface DifficultyBonus {
+  readonly yieldPercent: number;
+  readonly strengthPercent: number;
+}
+
+/**
+ * What each level gives the player and what it gives the AI's major nations.
+ * Below the middle level the player is helped, above it the AI majors are;
+ * nobody else is ever touched.
+ */
+export const DIFFICULTY: Readonly<Record<DifficultyLevel, { readonly player: DifficultyBonus; readonly ai: DifficultyBonus }>> = {
+  relaxed: { player: { yieldPercent: 30, strengthPercent: 20 }, ai: { yieldPercent: 0, strengthPercent: 0 } },
+  easy: { player: { yieldPercent: 15, strengthPercent: 10 }, ai: { yieldPercent: 0, strengthPercent: 0 } },
+  standard: { player: { yieldPercent: 0, strengthPercent: 0 }, ai: { yieldPercent: 0, strengthPercent: 0 } },
+  hard: { player: { yieldPercent: 0, strengthPercent: 0 }, ai: { yieldPercent: 15, strengthPercent: 10 } },
+  severe: { player: { yieldPercent: 0, strengthPercent: 0 }, ai: { yieldPercent: 30, strengthPercent: 20 } },
+};
+
+export function isDifficultyLevel(value: unknown): value is DifficultyLevel {
+  return typeof value === 'string' && (DIFFICULTY_LEVELS as readonly string[]).includes(value);
+}
+
 // ----------------------------------------------------------------- tribes
 
 /** One tribe per this many hexes of a wasteland zone, at least one per zone. */
@@ -1162,7 +1214,7 @@ export const HEXES_PER_TRIBE = 12;
 
 const AI_BUILDING_ORDER: readonly BuildingId[] = [
   'granary', 'walls', 'workshop', 'factory', 'academy', 'market', 'university', 'observatory', 'researchInstitute',
-  'bank', 'powerPlant', 'hospital', 'harbour', 'temple', 'printShop', 'airfield',
+  'airfield', 'bank', 'powerPlant', 'hospital', 'harbour', 'temple', 'printShop',
 ];
 
 export const AI = {
@@ -1211,6 +1263,8 @@ export const AI = {
   researchAtWar: { military: 4, science: 3, economy: 2, naval: 1 },
   /** Taken off a tech's score per era it lies beyond the oldest tech still open, so an era is finished first. */
   researchEraStep: 10,
+  /** Added to the score of the tech that brings air strikes, for a nation at war or out for conquest. */
+  researchAirPower: 3,
   /**
    * Policies: how much it wants a card of each kind, at peace and at war. A
    * diplomacy card counts only for a polity that has what the card works on.
@@ -1237,8 +1291,35 @@ export const AI = {
   vassalWeariness: 15,
   /** Vassals a major wants at most. */
   maxVassals: 3,
+  /**
+   * A nation that has lost a city in a war and asks an enemy this many times
+   * as strong as itself for peace submits: the peace makes it a vassal.
+   */
+  submitRatio: 2.5,
   /** Gold kept back before gifts, and before buying when nothing threatens. */
   goldReserve: 80,
+  /** A major also keeps this many turns of its upkeep before it buys what its cities are building. */
+  buyReserveTurns: 4,
+  /** It buys an item only if the city would need at least this many more turns for it... */
+  buyMinTurns: 2,
+  /** ...and at most this many items a turn. */
+  buysPerTurn: 4,
+  /** With this many gifts' worth of gold above its reserve, a gift to a city-state is this many times as large. */
+  richGiftFactor: 4,
+  /** At war, a city this close to an enemy city builds its airfield before anything else. */
+  airfieldFrontRange: 10,
+  /** A leader out for conquest starts its next war once its war weariness is down to this, ... */
+  conquestWeariness: 40,
+  /** ...and sues for peace only at this war weariness. */
+  conquestPeaceWeariness: 55,
+  /**
+   * Such a leader marches on the cities of whoever holds a capital of a major
+   * nation first, if they are at most this many hexes farther than the
+   * nearest enemy city, ...
+   */
+  prizeDetour: 8,
+  /** ...and on such a capital itself if it is at most this many hexes farther still. */
+  capitalDetour: 4,
   /** Gold of one gift to a city-state. */
   giftGold: 30,
   /** A city-state this close (hexes between capitals) is worth courting. */

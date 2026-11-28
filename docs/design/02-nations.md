@@ -37,7 +37,7 @@ In the tables below, "farms" means farms and irrigation canals unless it says ot
 
 | Nation | Based on | Trait | Unit | Building / improvement | Specialty |
 |---|---|---|---|---|---|
-| 蜀 Shu | Sichuan | 天府之国: a city with 2 or more mountain hexes within 2 hexes of its site gains +2 food and +20% city strength | 连弩兵 repeating crossbowman | 都江堰 Dujiangyan weir | 蜀锦 Shu brocade |
+| 蜀 Shu | Sichuan | 天府之国: a city with 2 or more mountain hexes within 2 hexes of its site gains +1 food and +20% city strength | 连弩兵 repeating crossbowman | 都江堰 Dujiangyan weir | 蜀锦 Shu brocade |
 | 巴 Ba | Chongqing | 山城: a city whose site is hilly, or has 2 or more hills or mountains next to it, gains +3 production | 白杆兵 White Pole pikeman | 吊脚楼 diaojiaolou hillside house | 榨菜 pickled mustard |
 | 滇 Dian | Yunnan | 彩云之南: +1 science on every forest and rainforest hex; +1 science per mountain hex in a city's zone, at most 2 per city | 罗苴子 Luojuzi mountain infantry | 茶马古道 tea-horse road | 普洱茶 pu'er tea |
 | 夜郎 Yelang | Guizhou | 地无三尺平: farms and pastures may stand on hills; plain farms and mines may stand on mountains, which are then worked like any hex and give +1 food more | 藤甲兵 rattan-armour infantry | 屯堡 fortified village | 酱酒 sauce-aroma liquor |
@@ -258,6 +258,29 @@ Rules:
 
 A polity without a kit (a city-state, a nation of a test map) has no style and uses the plain weights.
 
+### Ambitions
+
+A personality stays the same from game to game. On top of it every leader with a kit sets out, in each game, to win one of the three victories. This ambition is drawn from the game's seed, so the same nation plays differently in different games, and it is weighted by the personality. Like the personality it changes only what the AI chooses; a human player's nation has none.
+
+| Ambition | What it changes in the AI |
+|---|---|
+| 征服 Conquest | Declares war at 80% of the usual strength ratio and keeps a 40% larger army; builds the workshop first; military techs and cards first. It goes for the nations that hold capitals of major nations, the nearest first, marches on their cities, takes a major nation as a vassal wherever it can, starts its next war while still weary of the last (up to weariness 40), sues for peace only at weariness 55, and lets go of enemies that hold no such capital. It does not build the Tiangong project |
+| 治学 Learning | Starts no wars. Builds the academy and the university first; science techs and civil cards first. Builds the Tiangong project as soon as a stage is open, and researches what the project needs first once it is in the Modern era |
+| 殖货 Wealth | Starts no wars. Builds the market and the bank first; economy techs and cards first; its cities turn to gold instead of production once they feed themselves. It does not build the Tiangong project |
+
+A leader that starts no wars still fights when it is attacked or when an ally is.
+
+Weights of conquest, learning and wealth by personality:
+
+| Personality | Conquest | Learning | Wealth |
+|---|---|---|---|
+| Warlike, Expansionist | 3 | 1 | 2 |
+| Scholarly, Defensive | 1 | 3 | 2 |
+| Mercantile, Diplomatic | 1 | 2 | 3 |
+| Seafaring | 2 | 1 | 3 |
+
+A polity without a kit has no ambition: it is the all-rounder that goes to war with a weaker neighbour at the usual ratio and builds the project when it leads in science.
+
 ### North and Northwest China
 
 | Nation | Leader (archetype) | Buff | Personality |
@@ -369,6 +392,6 @@ The kits needed a few rules the game did not have. They apply to everybody.
 - **Tolls.** A polity can take a share of other polities' trade routes that pass its cities (琉球, 满剌加).
 - **Production surge.** The turn in which a polity last lost a city is remembered (越).
 - **Mountains.** A mountain hex that carries an improvement is worked by its city (夜郎). Nobody can stand on it.
-- **Vision.** A unit sees 2 hexes and a city 3, plus what modifiers add. Nothing is hidden by it yet.
+- **Vision.** A unit sees 2 hexes and a city 3, plus what modifiers add. What a polity does not see is hidden by the fog of war ([03-gameplay.md](03-gameplay.md)).
 - **Islands.** The landmasses of the map are known to the rules: an island is any but the largest.
 - **AI at sea.** A nation with a coast keeps warships: one for every two coastal cities, one more for each enemy warship afloat, two more while its army marches on a city it can only reach by sea, and at most 40% of the units it can pay for (one ship is always allowed beside the garrisons). At war the fleet goes with the embarked army or to the waters of the city the army marches on and fights what it meets; a battered ship sails home. A major nation counts a coastal city within 12 hexes by water of one of its own coastal cities as a neighbour when it looks for a war, once it knows Boats (and across ocean once it knows Compass).

@@ -18,7 +18,9 @@ import type { TechId } from './data.ts';
 import {
   CITY_STATE_TYPES,
   CITY_STATE_TYPE_BY_ID,
+  DEFAULT_DIFFICULTY,
   DEFAULT_MAJOR_NAMES_ZH,
+  isDifficultyLevel,
   GAME_TURNS,
   HEXES_PER_TRIBE,
   MAJOR_COUNT,
@@ -29,6 +31,7 @@ import {
   policyCost,
   unitDef,
 } from './data.ts';
+import { computeSight, flushFog, forgetSight, memoryFlags, rememberSight } from './fog.ts';
 import { KIT } from './kits.ts';
 import { visionRange } from './modifiers.ts';
 import { policySlotsFor } from './policies.ts';
@@ -57,7 +60,7 @@ export type * from './types.ts';
 export { NO_POLITY } from './types.ts';
 
 /** Version of the state format. `loadGame` rejects any other. */
-export const STATE_VERSION = 4;
+export const STATE_VERSION = 5;
 
 function polityIndex(map: MapData, id: string): number {
   const index = map.polities.findIndex((polity) => polity.id === id);
@@ -88,6 +91,9 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
   const player = setup.player === undefined || setup.player === null ? NO_POLITY : nation(setup.player);
   const majors =
     setup.majors === undefined ? defaultMajors(map) : [...new Set(setup.majors.map(nation))].sort((a, b) => a - b);
+
+  const difficulty = setup.difficulty ?? DEFAULT_DIFFICULTY;
+  if (!isDifficultyLevel(difficulty)) throw new Error(`game setup: no difficulty level ${String(difficulty)}`);
 
   let cityStates = 0;
   const polities: PolityState[] = map.polities.map((polity) => ({
@@ -137,6 +143,7 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
     rng: seed,
     player,
     majors,
+    difficulty,
     polities,
     zoneOwner: map.zones.map((zone) =>
       at(map.polities, zone.polity).kind === 'wastelandRegion' ? NO_POLITY : zone.polity,
@@ -155,6 +162,7 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
     roads: {},
     roadLinks: {},
     pillaged: {},
+    explored: map.polities.map(() => ''),
     stats: {
       citiesCaptured: 0,
       citiesFounded: 0,
@@ -197,6 +205,9 @@ export function createGame(map: MapData, setup: GameSetup = {}): GameState {
 
   for (const unit of state.units) unit.moves = unitDef(unit.type).moves;
   state.stats.citiesFounded = 0;
+  // What everybody sees on the first turn is the first thing they remember.
+  rememberSight(ctx);
+  flushFog(ctx);
   return state;
 }
 
@@ -280,9 +291,30 @@ export function politySpecialties(state: GameState, polity: number): string[] {
 }
 
 /**
- * The hexes `polity` sees: 1 where one of its units or cities is within
- * sight, 0 elsewhere. The rules hide nothing by it; it is there for a fog of
- * war to draw.
+ * Fog of war: the hexes `polity` sees right now, 1 per visible hex. It sees
+ * what lies within the vision of its units and cities and of those of its
+ * allies and vassals. `NO_POLITY` (the observer) sees everything.
+ *
+ * Terrain, borders and city sites are always known; what a hex outside this
+ * set hides is the units on it and what has changed there since it was seen.
+ */
+export function visibleTo(state: GameState, polity: number): Uint8Array {
+  return computeSight(createCtx(state as MutableGameState), polity);
+}
+
+/**
+ * Fog of war: the hexes `polity` sees or has seen, 1 per hex. The major
+ * nations and the player remember; for everybody else this is
+ * {@link visibleTo}. The stored part is `GameState.explored`.
+ */
+export function rememberedBy(state: GameState, polity: number): Uint8Array {
+  return memoryFlags(createCtx(state as MutableGameState), polity);
+}
+
+/**
+ * The hexes within sight of `polity`'s own units and cities, 1 per hex,
+ * without what its allies and vassals see: {@link visibleTo} is the fog of
+ * war.
  */
 export function visibleHexes(state: GameState, polity: number): Uint8Array {
   const ctx = createCtx(state as MutableGameState);
@@ -370,6 +402,7 @@ export function applyAction(state: GameState, action: Action): ActionResult {
   if (reason !== null) return { ok: false, reason, state, events: [] };
   const ctx = createCtx(cloneState(state));
   execute(ctx, action);
+  flushFog(ctx);
   return { ok: true, state: ctx.state, events: ctx.events };
 }
 
@@ -391,6 +424,7 @@ export function endTurn(state: GameState, hooks: EndTurnHooks = {}): { state: Ga
   const ctx = createCtx(cloneState(state));
   runAiTurns(ctx, hooks);
   endRound(ctx);
+  flushFog(ctx);
   return { state: ctx.state, events: ctx.events };
 }
 
@@ -404,6 +438,8 @@ function runAiTurns(ctx: Ctx, hooks: EndTurnHooks): void {
   };
   for (let polity = 0; polity < ctx.n; polity++) {
     if (polity === state.player || !at(state.polities, polity).alive) continue;
+    // The others have moved since this polity last looked.
+    forgetSight(ctx);
     runAi(ctx, polity, act);
   }
 }

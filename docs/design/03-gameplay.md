@@ -12,6 +12,8 @@ Five yields: food (粮), production (工), gold (金), science (科), culture (�
 
 Morale (民心) is a per-city satisfaction value. War weariness lowers it: the longer a war runs, the lower morale falls in every city. This is the brake on endless conquest.
 
+War weariness rises by 1 for every turn a polity is at war, however many enemies it has, and by 5 when it loses a city. It falls by 3 when the polity takes a city, by 10 when it forces a nation to become its vassal, and by 2 for every turn at peace. It never goes above 60.
+
 ## Cities
 
 - City sites are preset (see [01-world-and-map.md](01-world-and-map.md)). A player ends a game with roughly 6–10 cities.
@@ -20,7 +22,8 @@ Morale (民心) is a per-city satisfaction value. War weariness lowers it: the l
 - One build project at a time, with a queue. Options: buildings, units, improvements.
 - **There are no worker units.** An improvement is chosen in the city's build queue and then placed on a hex on the map.
 - A captured city goes through a period of unrest.
-- **City defence.** A city has HP. Once it has walls it makes one ranged counter-strike per turn. When its HP reaches zero, a melee unit entering the hex captures it.
+- **City defence.** A city has HP. Once it has walls it makes one ranged counter-strike per turn. When its HP reaches zero, a melee unit entering the hex captures it. A city regains 10 HP in a turn in which nobody attacks it.
+- **Mustering.** A new unit appears on its city's hex or, when that is taken, on the nearest free hex it may stand on within 3 hexes of the city. With no such hex the unit waits.
 
 ## Roads
 
@@ -62,7 +65,7 @@ The rules of a route:
 - **Slots.** Every nation and city-state has one slot from the start. Currency, Guilds and Banking add one each, the nation's first harbour adds one, and so does each Commerce city-state it is suzerain of. A route that loses its slot ends.
 - **Destinations.** A route runs from one of the owner's cities to another city (its own, a city-state's, or a foreign one whose owner it is not at war with) or to an off-map port it has unlocked. One route per destination.
 - **Path.** Between two cities the route takes a land path of at most 24 hexes if there is one, and otherwise a sea path of at most 40 hexes. A land path avoids the land of the owner's enemies and prefers roads (a hex without a road counts double). A sea path needs Boats and keeps to coast and lake until the owner knows Compass. A land port is reached by land, a sea exit by sea.
-- **Income**, in gold per turn for the owner: 2, plus 1 for every 5 hexes of the path, plus 1 for every 5 citizens of the two cities together, plus 2 for every specialty that only one of the two cities' zones has. A port stands in for the second city with a flat 4. A route between two cities of the same nation earns half. A trade pact with the destination's owner adds 50%.
+- **Income**, in gold per turn for the owner: 3, plus 1 for every 5 hexes of the path, plus 1 for every 5 citizens of the two cities together, plus 2 for every specialty that only one of the two cities' zones has. A port stands in for the second city with a flat 6. A route between two cities of the same nation earns half. A trade pact with the destination's owner adds 50%.
 - **A trade pact is not needed for a route.** Peace is enough; the pact makes the route worth half as much again.
 - **Ending.** A route ends when its owner goes to war with the destination's owner, when the owner loses the city it starts from, or when it is cancelled. A destination that changes hands keeps the route unless its new owner is at war with the route's owner.
 - **Pillage.** A military unit of a polity at war with the owner, standing on a hex of the path (a ship for a sea path), can pillage the route: the pillager takes three turns of its income, and the route earns nothing for 5 turns.
@@ -80,6 +83,16 @@ The rules of a route:
 - **Crossing water.** Land units embark automatically when they step off the coast: onto coastal water after Boats, onto ocean after Compass. An embarked unit fights at greatly reduced strength.
 - **Pillaging.** A unit can pillage an improvement, disabling it for a time and earning gold, or a trade route it stands on. The improvement must belong to a polity the unit's owner is at war with. It yields nothing for 10 turns and then works again by itself; the pillager gets half its production cost in gold. Pillaging takes the rest of the unit's turn. Where both stand on the hex, the improvement is pillaged first.
 - Roster: one generic unit per class per era, 30 in total, plus 50 unique units. The generic roster is in [04-tech-and-policies.md](04-tech-and-policies.md).
+
+### Fog of war
+
+- **Sight.** A polity sees every hex within the vision of its units (2 hexes) and its cities (3 hexes), plus what modifiers add, and what its allies and its vassals see. An overlord sees for itself and through its vassals; a vassal does not see through its overlord. Open borders and trade pacts share nothing.
+- **Memory.** The major nations and the player remember every hex they have seen. Everybody else lives in the present.
+- **What is always known.** Terrain, borders and the preset city sites are on the map. So are the capitals the polities started with. The strength of a nation's army is public, as its score is.
+- **What fog hides.** The units on a hex that is not in sight, and whether a city stands on a site that was never seen.
+- **Targets.** An attack or an air strike needs a unit its owner sees, or a city its owner knows of: one whose site it has seen, or a starting capital.
+- **The AI** plans with what its polity sees or remembers. It counts as threats and as enemy ships only the units it sees, strikes from the air only at what it sees, and marches on the cities it knows of; with none known it marches on the nearest city site in enemy land.
+- The observer sees everything.
 
 Rules that the nation kits added to combat and to the AI (attacks from the water, attrition, tolls, vision ranges, AI navies) are listed under "Rules added for the kits" in [02-nations.md](02-nations.md).
 
@@ -133,6 +146,8 @@ An agreement is proposed with an action. An AI answers at once; a human player g
 
 - At the gates of an enemy nation's fallen capital (0 HP), a melee land unit can demand vassalage instead of taking the city. The city stays with its owner, the war between the two ends, and the owner becomes a vassal. City-states cannot be made vassals.
 - A nation can also be asked to become a vassal without a war.
+- **Submission.** An AI nation that has lost a city in a war and asks an enemy at least 2.5 times as strong as itself for peace pays for the peace with its freedom: if the enemy accepts, it becomes the enemy's vassal. A human player who asks for peace never submits this way, and a player who accepts such an offer gets the vassal.
+- **How many vassals.** A nation can hold 1 vassal in the Ancient era, 2 in the Classical and Medieval eras, 3 in the Early Modern era and 5 from the Industrial era on. At that number a demand, a proposal or a submission is refused; the vassals it has stay.
 - A new vassal lets its own vassals and allies go. Its wars end, except those its overlord is also fighting, and it joins the rest of its overlord's wars.
 - A vassal pays 20% of its income (city gold and trade routes) to its overlord each turn. It joins every war its overlord enters and leaves it when its overlord makes peace. It cannot declare war or make peace itself, and war is declared on its overlord, not on it. Overlord and vassal have open borders.
 - An overlord can release a vassal at any time. A vassal is also freed when its overlord loses its own capital or is annexed, or itself becomes a vassal.
@@ -156,12 +171,26 @@ An agreement is proposed with an action. An AI answers at once; a human player g
 | Victory | Condition |
 |---|---|
 | Conquest | Hold 6 of the 12 major nations' original capitals at the same time |
-| Science | Complete the endgame project 天宫工程 (Tiangong Project): three stages built in the capital, requiring Rocketry, Electronics and Information Networks. Earliest around turn 130 |
+| Science | Complete the endgame project 天宫工程 (Tiangong Project): three stages built in the capital, requiring Rocketry, Electronics and Information Networks. Earliest around turn 135; in AI games it is finished on turns 147–150 |
 | Economic | Highest cumulative gross income when turn 150 ends |
 
 The 12 major nations are the full-AI list fixed at game setup. A player who picks one of them already holds one of the six capitals; a player who picks any other nation must capture all six. That difference is an accepted difficulty choice.
 
 Economic victory counts cumulative income, not gold held, so that spending is never penalised. Only the 12 major nations and the player are ranked; simplified-AI nations cannot win it.
+
+## Difficulty
+
+A game is set up at one of five levels. At the middle level the AI plays by the same rules as the player. Below it the player's nation gets a bonus, above it the AI's major nations do; nobody else is ever touched. The bonus is a percentage on every yield of every city (food, production, gold, science, culture) and a percentage on the strength of units and cities.
+
+| Level | Player: yields | Player: strength | AI majors: yields | AI majors: strength |
+|---|---|---|---|---|
+| 从容 Relaxed | +30% | +20% | — | — |
+| 简单 Easy | +15% | +10% | — | — |
+| 标准 Standard | — | — | — | — |
+| 困难 Hard | — | — | +15% | +10% |
+| 严酷 Severe | — | — | +30% | +20% |
+
+In an observer game every major nation is the AI's.
 
 ## AI tiers
 
@@ -170,6 +199,10 @@ Economic victory counts cumulative income, not gold held, so that spending is ne
 - The rest run a **simplified AI**. They develop their cities and defend themselves normally, and they settle wasteland. Their tech follows the world average instead of being researched. They never declare war on their own, but join wars through alliances. They can be courted, vassalised or annexed.
 - City-states have their own minimal behaviour.
 - **What the full AI does with diplomacy and trade.** It picks policy cards for its situation (economy and civil cards at peace, military cards at war, a diplomacy card only when it has what the card works on). It fills its trade route slots with the destinations that pay best. Every few turns it offers its neighbours a trade pact, open borders and an alliance where favour allows, sells a resource a neighbour lacks, and sends a gift to the nearest city-state. It does not attack a nation it is on good terms with, and counts a target's allies and vassals before it declares war. At a fallen capital it takes a much weaker nation as a vassal when it is weary of war or has another war to fight, and takes the city otherwise. A city with an enemy at its gates and no garrison buys one.
+- **Ambitions.** In every game each leader of a major nation sets out for one of the three victories; which one is drawn from the game's seed and weighted by its personality (see [02-nations.md](02-nations.md)). A leader out for learning or wealth starts no wars; a leader out for conquest goes from one war to the next, after the nations that hold the capitals it needs.
+- **Gold.** A major nation keeps a reserve (80 gold and four turns of its upkeep) and spends the rest: up to four times a turn it buys what one of its cities is building, or the next building the city would build, the slowest item first. A full treasury makes its gifts to city-states four times as large.
+- **Armies.** An army goes round units of other polities that stand in its way, and a column that is held up spreads out. A unit with no orders does not stay at the gates of its city, where new units muster. At war, a city within 10 hexes of an enemy city builds its airfield before anything else, and a nation at war or out for conquest researches Aviation before the other techs of its kind.
+- **Peace.** A major sues for peace at war weariness 35 (a leader out for conquest at 55), after 30 turns in which the enemy has lost no city, or when its army is less than 60% of the enemy's. It accepts a peace that makes the other its vassal while it has room for one.
 - The simplified AI uses policy cards and accepts agreements, but proposes none and opens no trade routes.
 
 ## Turn pacing

@@ -7,9 +7,12 @@
 import { NO_RESOURCE } from '../shared/mapData.ts';
 import {
   AI,
+  BUILDINGS,
+  BUILDING_IDS,
   ERAS,
   PROJECT,
   RESEARCH,
+  eraOfTurn,
   SETTLER,
   STRATEGIC_RESOURCES,
   TECHS,
@@ -21,7 +24,7 @@ import {
 import type { ROSTER, TechId, UnitDef } from './data.ts';
 import { at, atWar, polityOf, seaLevelOf } from './context.ts';
 import type { Ctx } from './context.ts';
-import { kitOfNation, personalityOf } from './kits.ts';
+import { ambitionOf, kitOfNation, styleFor } from './kits.ts';
 import { forgetMods, modsOf, nationOf } from './modifiers.ts';
 import type { Modifier } from './mods.ts';
 import { growSlots } from './policies.ts';
@@ -86,8 +89,28 @@ function revealedByKit(state: GameState, polity: number, resource: string): bool
 // ------------------------------------------------------------------- cost
 
 /**
+ * What the calendar does to the cost of a tech of era `era` on `turn`, in
+ * percent: more for a tech ahead of its time, less for one whose era has
+ * passed.
+ */
+export function calendarPercent(era: number, turn: number): number {
+  const ahead = era - eraOfTurn(turn);
+  if (ahead > 0) return RESEARCH.aheadPercent * ahead;
+  return -RESEARCH.behindPercent * Math.min(RESEARCH.behindEras, -ahead);
+}
+
+/** What the size of the polity's realm adds to the cost of its techs, in percent. */
+export function realmPercent(state: GameState, polity: number): number {
+  let cities = 0;
+  for (const city of state.cities) if (city !== null && city.owner === polity) cities++;
+  return RESEARCH.cityPercent * Math.min(RESEARCH.citiesCounted, Math.max(0, cities - 1));
+}
+
+/**
  * Science `polity` needs for `tech`: the tech's cost, less the catch-up
- * discount when any other living polity already knows it.
+ * discount when any other living polity already knows it, more or less by
+ * the calendar ({@link calendarPercent}), and more for every city beyond the
+ * polity's first ({@link realmPercent}).
  */
 export function techCost(state: GameState, polity: number, tech: TechId): number {
   const def = TECHS[tech];
@@ -96,6 +119,7 @@ export function techCost(state: GameState, polity: number, tech: TechId): number
   for (const modifier of kitMods(state, polity)) {
     if (modifier.type === 'techCost' && (modifier.knownByOther !== true || known)) percent += modifier.percent;
   }
+  percent += calendarPercent(def.era, state.turn) + realmPercent(state, polity);
   return Math.max(1, Math.ceil((def.cost * (100 + percent)) / 100));
 }
 
@@ -252,26 +276,47 @@ export function upgradeTargetFor(ctx: Ctx, unit: Unit): UnitDef | null {
 
 // -------------------------------------------------------- research choice
 
-/** The first tech `polity` still lacks for the stages of the project it has not built, or null. */
+/** The techs that unlock a building with an air strike. */
+const AIR_TECHS: readonly TechId[] = BUILDING_IDS.filter((id) => BUILDINGS[id].airStrike).map((id) => BUILDINGS[id].tech);
+
+/**
+ * The tech `polity` should research next for the stages of the project it
+ * has not built: the first of their techs it lacks or, once it has entered
+ * that tech's era, the first tech it still lacks on the way to it. Null when
+ * it knows them all.
+ */
 function nextProjectTech(ctx: Ctx, polity: number): TechId | null {
   const self = polityOf(ctx, polity);
+  const missing = (tech: TechId): TechId | null => {
+    if (self.techs.includes(tech)) return null;
+    for (const needed of TECHS[tech].requires) {
+      const first = missing(needed);
+      if (first !== null) return first;
+    }
+    return tech;
+  };
   for (let stage = self.projectStage; stage < PROJECT.stages.length; stage++) {
     const tech = at(PROJECT.stages, stage).tech;
-    if (!self.techs.includes(tech)) return tech;
+    if (self.techs.includes(tech)) continue;
+    return self.era >= TECHS[tech].era ? missing(tech) : tech;
   }
   return null;
 }
 
 /**
  * True if the polity goes for the Science victory: it has started the
- * project, or it has gathered more science than every other researching
- * nation.
+ * project, its leader's ambition in this game is learning, or it is an
+ * all-rounder that has gathered more science than every other researching
+ * nation. A leader out for conquest or wealth leaves the project alone.
  */
 export function pursuesScience(ctx: Ctx, polity: number): boolean {
   const { state } = ctx;
   if (!researches(state, polity) || at(ctx.map.polities, polity).kind !== 'nation') return false;
   const self = polityOf(ctx, polity);
   if (self.projectStage > 0) return true;
+  const ambition = ambitionOf(state.seed, polity, nationOf(ctx, polity));
+  if (ambition === 'learning') return true;
+  if (ambition !== 'balanced') return false;
   for (const other of researchers(state)) {
     if (other === polity) continue;
     const science = polityOf(ctx, other).science;
@@ -304,13 +349,16 @@ export function suggestResearch(ctx: Ctx, polity: number): TechId | null {
   }
   const oldest = Math.min(...open.map((tech) => TECHS[tech].era));
   // The leader's style adds to the kinds of tech it cares for.
-  const style = personalityOf(nationOf(ctx, polity));
+  const nation = nationOf(ctx, polity);
+  const ambition = ambitionOf(ctx.state.seed, polity, nation);
+  const style = styleFor(nation, ambition);
   let best: TechId | null = null;
   let bestScore = -Infinity;
   for (const tech of open) {
     const def = TECHS[tech];
     const kind = def.kind === 'naval' && coastal ? 'economy' : def.kind;
-    const score = weights[kind] + (style.research[def.kind] ?? 0) - AI.researchEraStep * (def.era - oldest);
+    const air = (fighting || ambition === 'conquest') && AIR_TECHS.includes(tech) ? AI.researchAirPower : 0;
+    const score = weights[kind] + (style.research[def.kind] ?? 0) + air - AI.researchEraStep * (def.era - oldest);
     if (score > bestScore) {
       bestScore = score;
       best = tech;

@@ -10,7 +10,8 @@ import { createGame, endTurn, hashState, loadGame, saveGame } from './game.ts';
 import type { GameEvent, GameState } from './game.ts';
 import { labMap } from './kitLab.ts';
 import type { Lab } from './kitLab.ts';
-import { KITS, PERSONALITIES } from './kits.ts';
+import { AMBITION_STYLES, AMBITION_WEIGHTS, KITS, PERSONALITIES, PERSONALITY_IDS, ambitionOf, styleFor } from './kits.ts';
+import type { Ambition } from './kits.ts';
 import { suggestResearch } from './tech.ts';
 import { edit, learn, put, withCity } from './testUtil.ts';
 import { topologyOf } from './topology.ts';
@@ -38,17 +39,41 @@ function play(state: GameState, turns: number): { state: GameState; events: Game
 
 describe('personalities', () => {
   it('bend what a nation researches first', () => {
-    const first = (nation: string | null): string | null => {
+    // A leader's ambition is drawn anew for every game: take a game in which it is the one given.
+    const first = (nation: string | null, ambition: Ambition = 'balanced'): string | null => {
       const map = labMap(nation);
       const id = map.polities[0]!.id;
-      return suggestResearch(createCtx(cloneState(createGame(map, { majors: [id] }))), 0);
+      const seed = Array.from({ length: 200 }, (_, i) => i).find((candidate) => ambitionOf(candidate, 0, id) === ambition)!;
+      return suggestResearch(createCtx(cloneState(createGame(map, { majors: [id], seed }))), 0);
     };
     expect(KITS.qin!.personality).toBe('warlike');
     expect(KITS.wu!.personality).toBe('seafaring');
-    // No style: an economy tech. A warlike leader: a military one. A seafaring one: boats.
+    // No style: an economy tech. A warlike leader out for conquest: a military one. A seafaring one: boats.
     expect(first(null)).toBe('farming');
-    expect(first('qin')).toBe('archery');
-    expect(first('wu')).toBe('boats');
+    expect(first('qin', 'conquest')).toBe('archery');
+    expect(first('wu', 'wealth')).toBe('boats');
+    expect(first('wu', 'conquest')).toBe('boats');
+  });
+
+  it('are bent by an ambition that the seed draws for every game', () => {
+    // A polity without a kit is always the all-rounder it was.
+    expect(ambitionOf(7, 0, 'jia')).toBe('balanced');
+    const drawn = Array.from({ length: 300 }, (_, seed) => ambitionOf(seed, 3, 'shu'));
+    expect(ambitionOf(41, 3, 'shu')).toBe(drawn[41]);
+    // A leader with a kit sets out for one of the three victories, most often the one its personality favours.
+    expect(new Set(drawn)).toEqual(new Set(['conquest', 'learning', 'wealth']));
+    const count = (ambition: Ambition): number => drawn.filter((entry) => entry === ambition).length;
+    expect(KITS.shu!.personality).toBe('scholarly');
+    expect(count('learning')).toBeGreaterThan(count('wealth'));
+    expect(count('wealth')).toBeGreaterThan(count('conquest'));
+    for (const id of PERSONALITY_IDS) expect(AMBITION_WEIGHTS[id].balanced).toBe(0);
+    // The ambition bends the style: a leader out for learning starts no wars and builds its academies first.
+    expect(AMBITION_STYLES.learning.startsWars).toBe(false);
+    expect(AMBITION_STYLES.wealth.startsWars).toBe(false);
+    expect(AMBITION_STYLES.conquest.startsWars).toBe(true);
+    expect(styleFor('qin', 'learning').buildFirst.slice(0, 2)).toEqual(['academy', 'university']);
+    expect(styleFor('qin', 'conquest').warRatio).toBeCloseTo(PERSONALITIES.warlike.warRatio * AMBITION_STYLES.conquest.warRatio);
+    expect(styleFor('qin', 'balanced')).toMatchObject({ ...PERSONALITIES.warlike });
   });
 
   it('bend what a city builds first', () => {
