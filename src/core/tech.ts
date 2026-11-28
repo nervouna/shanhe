@@ -9,6 +9,8 @@ import {
   AI,
   BUILDINGS,
   BUILDING_IDS,
+  DIFFICULTY,
+  techCostBonus,
   ERAS,
   PROJECT,
   RESEARCH,
@@ -107,11 +109,19 @@ export function realmPercent(state: GameState, polity: number): number {
   return RESEARCH.cityPercent * Math.min(RESEARCH.citiesCounted, Math.max(0, cities - 1));
 }
 
+/** What the difficulty level adds to the cost of the polity's techs, in percent: something for the AI's majors above the middle level. */
+export function difficultyTechPercent(state: GameState, polity: number): number {
+  const level = DIFFICULTY[state.difficulty];
+  if (polity === state.player) return techCostBonus(level.player);
+  return state.majors.includes(polity) ? techCostBonus(level.ai) : 0;
+}
+
 /**
  * Science `polity` needs for `tech`: the tech's cost, less the catch-up
  * discount when any other living polity already knows it, more or less by
- * the calendar ({@link calendarPercent}), and more for every city beyond the
- * polity's first ({@link realmPercent}).
+ * the calendar ({@link calendarPercent}), more for every city beyond the
+ * polity's first ({@link realmPercent}), and more for an AI major above the
+ * middle difficulty level ({@link difficultyTechPercent}).
  */
 export function techCost(state: GameState, polity: number, tech: TechId): number {
   const def = TECHS[tech];
@@ -125,7 +135,7 @@ export function techCost(state: GameState, polity: number, tech: TechId): number
   for (const modifier of kitMods(state, polity)) {
     if (modifier.type === 'techCost' && (modifier.knownByOther !== true || known)) percent += modifier.percent;
   }
-  percent += calendarPercent(def.era, state.turn) + realmPercent(state, polity);
+  percent += calendarPercent(def.era, state.turn) + realmPercent(state, polity) + difficultyTechPercent(state, polity);
   return Math.max(1, Math.ceil((def.cost * (100 + percent)) / 100));
 }
 

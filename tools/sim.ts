@@ -25,8 +25,9 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { ERAS } from '../src/core/data.ts';
+import { DEFAULT_DIFFICULTY, ERAS, isDifficultyLevel } from '../src/core/data.ts';
 import { createGame, endTurn } from '../src/core/game.ts';
+import type { DifficultyLevel } from '../src/core/data.ts';
 import type { GameResult } from '../src/core/game.ts';
 import { createFixtureMap } from '../src/shared/fixtureMap.ts';
 import { parseMapData } from '../src/shared/mapData.ts';
@@ -36,13 +37,26 @@ import { createCollector, formatReport } from './report.ts';
 import type { GameReport } from './report.ts';
 
 const USAGE =
-  'usage: npm run sim -- --map <fixture|synthetic|path to map.json> --turns 150 (--seed N | --seeds A-B | --seeds A,B,C) [--report]';
+  'usage: npm run sim -- --map <fixture|synthetic|path to map.json> --turns 150 (--seed N | --seeds A-B | --seeds A,B,C) ' +
+  '[--difficulty relaxed|easy|standard|hard|severe] [--report]';
 const ERA_NAMES = ['Ancient', 'Classical', 'Medieval', 'Early Modern', 'Industrial', 'Modern'];
 const VICTORIES: readonly GameResult['kind'][] = ['conquest', 'science', 'economic'];
 /** The window the design aims at for the first major nation's entry into the Modern era. */
 const MODERN_WINDOW = [110, 140] as const;
 /** The turn at which the units on the map are counted: the middle of the game, when armies are at their largest. */
 const CENSUS_TURN = 90;
+/** The window for the turn on which the first major nation leaves the Ancient era. */
+const ANCIENT_WINDOW = [18, 30] as const;
+/** The window for the length of each later era: the turns between the first major's entry into it and into the next. */
+const ERA_LENGTH_WINDOW = [20, 32] as const;
+/** A game that ends before this turn leaves the Economic victory no chance. */
+const LATE_TURN = 140;
+/** No game should end before this turn. */
+const EARLY_TURN = 110;
+/** The turn at whose end the settled wasteland sites are counted. */
+const SETTLE_TURN = 60;
+/** The turn in which the idle cities of the major nations are counted. */
+const IDLE_TURN = 140;
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -82,6 +96,9 @@ const source = option('map') ?? 'fixture';
 const turns = Number(option('turns') ?? '150');
 const seeds = parseSeeds();
 const withReport = process.argv.includes('--report');
+const level = option('difficulty') ?? DEFAULT_DIFFICULTY;
+if (!isDifficultyLevel(level)) fail();
+const difficulty: DifficultyLevel = level;
 if (!Number.isInteger(turns) || turns < 1 || seeds.length === 0 || seeds.some((seed) => !Number.isInteger(seed))) fail();
 
 const map = loadMap(source);
@@ -116,17 +133,36 @@ interface Outcome {
   seconds: number;
   /** Units on the map, tribes included, when turn `CENSUS_TURN` began; -1 if the game ended before. */
   unitsAtCensus: number;
+  /** Wasteland city sites, and how many of them carried a city when turn `SETTLE_TURN` ended; -1 if the game ended before. */
+  wastelandSites: number;
+  settledSites: number;
+  /** Air strikes made by anybody. */
+  airStrikes: number;
+  /** Per living major at the end: its treasury in turns of its income. */
+  treasuryTurns: number[];
+  /** The majors' treasuries and incomes at the end, summed. */
+  treasury: number;
+  income: number;
+  /** Cities of living majors in turn `IDLE_TURN`, and how many of them built nothing and had nothing queued; -1 if the game ended before. */
+  majorCities: number;
+  idleCities: number;
   report: GameReport | null;
 }
 
 function playGame(seed: number, announce: boolean): Outcome {
-  let state = createGame(map, source === 'synthetic' ? { seed, turns, majors: spread } : { seed, turns });
+  let state = createGame(map, source === 'synthetic' ? { seed, turns, majors: spread, difficulty } : { seed, turns, difficulty });
   if (announce) {
     console.log(
       `map: ${source}, ${map.width} x ${map.height} hexes, ${map.polities.length} polities, ` +
-        `${map.zones.length} zones, ${state.majors.length} major nations`,
+        `${map.zones.length} zones, ${state.majors.length} major nations, difficulty ${difficulty}`,
     );
   }
+  // The wasteland city sites: the zones nobody owns when the game starts.
+  const wasteland = state.zoneOwner.flatMap((owner, zone) => (owner < 0 ? [zone] : []));
+  let settledSites = -1;
+  let airStrikes = 0;
+  let majorCities = -1;
+  let idleCities = -1;
   const eraTurns: number[] = ERAS.map((_, era) => (era === 0 ? 1 : 0));
   let played = 0;
   let worst = 0;
@@ -143,6 +179,18 @@ function playGame(seed: number, announce: boolean): Outcome {
       if (event.type === 'eraEntered' && eraTurns[event.era] === 0 && state.majors.includes(event.polity)) {
         eraTurns[event.era] = turn;
       }
+      if (event.type === 'airStrike') airStrikes++;
+    }
+    if (turn === SETTLE_TURN) settledSites = wasteland.filter((zone) => step.state.cities[zone] !== null).length;
+    if (turn === IDLE_TURN) {
+      const built = new Set(step.events.flatMap((event) => (event.type === 'cityBuilt' ? [event.city] : [])));
+      majorCities = 0;
+      idleCities = 0;
+      for (const city of step.state.cities) {
+        if (city === null || !state.majors.includes(city.owner)) continue;
+        majorCities++;
+        if (city.queue.length === 0 && !built.has(city.zone)) idleCities++;
+      }
     }
     collector?.observe(state, step.state, step.events);
     state = step.state;
@@ -157,6 +205,17 @@ function playGame(seed: number, announce: boolean): Outcome {
     .map((major) => state.polities[major]?.techs.length ?? 0)
     .sort((a, b) => a - b);
   const policies = state.polities[result.winner]?.policies.length ?? 0;
+  const treasuryTurns: number[] = [];
+  let treasury = 0;
+  let income = 0;
+  for (const major of state.majors) {
+    const self = state.polities[major];
+    if (self === undefined || !self.alive) continue;
+    const earned = self.yields.gold + self.routeIncome + self.tributeReceived;
+    treasury += self.gold;
+    income += earned;
+    if (earned > 0) treasuryTurns.push(self.gold / earned);
+  }
   const eras = eraTurns.slice(1).map((turn, i) => `${ERA_NAMES[i + 1] ?? ''} ${turn === 0 ? '-' : turn}`);
   console.log(
     `seed ${seed}: ${played} turns played, result: ${result.kind} victory for ${winner?.nameEn ?? '?'} ` +
@@ -185,6 +244,14 @@ function playGame(seed: number, announce: boolean): Outcome {
     turn: result.turn,
     seconds: total / 1000,
     unitsAtCensus,
+    wastelandSites: wasteland.length,
+    settledSites,
+    airStrikes,
+    treasuryTurns,
+    treasury,
+    income,
+    majorCities,
+    idleCities,
     report: collector?.finish(state) ?? null,
   };
 }
@@ -227,6 +294,66 @@ console.log(
     `${modern} of ${outcomes.length} game(s)`,
 );
 const range = (values: number[]): string => `${Math.min(...values)} to ${Math.max(...values)}`;
+const mean = (values: readonly number[]): number =>
+  values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
+// Pacing: when the first major leaves the Ancient era, and how long each later era lasts for the first major to enter it
+// (the turns from the first major's entry into the era to the first major's entry into the next).
+const ancient = outcomes.map((outcome) => outcome.eraTurns[1] ?? 0).filter((turn) => turn > 0);
+const ancientInWindow = ancient.filter((turn) => turn >= ANCIENT_WINDOW[0] && turn <= ANCIENT_WINDOW[1]).length;
+const lengths: number[][] = ERAS.map(() => []);
+let gamesInPace = 0;
+for (const outcome of outcomes) {
+  const first = outcome.eraTurns[1] ?? 0;
+  let inPace = first >= ANCIENT_WINDOW[0] && first <= ANCIENT_WINDOW[1];
+  for (let era = 1; era < ERAS.length - 1; era++) {
+    const from = outcome.eraTurns[era] ?? 0;
+    const to = outcome.eraTurns[era + 1] ?? 0;
+    if (from === 0 || to === 0) continue;
+    lengths[era]?.push(to - from);
+    if (to - from < ERA_LENGTH_WINDOW[0] || to - from > ERA_LENGTH_WINDOW[1]) inPace = false;
+  }
+  if (inPace) gamesInPace++;
+}
+const allLengths = lengths.flat();
+const lengthsInWindow = allLengths.filter((length) => length >= ERA_LENGTH_WINDOW[0] && length <= ERA_LENGTH_WINDOW[1]).length;
+console.log(
+  `pacing: the first major leaves the Ancient era on turn ${ancient.length === 0 ? '-' : range(ancient)} ` +
+    `(turns ${ANCIENT_WINDOW[0]} to ${ANCIENT_WINDOW[1]}: ${ancientInWindow} of ${outcomes.length} game(s)); later eras last ` +
+    lengths
+      .flatMap((list, era) => (list.length === 0 ? [] : [`${ERA_NAMES[era] ?? ''} ${range(list)}`]))
+      .join(', ') +
+    ` turns (${ERA_LENGTH_WINDOW[0]} to ${ERA_LENGTH_WINDOW[1]} turns: ${lengthsInWindow} of ${allLengths.length} era(s)); ` +
+    `games with every era in its window: ${gamesInPace} of ${outcomes.length}`,
+);
+console.log(
+  `games that end before turn ${EARLY_TURN}: ${ends.filter((turn) => turn < EARLY_TURN).length}; ` +
+    `before turn ${LATE_TURN}: ${ends.filter((turn) => turn < LATE_TURN).length} of ${outcomes.length}`,
+);
+const settled = outcomes.filter((outcome) => outcome.settledSites >= 0);
+if (settled.length > 0) {
+  const sites = settled[0]?.wastelandSites ?? 0;
+  const count = mean(settled.map((outcome) => outcome.settledSites));
+  console.log(
+    `wasteland sites settled when turn ${SETTLE_TURN} ends: ${count.toFixed(1)} of ${sites} on average ` +
+      `(${sites === 0 ? 0 : ((100 * count) / sites).toFixed(0)}%), ${range(settled.map((outcome) => outcome.settledSites))}`,
+  );
+}
+const everyMajor = outcomes.flatMap((outcome) => outcome.treasuryTurns);
+console.log(
+  `majors' treasuries at the end: ${mean(everyMajor).toFixed(1)} turns of income for a major on average ` +
+    `(${everyMajor.length} majors); all treasuries over all incomes: ` +
+    `${(outcomes.reduce((sum, outcome) => sum + outcome.treasury, 0) / Math.max(1, outcomes.reduce((sum, outcome) => sum + outcome.income, 0))).toFixed(1)} turns`,
+);
+const struck = outcomes.filter((outcome) => outcome.airStrikes > 0).length;
+console.log(
+  `air strikes: ${mean(outcomes.map((outcome) => outcome.airStrikes)).toFixed(1)} a game, in ${struck} of ${outcomes.length} game(s)`,
+);
+const late = outcomes.filter((outcome) => outcome.majorCities > 0);
+if (late.length > 0) {
+  const cities = late.reduce((sum, outcome) => sum + outcome.majorCities, 0);
+  const idle = late.reduce((sum, outcome) => sum + outcome.idleCities, 0);
+  console.log(`major nations' cities with nothing to build in turn ${IDLE_TURN}: ${idle} of ${cities} (${((100 * idle) / cities).toFixed(0)}%)`);
+}
 /** The median of the values: the middle one, or the mean of the middle two. */
 function median(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b);

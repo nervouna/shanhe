@@ -69,6 +69,11 @@ export interface City {
   queue: BuildItem[];
   /** Production stored towards the current project. */
   progress: number;
+  /**
+   * "Repeat last item": when the city finishes an item and its queue is then
+   * empty, it queues the same item again if it may still build it.
+   */
+  repeat: boolean;
   /** Turns of unrest left. */
   unrest: number;
   /** 0–100. */
@@ -124,6 +129,11 @@ export interface PolityState {
   freeSwaps: number;
   /** The first turn in which it may make a paid swap again. */
   swapReadyOn: number;
+  /**
+   * Per slot: the turn in which it was last emptied, or 0. Putting a card
+   * into a slot emptied less than a cooldown ago is a swap.
+   */
+  slotFreedOn: number[];
   /** The polity it is a vassal of, or -1. */
   overlord: number;
   /** For a city-state: its type. Null for everybody else. */
@@ -178,9 +188,13 @@ export interface Relation {
   atWar: boolean;
   /** Turn the current war, or the current peace, began. */
   since: number;
-  /** Turn in which `a` last offered peace to `b`, or 0. */
+  /**
+   * Turn in which `a` offered `b` the peace that still stands, or 0. An offer
+   * stands for `DIPLOMACY.offerTurns` turns; a negative number is the turn in
+   * which its last offer lapsed, negated: no offer stands.
+   */
   offerA: number;
-  /** Turn in which `b` last offered peace to `a`, or 0. */
+  /** The same for an offer of `b` to `a`. */
   offerB: number;
 }
 
@@ -361,6 +375,8 @@ export type Action =
   | { readonly type: 'setFocus'; readonly polity: number; readonly city: number; readonly focus: Focus }
   /** Appends an item to a city's build queue. */
   | { readonly type: 'queueBuild'; readonly polity: number; readonly city: number; readonly item: BuildItem }
+  /** Turns "repeat last item" on or off for a city (`City.repeat`). */
+  | { readonly type: 'setRepeat'; readonly polity: number; readonly city: number; readonly repeat: boolean }
   /** Removes the item at `index` from a city's build queue. */
   | { readonly type: 'unqueueBuild'; readonly polity: number; readonly city: number; readonly index: number }
   /** Chooses the tech the polity researches. Science already stored stays. */
@@ -622,7 +638,8 @@ export type RejectReason =
   | 'nothingToPillage'
   | 'cannotBuy'
   | 'inUnrest'
-  | 'noRoom';
+  | 'noRoom'
+  | 'alreadySet';
 
 export type ActionResult =
   | { readonly ok: true; readonly state: GameState; readonly events: GameEvent[] }
