@@ -40,7 +40,7 @@ Procedural trees in a few families — conifer, broadleaf, bamboo, palm, rainfor
 
 ## Light and atmosphere
 
-- Physically based sky; sunlight with cascaded shadows. The sky is never in view from the game camera, which always looks down: it is the environment that water and pieces mirror. The cascades are squares on the ground around the point the camera looks at, each drawn again only when something that casts a shadow changed or the view left it.
+- Physically based sky; sunlight with cascaded shadows. The sky is never in view from the game camera, which always looks down: it is the environment that water and pieces mirror. The cascades are squares on the ground around the point the camera looks at, each drawn again only when something that casts a shadow changed or the view left it. Each cascade keeps a map of the ground and one of the pieces; a moving piece redraws only the latter.
 - Aerial perspective: distant mountains turn blue-grey. This is one of the main sources of realism.
 - A cloud layer, and cloud shadows drifting slowly over the ground. At the farthest zoom clouds sit over the map, thin over the political map so that it stays readable.
 - Light is fixed at afternoon with slow drift. No day/night cycle and no seasons.

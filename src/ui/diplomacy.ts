@@ -6,9 +6,12 @@
 import type { AgreementKind } from '../core/data.ts';
 import { NO_POLITY, agreementsOf } from '../core/game.ts';
 import type { Action, Agreement, Deal, GameState, Offer, RejectReason } from '../core/game.ts';
-import { atWarWith, checkAction, dealOptions } from '../core/query.ts';
+import { ambitionOf } from '../core/kits.ts';
+import type { Ambition } from '../core/kits.ts';
+import { atWarWith, checkAction, dealOptions, peaceMakesVassal, vassalRoom } from '../core/query.ts';
 import { t } from '../shared/i18n.ts';
-import { rejectText } from './names.ts';
+import type { MapData } from '../shared/mapData.ts';
+import { agreementName, rejectText, resourceName } from './names.ts';
 
 /** The agreements a polity can propose and cancel, in the order the panel lists them. */
 export const PROPOSABLE: readonly Exclude<AgreementKind, 'truce'>[] = ['tradePact', 'openBorders', 'alliance', 'vassalage'];
@@ -160,4 +163,44 @@ export function standingWith(state: GameState, me: number, other: number): Stand
   if (kinds.includes('tradePact') || kinds.includes('openBorders')) return 'friendly';
   if (kinds.includes('truce')) return 'truce';
   return 'peace';
+}
+
+/** What a proposal asks for, as a phrase that follows the proposer's name. */
+export function offerText(map: MapData, offer: Readonly<Offer>): string {
+  if (offer.type === 'agreement') {
+    return offer.agreement === 'vassalage' ? t('offer.vassalage') : agreementName(offer.agreement);
+  }
+  const values = { resource: resourceName(map, offer.resource), gold: offer.goldPerTurn };
+  return offer.seller === offer.from ? t('offer.sell', values) : t('offer.buy', values);
+}
+
+/**
+ * What the leader of `other` has set out to win in this game, as far as the
+ * viewer knows it. An ambition is hidden: only an ally and an overlord learn
+ * it from the nation itself. The observer sees everybody's. Null where it is
+ * not known, and for a nation that is not a major one: only those follow an
+ * ambition.
+ */
+export function knownAmbition(state: GameState, viewer: number, other: number): Ambition | null {
+  const id = state.map.polities[other]?.id;
+  if (id === undefined || viewer === other || !state.majors.includes(other)) return null;
+  if (viewer !== NO_POLITY) {
+    const standing = standingWith(state, viewer, other);
+    if (standing !== 'alliance' && standing !== 'vassal') return null;
+  }
+  return ambitionOf(state.seed, other, id);
+}
+
+/** The vassals the polity holds against what its era allows, as the text shown where a vassal is asked for. */
+export function vassalRoomText(state: GameState, polity: number): string {
+  const { used, cap } = vassalRoom(state, polity);
+  return t('vassals.room', { used, cap });
+}
+
+/**
+ * What accepting peace with `other` is called: a plain peace, or a peace
+ * that makes `other` the player's vassal (doc 03, "Submission").
+ */
+export function peaceText(state: GameState, me: number, other: number): string {
+  return peaceMakesVassal(state, me, other) ? t('offer.submission') : t('polity.makePeace');
 }

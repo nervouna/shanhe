@@ -9,7 +9,8 @@ import type { TranslationKey } from '../shared/i18n.ts';
 import type { MapData } from '../shared/mapData.ts';
 import type { ImportError } from './saves.ts';
 
-export function rejectText(reason: RejectReason | 'noPath'): string {
+/** `noPath` and `unseen` are the interface's own: no way there, and a target the player's nation does not see. */
+export function rejectText(reason: RejectReason | 'noPath' | 'unseen'): string {
   const key: TranslationKey = `reject.${reason}`;
   return t(key);
 }

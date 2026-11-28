@@ -2,13 +2,22 @@
 
 import { CITY_STATE } from '../core/data.ts';
 import { NO_POLITY } from '../core/game.ts';
-import type { Offer } from '../core/game.ts';
-import { favourStanding } from '../core/query.ts';
+import type { GameState } from '../core/game.ts';
+import { favourStanding, peaceMakesVassal } from '../core/query.ts';
 import type { FavourCause } from '../core/query.ts';
 import { t } from '../shared/i18n.ts';
 import type { TranslationKey } from '../shared/i18n.ts';
-import type { MapData } from '../shared/mapData.ts';
-import { agreementsBetween, controlReasonText, dealsBetween, diplomaticControls, offersFrom } from './diplomacy.ts';
+import {
+  agreementsBetween,
+  controlReasonText,
+  dealsBetween,
+  diplomaticControls,
+  knownAmbition,
+  offerText,
+  offersFrom,
+  peaceText,
+  vassalRoomText,
+} from './diplomacy.ts';
 import type { DiplomaticControl } from './diplomacy.ts';
 import { button, el, iconOnly } from './dom.ts';
 import { kitViewOf } from './kit.ts';
@@ -19,15 +28,6 @@ import { relationView } from './rules.ts';
 import { cssColor, signed } from './view.ts';
 import type { View } from './view.ts';
 
-/** What a proposal asks for, as a phrase that follows the proposer's name. */
-export function offerText(map: MapData, offer: Readonly<Offer>): string {
-  if (offer.type === 'agreement') {
-    return offer.agreement === 'vassalage' ? t('offer.vassalage') : agreementName(offer.agreement);
-  }
-  const values = { resource: resourceName(map, offer.resource), gold: offer.goldPerTurn };
-  return offer.seller === offer.from ? t('offer.sell', values) : t('offer.buy', values);
-}
-
 function causeName(cause: FavourCause): string {
   if (cause === 'border' || cause === 'war' || cause === 'sharedEnemy' || cause === 'deal' || cause === 'route') {
     const key: TranslationKey = `cause.${cause}`;
@@ -36,12 +36,14 @@ function causeName(cause: FavourCause): string {
   return agreementName(cause);
 }
 
-function controlLabel(map: MapData, control: DiplomaticControl): string {
+function controlLabel(state: GameState, control: DiplomaticControl): string {
+  const { map } = state;
   switch (control.kind) {
     case 'declareWar':
       return t('polity.declareWar');
     case 'makePeace':
-      return t('polity.makePeace');
+      // taking up the offer of a nation that submits is named for what it does
+      return control.action.type === 'makePeace' ? peaceText(state, control.action.polity, control.action.target) : t('polity.makePeace');
     case 'propose':
       return t('diplomacy.propose', { agreement: agreementName(control.agreement) });
     case 'cancel':
@@ -77,6 +79,7 @@ export function polityPanel(view: View, polity: number, onClose: () => void): HT
   title.style.setProperty('--nation', cssColor(entry.color));
   const header = el('header', {}, title, iconOnly('close', t('menu.close'), onClose, { class: 'close', id: 'polity-close' }));
   const kit = kitViewOf(map, polity);
+  const ambition = knownAmbition(state, me, polity);
   const kind =
     entry.kind === 'cityState' ? t('polity.cityState') : state.majors.includes(polity) ? t('polity.major') : t('polity.nation');
   const cities = state.cities.filter((city) => city !== null && city.owner === polity).length;
@@ -92,6 +95,8 @@ export function polityPanel(view: View, polity: number, onClose: () => void): HT
       kit !== null && el('span', { id: 'polity-leader', text: kit.leader.name }),
       kit !== null &&
         el('span', { class: 'tag', id: 'polity-personality', text: kit.leader.personalityName, data: { personality: kit.leader.personality } }),
+      // what the leader is out for is theirs to tell: an ally or a vassal has told the player
+      ambition !== null && el('span', { class: 'tag', id: 'polity-ambition', text: t(`ambition.${ambition}`), data: { ambition } }),
     ),
   );
 
@@ -210,8 +215,8 @@ export function polityPanel(view: View, polity: number, onClose: () => void): HT
       offers.push(
         el(
           'div',
-          { class: 'offer', data: { offer: 'peace' } },
-          el('span', { class: 'option-name', text: t('polity.makePeace') }),
+          { class: 'offer', data: { offer: 'peace', vassal: Number(peaceMakesVassal(state, me, polity)) } },
+          el('span', { class: 'option-name', text: peaceText(state, me, polity) }),
           answer(true, () => view.act({ type: 'makePeace', polity: me, target: polity })),
           answer(false, () => {
             view.declinePeace(polity);
@@ -234,7 +239,10 @@ export function polityPanel(view: View, polity: number, onClose: () => void): HT
             view.refresh();
           },
         },
-        el('span', { class: 'option-name', text: controlLabel(map, control) }),
+        el('span', { class: 'option-name', text: controlLabel(state, control) }),
+        // a vassal takes one of the places the player's era allows
+        control.kind === 'propose' && control.agreement === 'vassalage' &&
+          el('span', { class: 'option-cost', id: 'vassal-room', text: vassalRoomText(state, me) }),
         reason !== null && el('span', { class: 'reason', text: reason }),
       );
     });

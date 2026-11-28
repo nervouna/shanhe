@@ -5,12 +5,16 @@
  * blue-grey (aerial perspective).
  *
  * The shadow cascades are concentric squares on the ground around the point
- * the camera looks at. Each one is drawn again only when something that
- * casts a shadow changed or the view left the ground it covers, so a view
- * at rest costs no shadow pass at all.
+ * the camera looks at. Each has two shadow maps with the same fit: one of
+ * the ground (terrain, trees, cities) and one of the unit pieces alone. A
+ * map is drawn again only when something in its layer changed or the view
+ * left the ground the cascade covers. A view at rest costs no shadow pass
+ * at all, and a piece in motion costs the piece maps only: a few thousand
+ * triangles in one draw call each, not the ground a second time.
  */
 
 import {
+  BasicShadowFilter,
   Fn,
   If,
   abs,
@@ -19,6 +23,7 @@ import {
   dot,
   fog,
   max,
+  min,
   mix,
   normalize,
   positionWorld,
@@ -39,29 +44,41 @@ import {
 } from 'three/webgpu';
 import type { Light, LightShadow, Node, NodeBuilder, Texture, UniformNode, WebGPURenderer } from 'three/webgpu';
 import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
-import { CASCADE_COUNT, SUN_STEP, angleBetween, cascadeHalf, cascadeNeedsFit, sunDirectionAt } from './lightMath.ts';
-import type { CascadeFit, Direction } from './lightMath.ts';
+import {
+  CASCADE_COUNT,
+  SUN_STEP,
+  angleBetween,
+  cascadeHalf,
+  cascadeNeedsFit,
+  shadowRedraw,
+  sunDirectionAt,
+} from './lightMath.ts';
+import type { CascadeFit, Direction, ShadowLayers } from './lightMath.ts';
+import { GROUND_SHADOW_LAYER, PIECE_SHADOW_LAYER } from './shadowLayers.ts';
 
 export interface Lighting {
   /** Unit vector from the ground towards the sun, as last stepped. */
   readonly sunDirection: Vector3;
   /** The sky as an environment map, for the materials that mirror it. */
   readonly environment: Texture;
-  /** Shadow cascades drawn since the start. Only grows. */
+  /** Shadow maps drawn since the start, of both layers. Only grows. */
   readonly shadowDraws: number;
+  /** Of those, the maps of the pieces alone. */
+  readonly pieceShadowDraws: number;
+  /** Triangles drawn into shadow maps since the last call of `update`. */
+  readonly shadowTriangles: number;
   /**
    * Fits the shadow cascades and the haze to the view and lets the sun drift.
    *
    * @param target the point the camera looks at.
    * @param distance from the camera to the target.
    * @param tilt of the view above the horizon, in radians.
-   * @param dirty whether anything that casts a shadow changed since the last
-   *   call. `moving` says that only pieces in motion did: the far cascade
-   *   then follows at a third of the rate.
+   * @param changed the layers in which something that casts a shadow changed
+   *   since the last call.
    * @param seconds of drawn time since the start, for the drift of the sun.
-   * @returns whether a cascade is drawn again in the next frame.
+   * @returns whether a shadow map is drawn again in the next frame.
    */
-  update(target: Vector3, distance: number, tilt: number, dirty: boolean | 'moving', seconds: number): boolean;
+  update(target: Vector3, distance: number, tilt: number, changed: ShadowLayers, seconds: number): boolean;
   /**
    * Without tone mapping the picture would burn out: the lights are dimmed
    * to make up for it.
@@ -83,7 +100,7 @@ const SKY_INTENSITY = 1.25;
 const UNMAPPED = 0.6;
 const SHADOW_MAP_SIZE = 2048;
 
-/** A stand-in for a light: one per cascade, placed where that cascade's shadow camera looks from. */
+/** A stand-in for a light: one per shadow map, placed where that map's shadow camera looks from. */
 class CascadeLight extends Object3D {
   readonly target = new Object3D();
   /** Tells the shadow nodes that the matrices are theirs to update, when they draw. */
@@ -92,17 +109,38 @@ class CascadeLight extends Object3D {
 }
 
 interface Cascade {
-  readonly light: CascadeLight;
+  /** The lights of its two shadow maps; both are placed alike. */
+  readonly ground: CascadeLight;
+  readonly pieces: CascadeLight;
   /** The ground point in the middle of the cascade, and half its side. */
   readonly centre: UniformNode<'vec3', Vector3>;
   readonly half: UniformNode<'float', number>;
   fit: CascadeFit | null;
 }
 
-/** Picks, per pixel, the finest cascade that covers it. */
+/** What the shadow node of a map reports when it has drawn the map. */
+type DrawListener = (triangles: number) => void;
+
+/** The shadow node of one map. `onDraw` is called whenever the map is drawn. */
+function shadowMapNode(light: CascadeLight, onDraw: DrawListener): Node<'float'> {
+  const node = shadow(light as unknown as Light, light.shadow);
+  // the typings leave out the method that draws the map
+  const drawn = node as unknown as { renderShadow(frame: { readonly renderer: WebGPURenderer }): void };
+  const draw = drawn.renderShadow.bind(drawn);
+  drawn.renderShadow = (frame) => {
+    const info = frame.renderer.info.render;
+    const before = info.triangles;
+    draw(frame);
+    onDraw(info.triangles - before);
+  };
+  // how much of the sun's light arrives: 1 in the open, 0 in shadow
+  return node as unknown as Node<'float'>;
+}
+
+/** Picks, per pixel, the finest cascade that covers it, and takes the darker of its two maps. */
 class CascadeShadowNode extends ShadowBaseNode {
   private readonly cascades: readonly Cascade[];
-  private readonly nodes: readonly Node[];
+  private readonly nodes: readonly (readonly [ground: Node<'float'>, pieces: Node<'float'>])[];
   private readonly right: UniformNode<'vec3', Vector3>;
   private readonly up: UniformNode<'vec3', Vector3>;
 
@@ -111,11 +149,19 @@ class CascadeShadowNode extends ShadowBaseNode {
     cascades: readonly Cascade[],
     right: UniformNode<'vec3', Vector3>,
     up: UniformNode<'vec3', Vector3>,
+    onDraw: (layer: keyof ShadowLayers, triangles: number) => void,
   ) {
     super(light);
     this.cascades = cascades;
-    // one shadow node, and with it one shadow map, per cascade, shared by every material
-    this.nodes = cascades.map((cascade) => shadow(cascade.light as unknown as Light, cascade.light.shadow));
+    // one shadow node, and with it one shadow map, per cascade and layer, shared by every material
+    this.nodes = cascades.map((cascade) => [
+      shadowMapNode(cascade.ground, (triangles) => {
+        onDraw('ground', triangles);
+      }),
+      shadowMapNode(cascade.pieces, (triangles) => {
+        onDraw('pieces', triangles);
+      }),
+    ]);
     this.right = right;
     this.up = up;
   }
@@ -136,11 +182,11 @@ class CascadeShadowNode extends ShadowBaseNode {
         return max(abs(dot(offset, this.right)), abs(dot(offset, this.up))).lessThan(cascade.half.mul(0.93));
       });
       const pick = (index: number): void => {
-        const node = nodes[index];
+        const pair = nodes[index];
         const within = inside[index];
-        if (node === undefined || within === undefined) return;
+        if (pair === undefined || within === undefined) return;
         If(within, () => {
-          value.assign(node);
+          value.assign(min(pair[0], pair[1]));
         }).Else(() => {
           pick(index + 1);
         });
@@ -165,14 +211,37 @@ export function createLighting(scene: Scene, renderer: WebGPURenderer, mapSpan: 
   const right = uniform(new Vector3());
   const up = uniform(new Vector3());
   const cascades: Cascade[] = [];
-  for (let i = 0; i < CASCADE_COUNT; i++) {
+  const mapLight = (layer: number): CascadeLight => {
     const light = new CascadeLight();
     light.shadow = sun.shadow.clone();
     light.shadow.autoUpdate = false;
     light.shadow.needsUpdate = false;
-    cascades.push({ light, centre: uniform(new Vector3()), half: uniform(1), fit: null });
+    // the map holds the casters of one layer only
+    light.shadow.camera.layers.set(layer);
+    return light;
+  };
+  for (let i = 0; i < CASCADE_COUNT; i++) {
+    const pieces = mapLight(PIECE_SHADOW_LAYER);
+    // a texel of a piece map is about a pixel on screen, and the edge of a
+    // piece's shadow is short: one filtered lookup is enough, where the
+    // ground's shadow takes five
+    (pieces.shadow as unknown as { filterNode: unknown }).filterNode = BasicShadowFilter;
+    cascades.push({
+      ground: mapLight(GROUND_SHADOW_LAYER),
+      pieces,
+      centre: uniform(new Vector3()),
+      half: uniform(1),
+      fit: null,
+    });
   }
-  const cascadeNode = new CascadeShadowNode(sun, cascades, right, up);
+  let shadowDraws = 0;
+  let pieceShadowDraws = 0;
+  let shadowTriangles = 0;
+  const cascadeNode = new CascadeShadowNode(sun, cascades, right, up, (layer, triangles) => {
+    shadowDraws++;
+    if (layer === 'pieces') pieceShadowDraws++;
+    shadowTriangles += triangles;
+  });
   sun.shadow.shadowNode = cascadeNode;
   scene.add(sun, sun.target);
 
@@ -217,16 +286,20 @@ export function createLighting(scene: Scene, renderer: WebGPURenderer, mapSpan: 
   };
   placeAxes();
 
-  let shadowDraws = 0;
-  let farTurn = 0;
-
   return {
     sunDirection,
     environment: environmentTarget.texture,
     get shadowDraws() {
       return shadowDraws;
     },
-    update(target, distance, tilt, dirty, seconds) {
+    get pieceShadowDraws() {
+      return pieceShadowDraws;
+    },
+    get shadowTriangles() {
+      return shadowTriangles;
+    },
+    update(target, distance, tilt, changed, seconds) {
+      shadowTriangles = 0;
       // the sun moves in steps, so that the shadows are not drawn every frame
       const wanted = sunDirectionAt(seconds);
       let stepped = false;
@@ -242,12 +315,9 @@ export function createLighting(scene: Scene, renderer: WebGPURenderer, mapSpan: 
       sun.updateMatrixWorld();
 
       let redraw = false;
-      farTurn = (farTurn + 1) % 3;
-      cascades.forEach((cascade, index) => {
+      for (const [index, cascade] of cascades.entries()) {
         const refit = stepped || cascadeNeedsFit(cascade.fit, target.x, target.z, distance);
-        // pieces in motion: the far cascade is drawn every third frame
-        const changed = dirty === true || (dirty === 'moving' && (index === 0 || farTurn === 0));
-        if (!refit && !changed) return;
+        const draw = shadowRedraw(refit, changed);
         if (refit) {
           const half = cascadeHalf(index, distance, mapSpan);
           cascade.fit = { x: target.x, z: target.z, distance, half };
@@ -255,34 +325,35 @@ export function createLighting(scene: Scene, renderer: WebGPURenderer, mapSpan: 
           cascade.half.value = half;
           // far enough back to see over every mountain between it and the ground
           const back = half * 3 + heightSpan * 2;
-          const { light } = cascade;
-          light.target.position.copy(target);
-          light.position.copy(target).addScaledVector(sunDirection, back);
-          light.target.updateMatrixWorld();
-          light.updateMatrixWorld();
-          const camera = light.shadow.camera as unknown as {
-            left: number;
-            right: number;
-            top: number;
-            bottom: number;
-            near: number;
-            far: number;
-            updateProjectionMatrix(): void;
-          };
-          camera.left = -half;
-          camera.right = half;
-          camera.top = half;
-          camera.bottom = -half;
-          camera.near = Math.max(back - half * 2.5 - heightSpan * 2, back * 0.02);
-          camera.far = back + half * 2.5 + heightSpan * 2;
-          camera.updateProjectionMatrix();
-          light.shadow.bias = -0.0004;
-          light.shadow.normalBias = ((2 * half) / SHADOW_MAP_SIZE) * 2;
+          for (const light of [cascade.ground, cascade.pieces]) {
+            light.target.position.copy(target);
+            light.position.copy(target).addScaledVector(sunDirection, back);
+            light.target.updateMatrixWorld();
+            light.updateMatrixWorld();
+            const camera = light.shadow.camera as unknown as {
+              left: number;
+              right: number;
+              top: number;
+              bottom: number;
+              near: number;
+              far: number;
+              updateProjectionMatrix(): void;
+            };
+            camera.left = -half;
+            camera.right = half;
+            camera.top = half;
+            camera.bottom = -half;
+            camera.near = Math.max(back - half * 2.5 - heightSpan * 2, back * 0.02);
+            camera.far = back + half * 2.5 + heightSpan * 2;
+            camera.updateProjectionMatrix();
+            light.shadow.bias = -0.0004;
+            light.shadow.normalBias = ((2 * half) / SHADOW_MAP_SIZE) * 2;
+          }
         }
-        cascade.light.shadow.needsUpdate = true;
-        shadowDraws++;
-        redraw = true;
-      });
+        if (draw.ground) cascade.ground.shadow.needsUpdate = true;
+        if (draw.pieces) cascade.pieces.shadow.needsUpdate = true;
+        if (draw.ground || draw.pieces) redraw = true;
+      }
 
       // looking down, everything is about `distance` away and stays clear;
       // looking across, the far ground fades into the haze
@@ -298,7 +369,10 @@ export function createLighting(scene: Scene, renderer: WebGPURenderer, mapSpan: 
     dispose() {
       scene.remove(sun, sun.target, sky);
       cascadeNode.dispose();
-      for (const cascade of cascades) cascade.light.shadow.dispose();
+      for (const cascade of cascades) {
+        cascade.ground.shadow.dispose();
+        cascade.pieces.shadow.dispose();
+      }
       sun.dispose();
       sky.dispose();
       environmentTarget.dispose();

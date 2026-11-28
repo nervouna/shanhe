@@ -75,6 +75,51 @@ export function cascadeNeedsFit(fit: CascadeFit | null, x: number, z: number, di
   return Math.hypot(x - fit.x, z - fit.z) > fit.half * 0.22;
 }
 
+/**
+ * What casts shadows, in two layers with a shadow map each per cascade.
+ * `ground` is everything that stands still: terrain, trees, cities and the
+ * buildings of improvements. `pieces` are the unit pieces, which move.
+ */
+export interface ShadowLayers {
+  readonly ground: boolean;
+  readonly pieces: boolean;
+}
+
+/**
+ * Which shadow maps of one cascade are drawn again in a frame.
+ *
+ * The ground map is by far the dearer one (every terrain patch, forest and
+ * city the cascade covers), so a piece in motion never draws it: only a
+ * change of the ground itself does, or a new fit of the cascade, which moves
+ * both maps.
+ *
+ * @param refit whether the cascade is fitted to the view again in this frame.
+ * @param changed the layers in which something changed since the last frame.
+ */
+export function shadowRedraw(refit: boolean, changed: ShadowLayers): ShadowLayers {
+  return { ground: refit || changed.ground, pieces: refit || changed.pieces };
+}
+
+/**
+ * While the view moves, terrain patches change their detail and forests come
+ * in, a few in every frame: the ground's shadow maps follow them at this
+ * interval of frames, not in each one.
+ */
+export const GROUND_STREAM_FRAMES = 12;
+
+/**
+ * Whether the ground's shadow maps are drawn again for terrain and trees
+ * that came in.
+ *
+ * @param pending whether any came in since the maps were last drawn for them.
+ * @param now whether any came in in this frame.
+ * @param framesSince frames since the maps were last drawn for them.
+ */
+export function streamedGroundDue(pending: boolean, now: boolean, framesSince: number): boolean {
+  // settled, or overdue while more keeps coming
+  return pending && (!now || framesSince >= GROUND_STREAM_FRAMES);
+}
+
 /** The layer starts to show at this zoom fraction and is at its fullest at the next one. */
 const SHOW_FROM = 0.42;
 const SHOW_FULL = 0.7;

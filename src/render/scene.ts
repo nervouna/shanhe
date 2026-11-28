@@ -258,11 +258,21 @@ export interface FrameStats {
   /** Whether an animation started by {@link Renderer.play} is running. */
   readonly animating: boolean;
   /**
-   * Shadow cascades drawn since the renderer started. The number only grows,
-   * and stands still while nothing that casts a shadow changes and the view
-   * stays on the ground the cascades cover.
+   * Shadow maps drawn since the renderer started: every cascade has one of
+   * the ground and one of the unit pieces. The number only grows, and stands
+   * still while nothing that casts a shadow changes and the view stays on the
+   * ground the cascades cover.
    */
   readonly shadowDraws: number;
+  /**
+   * Of {@link shadowDraws}, the maps of the pieces alone. A piece that moves
+   * has these drawn again, and only these: the maps of the ground, the rest
+   * of `shadowDraws`, are drawn when terrain, trees or cities change, the
+   * view leaves a cascade or the sun steps on.
+   */
+  readonly pieceShadowDraws: number;
+  /** Triangles drawn into shadow maps in the last frame; part of {@link triangles}. */
+  readonly shadowTriangles: number;
   /** Trees drawn in the last frame; 0 from far away, where forests are colour and relief only. */
   readonly trees: number;
   /** Opacity of the cloud layer over the map: 0 near the ground, where only cloud shadows show. */

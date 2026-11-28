@@ -17,14 +17,14 @@ import {
   hexesApart,
   militaryStrength,
 } from './combat.ts';
-import { at, atWar, cityAtHex, createCtx, isEmbarked, relationKey } from './context.ts';
+import { at, atWar, cityAtHex, createCtx, isEmbarked, relationKey, relationOf } from './context.ts';
 import type { Ctx } from './context.ts';
-import { AIR_STRIKE, PROJECT, TRADE, conquestTarget, unitDef } from './data.ts';
+import { AIR_STRIKE, DIPLOMACY, PROJECT, TRADE, conquestTarget, unitDef } from './data.ts';
 import type { AgreementKind, PolicyId, TechId } from './data.ts';
-import { dealPrice, favourStandings } from './diplomacy.ts';
+import { dealPrice, favourStandings, submits } from './diplomacy.ts';
 import { kitOf, roadUpgradeOf } from './modifiers.ts';
 import { openPolicies } from './policies.ts';
-import { isNation } from './relations.ts';
+import { isNation, vassalsOf } from './relations.ts';
 import { eraOf, hasResource, openTechs, ownsResource, researches, upgradeTargetFor } from './tech.ts';
 import { checkRoute, checkRouteTarget, findRoutePath, routeIncome, routeSlots, routesOf } from './trade.ts';
 import { capitalsHeld, contenders } from './turn.ts';
@@ -522,4 +522,35 @@ export function attackOutcome(state: GameState, unitId: number, target: number, 
     toAttacker: ranged ? 0 : combatDamage(defence, attack, 1),
     capture: false,
   };
+}
+
+// -------------------------------------------------------- vassals (interface)
+
+export interface VassalRoom {
+  /** Living vassals the polity holds. */
+  readonly used: number;
+  /** Vassals its era lets it hold (`DIPLOMACY.vassalsByEra`). */
+  readonly cap: number;
+}
+
+/** The vassals `polity` holds and how many it may hold in the era it has reached. */
+export function vassalRoom(state: GameState, polity: number): VassalRoom {
+  const self = state.polities[polity];
+  if (self === undefined) return { used: 0, cap: 0 };
+  return { used: vassalsOf(ctxOf(state), polity).length, cap: DIPLOMACY.vassalsByEra[self.era] ?? 0 };
+}
+
+/**
+ * True if `polity` making peace with `other` now would make `other` its
+ * vassal: `other` has a peace offer standing, so it is the one who asked,
+ * and the rules have it pay for the peace with its freedom (doc 03,
+ * "Submission"). False where the `makePeace` action itself is refused.
+ */
+export function peaceMakesVassal(state: GameState, polity: number, other: number): boolean {
+  const ctx = ctxOf(state);
+  if (validate(ctx, { type: 'makePeace', polity, target: other }) !== null) return false;
+  const relation = relationOf(ctx, polity, other);
+  if (relation === undefined) return false;
+  const theirOffer = relation.a === other ? relation.offerA : relation.offerB;
+  return theirOffer > 0 && submits(ctx, other, polity);
 }
