@@ -5,22 +5,34 @@
  * state that comes back.
  */
 
-import { FOCUSES, IMPROVEMENTS, PROJECT, SETTLER, unitDef } from '../core/data.ts';
+import { BUILDINGS, FOCUSES, IMPROVEMENTS, PROJECT, SETTLER, unitDef } from '../core/data.ts';
 import type { Yields } from '../core/data.ts';
-import { NO_POLITY, currentEra, hexOwner } from '../core/game.ts';
+import { NO_POLITY, currentEra, hexOwner, nextPolicyCost } from '../core/game.ts';
 import type { Action, GameEvent, GameState, Unit } from '../core/game.ts';
-import type { HexHighlight, Renderer } from '../render/scene.ts';
+import { airStrikeTargets, buyCostOf, hexDistance } from '../core/query.ts';
+import type { HexHighlight, Renderer, SelectionAids } from '../render/scene.ts';
+import { indexToOffset } from '../shared/hex.ts';
 import { getLanguage, setLanguage, t } from '../shared/i18n.ts';
+import type { TranslationKey } from '../shared/i18n.ts';
 import type { MapData } from '../shared/mapData.ts';
-import { UNIT_CHARACTERS, sceneOf } from './board.ts';
-import { button, el, fill } from './dom.ts';
+import { orderAids } from './aids.ts';
+import { playSpeed, visualEvents } from './animation.ts';
+import { pieceOf, sceneOf, wholeMapView } from './board.ts';
+import { createTradeSection } from './cityTrade.ts';
+import { standingWith } from './diplomacy.ts';
+import { button, el, fill, fillWhen, iconButton, iconOnly, stat } from './dom.ts';
 import { createHost } from './host.ts';
 import type { Host, HostChange, RunReport } from './host.ts';
-import { loadLanguage, saveLanguage } from './language.ts';
+import { icon } from './icons.ts';
+import type { IconName } from './icons.ts';
+import { NATION_SORTS, kitViewOf, listNations, nationEntries, regionsOf } from './kit.ts';
+import type { NationEntry, NationSort } from './kit.ts';
+import { difficultyMark, kitRows } from './kitPanel.ts';
+import { LENSES } from './lens.ts';
+import type { Lens } from './lens.ts';
 import { createMinimap } from './minimap.ts';
 import type { Minimap } from './minimap.ts';
 import {
-  REGIONS,
   buildingName,
   cityName,
   eraName,
@@ -29,22 +41,45 @@ import {
   itemName,
   polityName,
   regionName,
-  regionOf,
   rejectText,
+  resourceName,
   saveErrorText,
   techName,
   unitName,
   yieldName,
 } from './names.ts';
+import { policyOverlay, politiesOverlay, standingName, techOverlay, victoryOverlay } from './overlays.ts';
+import type { OverlayKind, PolicyOverlayState, PolitiesOverlayState } from './overlays.ts';
 import { attackReach, findPath, previewAttack, reachableHexes } from './path.ts';
+import type { Path } from './path.ts';
 import { mainButton } from './pending.ts';
-import type { PendingItem } from './pending.ts';
-import { check, cityView, cityZoneAt, politySummary, ranking, relationView, researchView, upgradeView } from './rules.ts';
+import type { PendingItem, PendingKind } from './pending.ts';
+import { offerText, polityPanel as polityPanelNodes } from './polityPanel.ts';
+import {
+  check,
+  cityView,
+  cityZoneAt,
+  demandAction,
+  pillageAction,
+  politySummary,
+  ranking,
+  relationView,
+  researchView,
+  upgradeView,
+} from './rules.ts';
 import type { BuildOption } from './rules.ts';
+import type { Region } from './names.ts';
 import { MAX_SAVE_BYTES, exportSave, importSave } from './saves.ts';
+import { SCALE_SETTINGS, uiScale } from './scale.ts';
+import type { ScaleSetting } from './scale.ts';
+import { ANIMATION_SPEEDS, QUALITY_OPTIONS, VOLUME_STEP, browserStorage, createSettingsStore } from './settings.ts';
+import type { Settings } from './settings.ts';
+import { browserAudio, createSoundEngine, cuesFor, gameSound } from './sound.ts';
 import { clearAutosave, readAutosave, writeAutosave } from './storage.ts';
 import type { MapSource } from './storage.ts';
 import { createWorkerRunner } from './turnRunner.ts';
+import { cssColor, signed } from './view.ts';
+import type { View } from './view.ts';
 
 /** A map with the renderer that draws it. */
 export interface Board {
@@ -62,6 +97,17 @@ export interface AppOptions {
   readonly loadBoard: (source: MapSource) => Promise<Board>;
   /** True if the renderer is to stay paused for good (`?render=off`). */
   readonly renderOff?: boolean;
+  /**
+   * False to show every change at once, without animating what happened.
+   * The page passes false under automation, where a frame takes seconds.
+   * Default true.
+   */
+  readonly animate?: boolean;
+  /**
+   * False to make no sound at all: the page passes false under automation,
+   * and the interface then never creates an audio context. Default true.
+   */
+  readonly sound?: boolean;
   /** Called after the board was replaced. */
   readonly onBoard?: (board: Board) => void;
 }
@@ -77,13 +123,15 @@ export interface StartOptions {
   readonly map?: 'real' | 'fixture';
 }
 
-export type MainButtonKind = 'none' | 'busy' | 'observer' | 'unit' | 'city' | 'nextTurn';
+export type MainButtonKind = 'none' | 'busy' | 'observer' | 'nextTurn' | PendingKind;
 
 /** What the interface shows, for automated checks. */
 export interface UiSnapshot {
   readonly screen: 'start' | 'game' | 'end';
-  /** The panel that is open, the topmost if there are several. */
-  readonly panel: 'menu' | 'city' | 'polity' | null;
+  /** The panel that is open, the topmost if there are several. `kit` is the player's own kit view. */
+  readonly panel: 'menu' | 'kit' | 'city' | 'polity' | null;
+  /** The full-screen overlay that is open: tech tree, policies, the list of polities or the victory progress. */
+  readonly overlay: OverlayKind | null;
   /** Zone of the city in the city panel, or null. */
   readonly city: number | null;
   /** Polity in the war and peace panel, or null. */
@@ -98,6 +146,46 @@ export interface UiSnapshot {
   readonly mainButton: { readonly kind: MainButtonKind; readonly label: string };
   readonly notifications: number;
   readonly map: MapSource;
+  /** The lens of the minimap. */
+  readonly lens: Lens;
+  /** The interface size setting and the factor it gives on this window. */
+  readonly scale: { readonly setting: ScaleSetting; readonly factor: number };
+  /** True while the board is playing what happened and has not caught up with the state yet. */
+  readonly animating: boolean;
+  /** What a click on the map does: selects, places an improvement, or picks the target of an air strike. */
+  readonly targeting: 'select' | 'improvement' | 'airStrike';
+  /** The destination chosen in the trade picker of the city panel, as its `data-route`, or null. */
+  readonly routePreview: string | null;
+  /** Presses of Enter during other polities' turns that were applied when the turn ended. */
+  readonly enterApplied: number;
+  /**
+   * The kit on screen, by the nation's `MapPolity.id`, and where it is shown:
+   * on the start screen for the highlighted nation, in the player's own kit
+   * view, or in the panel of another nation. Null if none is shown.
+   */
+  readonly kit: { readonly nation: string; readonly where: 'start' | 'own' | 'polity' } | null;
+  /** Nation select: the region filter, the order and the nations listed. Null away from the start screen. */
+  readonly start: {
+    readonly region: Region | 'all';
+    readonly sort: NationSort;
+    readonly nations: readonly string[];
+    readonly chosen: string | null;
+  } | null;
+  /** The settings in force. */
+  readonly settings: Settings;
+  /** The sound engine: silent under automation, locked until the first gesture. */
+  readonly sound: { readonly silent: boolean; readonly unlocked: boolean; readonly volume: number; readonly muted: boolean; readonly era: number };
+  /**
+   * The aids drawn for ordering the selected piece: how many hexes it can
+   * reach, the length of the path under the pointer with the turns marked on
+   * it, and the hex an order would attack. Null without a selected piece.
+   */
+  readonly aids: {
+    readonly reachable: number;
+    readonly path: number;
+    readonly turnEnds: number;
+    readonly attackTarget: number | null;
+  } | null;
 }
 
 export interface App {
@@ -134,8 +222,8 @@ interface Note {
   readonly text: () => string;
   /** The hex to fly to, or -1. */
   readonly hex: number;
-  /** The polity whose peace offer this is, or -1. */
-  readonly offerFrom: number;
+  /** The proposal to answer from the note, or null. */
+  readonly offer: NoteOffer | null;
 }
 
 interface Placing {
@@ -144,33 +232,68 @@ interface Placing {
   readonly hexes: readonly number[];
 }
 
-function signed(value: number): string {
-  return value >= 0 ? `+${value}` : `−${Math.abs(value)}`;
-}
+/** A proposal the note stands for: one of `state.offers` by id, or the peace offer of a polity. */
+type NoteOffer = { readonly kind: 'offer'; readonly id: number } | { readonly kind: 'peace'; readonly from: number };
 
-function cssColor(color: number): string {
-  return `#${color.toString(16).padStart(6, '0')}`;
-}
+/** How much faster animations run while Space is held. */
+const HURRY = 4;
+/** The view is sampled at this many points a side to find the hexes in it. */
+const VIEW_SAMPLES = 5;
+/** Observer mode's camera has this many hexes around its target in view once it has moved there. */
+const FOLLOW_RADIUS = 8;
 
 export function createApp(options: AppOptions): App {
   const { root } = options;
-  setLanguage(loadLanguage());
+  const settings = createSettingsStore(browserStorage());
+  setLanguage(settings.current.language);
+  const sound = createSoundEngine({
+    createContext: browserAudio(),
+    silent: options.sound === false,
+    volume: settings.current.volume,
+    muted: settings.current.muted,
+  });
 
   let board = options.board;
   let runner = createWorkerRunner(board.map);
   let host: Host = createHost(board.map, runner);
   let minimap: Minimap | null = null;
   let detach: (() => void) | null = null;
-  /** The camera distance the renderer starts with: the whole map in view. */
-  let farDistance = board.renderer.getCamera().distance;
 
   let screen: 'start' | 'game' | 'end' = 'start';
   let chosenNation: string | null = null;
+  let startRegion: Region | 'all' = 'all';
+  let startSort: NationSort = 'region';
+  /** The player's own kit view. */
+  let kitOpen = false;
+  /** True while the player moves through the controls with the keyboard: Enter and Space then press the control in focus. */
+  let keyboardNav = false;
   let selection: number | null = null;
   let cityPanel: number | null = null;
   let polityPanel: number | null = null;
   let menuOpen = false;
+  let overlay: OverlayKind | null = null;
+  const policyState: PolicyOverlayState = { picked: null };
+  const politiesState: PolitiesOverlayState = { sort: 'favour', descending: true };
+  const trade = createTradeSection();
+  let routePath: readonly number[] | null = null;
+  let lens: Lens = 'political';
+  let scale = 1;
+  const animate = options.animate !== false;
+  /** The state the board shows, or will show once the animations that are running have ended. */
+  let boardState: GameState | null = null;
+  let boardLanguage = getLanguage();
+  /** The state as of the last change the host reported: what the next change's events start from. */
+  let lastState: GameState | null = null;
+  let animating = false;
+  /** Bumped whenever the running animations stop counting: a newer change, a skip, another game. */
+  let playToken = 0;
+  /** True once {@link App.hide} was called: the interface then leaves the renderer alone. */
+  let hidden = false;
+  let enterQueued = false;
+  let enterApplied = 0;
   let placing: Placing | null = null;
+  /** The city (its zone) whose air strike is being aimed, with the hexes it can hit. */
+  let striking: { readonly city: number; readonly hexes: readonly number[] } | null = null;
   let focus: PendingItem | null = null;
   let notes: Note[] = [];
   let nextNoteId = 1;
@@ -180,7 +303,9 @@ export function createApp(options: AppOptions): App {
   /** Turns are being run by a caller of {@link App.runTurns}: observer mode's own clock stands still. */
   let automated = false;
   let hoverHex: number | null = null;
-  let hoverPath: number[] = [];
+  /** The order under the pointer: the way there and the hex it would attack. */
+  let hoverPlan: { readonly path: Path | null; readonly attack: number | null } | null = null;
+  let aidsShown: UiSnapshot['aids'] = null;
   let reach: number[] = [];
   let reachKey = '';
   let touchTarget: number | null = null;
@@ -189,18 +314,50 @@ export function createApp(options: AppOptions): App {
 
   // ------------------------------------------------------------ skeleton
 
-  const startScreen = el('div', { id: 'start', class: 'overlay' });
+  const startScreen = el('div', { id: 'start', class: 'cover' });
   const endScreen = el('div', { id: 'end', class: 'overlay' });
   const topbar = el('div', { id: 'topbar', class: 'panel' });
+  const topLeft = el('div', { class: 'stats' });
+  const topMiddle = el('div', { id: 'turn' });
+  // the buttons of the top bar are made once: a redraw changes their text and state, never the nodes
+  const politiesButton = iconButton('polities', '', () => {
+    toggleOverlay('polities');
+  }, { id: 'polities-button' });
+  const victoryButton = iconButton('victory', '', () => {
+    toggleOverlay('victory');
+  }, { id: 'victory-button' });
+  const menuButton = iconButton('menu', '', () => {
+    menuOpen = !menuOpen;
+    refresh();
+  }, { id: 'menu-button' });
+  topbar.append(topLeft, topMiddle, el('div', { class: 'topbar-buttons' }, politiesButton, victoryButton, menuButton));
   const slots = el('div', { id: 'slots' });
+  const kitBox = el('aside', { id: 'kit-panel', class: 'panel' });
+  const majorsBox = el('div', { id: 'majors', class: 'panel' });
   const notesBox = el('div', { id: 'notifications' });
+  const overlayBox = el('div', { id: 'overlay', class: 'overlay' });
   const minimapBox = el('div', { id: 'minimap-box', class: 'panel' });
   const selectionBox = el('div', { id: 'selection', class: 'panel' });
   const cityBox = el('aside', { id: 'city-panel', class: 'panel' });
   const polityBox = el('aside', { id: 'polity-panel', class: 'panel' });
   const menuBox = el('div', { id: 'menu', class: 'panel' });
-  const actionBox = el('div', { id: 'action-box' });
-  const game = el('div', { id: 'game' }, topbar, slots, notesBox, minimapBox, selectionBox, cityBox, polityBox, menuBox, actionBox);
+  const speedButtons = SPEEDS.map((value) =>
+    button('', () => {
+      speed = value;
+      scheduleObserver();
+      refresh();
+    }, { data: { speed: value } }),
+  );
+  const speedBox = el('div', { class: 'segmented panel', id: 'speed' }, ...speedButtons);
+  const mainNode = button('', () => {
+    mainAction();
+  }, { id: 'main-action' });
+  const actionBox = el('div', { id: 'action-box' }, speedBox, mainNode);
+  const game = el(
+    'div',
+    { id: 'game' },
+    topbar, slots, majorsBox, notesBox, minimapBox, selectionBox, kitBox, cityBox, polityBox, menuBox, actionBox, overlayBox,
+  );
   const toast = el('div', { id: 'toast', class: 'panel' });
   const tooltip = el('div', { id: 'tooltip', class: 'panel' });
   const fileInput = el('input', { id: 'import-file' });
@@ -210,6 +367,7 @@ export function createApp(options: AppOptions): App {
   fill(root, game, startScreen, endScreen, toast, tooltip, fileInput);
   toast.hidden = true;
   tooltip.hidden = true;
+  overlayBox.hidden = true;
 
   // ------------------------------------------------------------- helpers
 
@@ -230,9 +388,53 @@ export function createApp(options: AppOptions): App {
     }, 2600);
   };
 
-  const flyTo = (hex: number, distance?: number): void => {
+  const flyTo = (hex: number): void => {
     if (hex < 0) return;
-    board.renderer.focusHex(hex, distance === undefined ? {} : { distance });
+    board.renderer.focusHex(hex);
+  };
+
+  /** The whole map in view, from a distance worked out from the map itself. */
+  const showWholeMap = (): void => {
+    board.renderer.setCamera(wholeMapView(map()), true);
+  };
+
+  /** Scales the whole interface to the window and the player's setting. */
+  const applyScale = (): void => {
+    scale = uiScale(settings.current.scale, window.innerWidth, window.innerHeight);
+    root.style.setProperty('zoom', String(scale));
+    root.dataset.scale = String(scale);
+  };
+
+  /** Puts the settings in force: on the renderer of the current board, on the sound and on the interface. */
+  const applySettings = (): void => {
+    const now = settings.current;
+    setLanguage(now.language);
+    sound.setVolume(now.volume);
+    sound.setMuted(now.muted);
+    applyScale();
+    // hidden, the renderer belongs to somebody else (the render demo)
+    if (hidden) return;
+    const { renderer } = board;
+    // the names on the political map follow the interface
+    renderer.setLanguage(now.language);
+    if (renderer.quality !== now.quality) renderer.setQuality(now.quality);
+    renderer.setAnimationSpeed(now.animationSpeed);
+  };
+
+  const changeSettings = (change: Partial<Settings>): void => {
+    settings.set(change);
+    applySettings();
+    refresh();
+  };
+
+  /** The close button of a panel or an overlay. */
+  const closeButton = (id: string, onClick: () => void): HTMLButtonElement =>
+    iconOnly('close', t('menu.close'), onClick, { class: 'close', id });
+
+  /** Puts the tooltip next to a point of the page. The interface is scaled, the pointer is not. */
+  const placeTooltip = (clientX: number, clientY: number): void => {
+    tooltip.style.left = `${(clientX + 16) / scale}px`;
+    tooltip.style.top = `${(clientY + 16) / scale}px`;
   };
 
   /** Sends an action of the player and says why if the rules refuse it. */
@@ -244,10 +446,12 @@ export function createApp(options: AppOptions): App {
 
   // -------------------------------------------------------- notifications
 
-  const addNote = (text: () => string, hex: number, offerFrom = -1): void => {
-    notes.push({ id: nextNoteId++, turn: state().turn, text, hex, offerFrom });
+  const addNote = (text: () => string, hex: number, offer: NoteOffer | null = null): void => {
+    notes.push({ id: nextNoteId++, turn: state().turn, text, hex, offer });
     if (notes.length > MAX_NOTES) notes = notes.slice(notes.length - MAX_NOTES);
   };
+
+  const resourceLabel = (id: string): string => resourceName(map(), id);
 
   const capitalHex = (polity: number): number => {
     const zone = state().polities[polity]?.capital ?? -1;
@@ -268,14 +472,19 @@ export function createApp(options: AppOptions): App {
           break;
         case 'peaceMade':
           if (all || event.a === me || event.b === me) {
-            notes = notes.filter((note) => note.offerFrom !== event.a && note.offerFrom !== event.b);
+            notes = notes.filter(
+              (note) => note.offer?.kind !== 'peace' || (note.offer.from !== event.a && note.offer.from !== event.b),
+            );
             addNote(() => t('note.peace', { a: polityName(m, event.a), b: polityName(m, event.b) }), capitalHex(event.a === me ? event.b : event.a));
           }
           break;
         case 'peaceOffered':
           if (event.to === me) {
-            notes = notes.filter((note) => note.offerFrom !== event.from);
-            addNote(() => t('note.offer', { a: polityName(m, event.from) }), capitalHex(event.from), event.from);
+            notes = notes.filter((note) => note.offer?.kind !== 'peace' || note.offer.from !== event.from);
+            addNote(() => t('note.offer', { a: polityName(m, event.from) }), capitalHex(event.from), {
+              kind: 'peace',
+              from: event.from,
+            });
           }
           break;
         case 'cityCaptured':
@@ -298,7 +507,7 @@ export function createApp(options: AppOptions): App {
           break;
         case 'cityBuilt':
           if (state().cities[event.city]?.owner === me) {
-            addNote(() => t('note.built', { city: cityName(m, event.city), item: itemName(m, event.item) }), siteOf(event.city));
+            addNote(() => t('note.built', { city: cityName(m, event.city), item: itemName(m, event.item, me) }), siteOf(event.city));
           }
           break;
         case 'unitKilled':
@@ -366,14 +575,106 @@ export function createApp(options: AppOptions): App {
         case 'eraStarted':
           addNote(() => t('note.era', { era: eraName(event.era) }), -1);
           break;
+        case 'offerMade': {
+          const { offer } = event;
+          if (offer.to !== me) break;
+          addNote(
+            () => t('event.offerMade', { from: polityName(m, offer.from), what: offerText(m, offer) }),
+            capitalHex(offer.from),
+            { kind: 'offer', id: offer.id },
+          );
+          break;
+        }
+        case 'vassalReleased':
+          if (event.vassal === me || event.overlord === me) {
+            addNote(
+              () =>
+                t('event.vassalReleased', {
+                  vassal: polityName(m, event.vassal),
+                  overlord: polityName(m, event.overlord),
+                  reason: t(`endReason.${event.reason}`),
+                }),
+              capitalHex(event.vassal === me ? event.overlord : event.vassal),
+            );
+          }
+          break;
+        case 'dealSigned': {
+          const { deal } = event;
+          if (deal.seller !== me && deal.buyer !== me) break;
+          addNote(
+            () =>
+              t('event.dealSigned', {
+                seller: polityName(m, deal.seller),
+                buyer: polityName(m, deal.buyer),
+                resource: resourceLabel(deal.resource),
+                gold: deal.goldPerTurn,
+              }),
+            capitalHex(deal.seller === me ? deal.buyer : deal.seller),
+          );
+          break;
+        }
+        case 'dealEnded':
+          if (event.seller === me || event.buyer === me) {
+            addNote(
+              () =>
+                t('event.dealEnded', {
+                  seller: polityName(m, event.seller),
+                  buyer: polityName(m, event.buyer),
+                  resource: resourceLabel(event.resource),
+                  reason: t(`endReason.${event.reason}`),
+                }),
+              capitalHex(event.seller === me ? event.buyer : event.seller),
+            );
+          }
+          break;
+        case 'routeEnded':
+          if (event.owner === me && event.reason !== 'cancelled') {
+            addNote(
+              () => t('event.routeEnded', { owner: polityName(m, event.owner), reason: t(`endReason.${event.reason}`) }),
+              -1,
+            );
+          }
+          break;
+        case 'routePillaged':
+          if (event.owner === me || event.by === me) {
+            addNote(
+              () => t('event.routePillaged', { by: polityName(m, event.by), owner: polityName(m, event.owner), gold: event.gold }),
+              event.hex,
+            );
+          }
+          break;
+        case 'improvementPillaged':
+          if (event.owner === me || event.by === me) {
+            addNote(
+              () =>
+                t('event.improvementPillaged', {
+                  by: polityName(m, event.by),
+                  owner: polityName(m, event.owner),
+                  gold: event.gold,
+                }),
+              event.hex,
+            );
+          }
+          break;
+        case 'suzerainChanged':
+          if (all || event.from === me || event.to === me) {
+            addNote(
+              () => t('event.suzerainChanged', { cityState: polityName(m, event.cityState), to: polityName(m, event.to) }),
+              capitalHex(event.cityState),
+            );
+          }
+          break;
         default:
           break;
       }
     }
   };
 
-  /** Observer mode's camera goes to where a city fell, or else where a war began. */
-  const followEvents = (events: readonly GameEvent[]): void => {
+  /**
+   * Observer mode's camera follows the action: it goes to where a city fell,
+   * or else where a war began. Returns the hex it went to, or -1.
+   */
+  const followEvents = (events: readonly GameEvent[]): number => {
     let hex = -1;
     for (const event of events) {
       if (event.type === 'cityCaptured') {
@@ -383,6 +684,7 @@ export function createApp(options: AppOptions): App {
       if (event.type === 'warDeclared' && hex < 0) hex = capitalHex(event.on);
     }
     flyTo(hex);
+    return hex;
   };
 
   // --------------------------------------------------------------- scene
@@ -390,23 +692,132 @@ export function createApp(options: AppOptions): App {
   const drawHighlights = (): void => {
     const list: HexHighlight[] = [];
     const unit = unitById(selection);
-    if (placing !== null) {
+    if (striking !== null) {
+      for (const hex of striking.hexes) list.push({ hex, color: VERMILION, opacity: 0.55 });
+    } else if (placing !== null) {
       for (const hex of placing.hexes) list.push({ hex, color: PAPER, opacity: 0.5 });
     } else if (unit !== undefined && screen === 'game') {
-      for (const hex of reach) list.push({ hex, color: PAPER, opacity: 0.22 });
       const order = host.orders.get(unit.id);
       if (order !== undefined) list.push({ hex: order.target, color: VERMILION, opacity: 0.3 });
-      for (const hex of hoverPath) list.push({ hex, color: VERMILION, opacity: 0.5 });
-      if (hoverHex !== null && !hoverPath.includes(hoverHex) && tooltip.hidden === false) {
-        list.push({ hex: hoverHex, color: VERMILION, opacity: 0.6 });
-      }
       list.push({ hex: unit.hex, color: VERMILION, opacity: 0.65 });
     }
     board.renderer.setHighlights(list);
+
+    // one set of aids at a time: the trade route being chosen, or else the order of the selected piece
+    let aids: SelectionAids | null = null;
+    aidsShown = null;
+    if (screen === 'game' && routePath !== null) {
+      aids = { path: { hexes: routePath }, color: VERMILION };
+    } else if (screen === 'game' && unit !== undefined && unit.owner === player() && placing === null && striking === null) {
+      aids = orderAids({ unitHex: unit.hex, reach, path: hoverPlan?.path ?? null, attackTarget: hoverPlan?.attack ?? null });
+      aidsShown = {
+        reachable: aids.reachable?.length ?? 0,
+        path: aids.path?.hexes.length ?? 0,
+        turnEnds: aids.path?.turnEnds?.length ?? 0,
+        attackTarget: aids.attackTarget ?? null,
+      };
+    }
+    board.renderer.setSelectionAids(aids);
+  };
+
+  /** Puts the current state on the board, ending whatever was playing. */
+  const showBoard = (): void => {
+    playToken++;
+    animating = false;
+    boardState = state();
+    boardLanguage = getLanguage();
+    board.renderer.setScene(sceneOf(boardState, boardLanguage));
+  };
+
+  /**
+   * A test for the hexes the player is looking at: the box of columns and
+   * rows around what the corners and the middle of the canvas show. A view
+   * that reaches beyond the map counts as the whole map: the renderer itself
+   * leaves out what is not on screen.
+   */
+  const viewTest = (): ((hex: number) => boolean) => {
+    const bounds = board.canvas.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return () => false;
+    const { width } = map();
+    let minCol = Infinity;
+    let maxCol = -Infinity;
+    let minRow = Infinity;
+    let maxRow = -Infinity;
+    for (let i = 0; i < VIEW_SAMPLES; i++) {
+      for (let j = 0; j < VIEW_SAMPLES; j++) {
+        const hex = board.renderer.pickHex(
+          bounds.left + ((i + 0.5) / VIEW_SAMPLES) * bounds.width,
+          bounds.top + ((j + 0.5) / VIEW_SAMPLES) * bounds.height,
+        );
+        if (hex === null) return () => true;
+        const { col, row } = indexToOffset(hex, width);
+        minCol = Math.min(minCol, col);
+        maxCol = Math.max(maxCol, col);
+        minRow = Math.min(minRow, row);
+        maxRow = Math.max(maxRow, row);
+      }
+    }
+    return (hex) => {
+      const { col, row } = indexToOffset(hex, width);
+      return col >= minCol - 2 && col <= maxCol + 2 && row >= minRow - 2 && row <= maxRow + 2;
+    };
+  };
+
+  /**
+   * Shows on the board what the events did, starting from the state they
+   * began in, and puts the new state on it when they have played. A newer
+   * change, a skip or another game ends them at once.
+   *
+   * @param around a hex the camera is moving to, or -1: what happens near it counts as in view.
+   */
+  const present = (before: GameState | null, events: readonly GameEvent[], around = -1): void => {
+    const { renderer } = board;
+    if (!animate || automated || renderer.paused || before === null || screen !== 'game') {
+      showBoard();
+      return;
+    }
+    if (animating) renderer.skip();
+    if (animating || boardState !== before) {
+      playToken++;
+      animating = false;
+      boardState = before;
+      boardLanguage = getLanguage();
+      renderer.setScene(sceneOf(before, boardLanguage));
+    }
+    const seen = viewTest();
+    const visual = visualEvents(before, events, (hex) =>
+      seen(hex) || (around >= 0 && hexDistance(before, hex, around) <= FOLLOW_RADIUS),
+    );
+    if (visual.length === 0) {
+      showBoard();
+      return;
+    }
+    const token = ++playToken;
+    animating = true;
+    boardState = state();
+    const pace = playSpeed(visual.length) * (observing() ? speed : 1);
+    sound.playCues(cuesFor(visual), pace * settings.current.animationSpeed);
+    void renderer.play(visual, { speed: pace }).then(() => {
+      if (token !== playToken) return;
+      showBoard();
+      drawScene();
+      scheduleObserver();
+    });
+  };
+
+  /** Ends the animations that are playing. Returns false if there were none. */
+  const skipAnimations = (): boolean => {
+    if (!animating) return false;
+    board.renderer.skip();
+    showBoard();
+    refresh();
+    scheduleObserver();
+    return true;
   };
 
   const drawScene = (): void => {
-    board.renderer.setScene(sceneOf(state(), getLanguage()));
+    // while events are playing the board is theirs; it gets the state when they end
+    if (!animating && (boardState !== state() || boardLanguage !== getLanguage())) showBoard();
     const unit = unitById(selection);
     const key = unit === undefined || host.busy ? '' : `${unit.id}:${unit.hex}:${unit.moves}:${state().turn}:${state().units.length}`;
     if (key !== reachKey) {
@@ -420,7 +831,7 @@ export function createApp(options: AppOptions): App {
 
   const clearHover = (): void => {
     hoverHex = null;
-    hoverPath = [];
+    hoverPlan = null;
     touchTarget = null;
     tooltip.hidden = true;
   };
@@ -462,16 +873,19 @@ export function createApp(options: AppOptions): App {
   /** Works out what a move or an attack of the selected unit onto `hex` would be, and shows it. */
   const preview = (hex: number | null, clientX: number, clientY: number): void => {
     hoverHex = hex;
-    hoverPath = [];
+    hoverPlan = null;
     tooltip.hidden = true;
     const unit = unitById(selection);
-    if (hex !== null && unit !== undefined && !host.busy && placing === null && hex !== unit.hex && unit.owner === player()) {
+    if (
+      hex !== null && unit !== undefined && !host.busy && placing === null && striking === null &&
+      hex !== unit.hex && unit.owner === player()
+    ) {
       let text = '';
       const attack = previewAttack(state(), unit.id, hex);
       if (attack !== null) {
         const path = findPath(state(), unit.id, hex, attackReach(state(), unit.id));
         if (path !== null) {
-          hoverPath = path.hexes;
+          hoverPlan = { path, attack: hex };
           const from = path.hexes.at(-1) ?? unit.hex;
           const exact = previewAttack(state(), unit.id, hex, from) ?? attack;
           text = exact.capture
@@ -482,15 +896,14 @@ export function createApp(options: AppOptions): App {
       } else {
         const path = findPath(state(), unit.id, hex);
         if (path !== null && path.total > 0) {
-          hoverPath = path.hexes;
+          hoverPlan = { path, attack: null };
           text = t('count.turns', { turns: path.total });
         }
       }
       if (text !== '') {
         tooltip.textContent = text;
         tooltip.hidden = false;
-        tooltip.style.left = `${clientX + 16}px`;
-        tooltip.style.top = `${clientY + 16}px`;
+        placeTooltip(clientX, clientY);
       }
     }
     drawHighlights();
@@ -499,6 +912,14 @@ export function createApp(options: AppOptions): App {
   const clickHex = (hex: number, touch: boolean, clientX: number, clientY: number): void => {
     if (screen !== 'game' || host.busy) return;
     menuOpen = false;
+    kitOpen = false;
+    if (striking !== null) {
+      const { city, hexes } = striking;
+      striking = null;
+      if (hexes.includes(hex)) act({ type: 'airStrike', polity: player(), city, target: hex });
+      refresh();
+      return;
+    }
     if (placing !== null) {
       const { city, improvement, hexes } = placing;
       placing = null;
@@ -529,6 +950,7 @@ export function createApp(options: AppOptions): App {
     }
 
     polityPanel = null;
+    trade.clear(appView);
     if (ownUnit || ownCity) {
       select(ownUnit ? unit.id : null);
       cityPanel = ownCity ? zone : null;
@@ -545,41 +967,69 @@ export function createApp(options: AppOptions): App {
 
   // ------------------------------------------------------------ the HUD
 
-  const stat = (label: string, value: string, id: string): HTMLElement =>
-    el('span', { class: 'stat', id }, el('span', { class: 'stat-label', text: label }), value);
+  const setLabel = (node: HTMLElement, text: string, active: boolean): void => {
+    const label = node.querySelector('.label');
+    if (label !== null && label.textContent !== text) label.textContent = text;
+    node.classList.toggle('active', active);
+    node.setAttribute('aria-pressed', String(active));
+  };
 
   const drawTopbar = (): void => {
     const s = state();
-    const left = el('div', { class: 'stats' });
     if (observing()) {
-      left.append(el('span', { class: 'stat', id: 'observer-badge', text: t('hud.observer') }));
+      fillWhen(topLeft, `observer|${getLanguage()}`, () => [
+        el('span', { class: 'stat', id: 'observer-badge' }, icon('observe'), el('span', { text: t('hud.observer') })),
+      ]);
     } else {
       const polity = s.polities[player()];
       const summary = politySummary(s, player());
-      left.append(
-        el('span', { class: 'swatch', id: 'player-nation', text: polityName(map(), player()) }),
-        stat(yieldName('gold'), `${Math.floor(polity?.gold ?? 0)} ${signed(summary.net)}`, 'stat-gold'),
-        stat(yieldName('science'), signed(summary.yields.science), 'stat-science'),
-        stat(yieldName('culture'), signed(summary.yields.culture), 'stat-culture'),
-        stat(t('hud.morale'), summary.morale === null ? '—' : String(summary.morale), 'stat-morale'),
-      );
-      const swatch = left.firstElementChild as HTMLElement;
-      swatch.style.borderColor = cssColor(map().polities[player()]?.color ?? 0x888888);
+      const gold = `${Math.floor(polity?.gold ?? 0)} ${signed(summary.net)}`;
+      const morale = summary.morale === null ? '—' : String(summary.morale);
+      const signature = [
+        player(), getLanguage(), gold, summary.yields.science, summary.yields.culture, morale, kitOpen,
+      ].join('|');
+      fillWhen(topLeft, signature, () => {
+        // the nation's name opens its kit; a nation without one (a test map) has nothing to open
+        const nation = el('button', {
+          class: `swatch${kitOpen ? ' active' : ''}`,
+          id: 'player-nation',
+          text: polityName(map(), player()),
+          disabled: kitViewOf(map(), player()) === null,
+          pressed: kitOpen,
+          onClick: () => {
+            kitOpen = !kitOpen;
+            menuOpen = false;
+            refresh();
+          },
+        });
+        nation.style.setProperty('--nation', cssColor(map().polities[player()]?.color ?? 0x888888));
+        return [
+          nation,
+          stat('gold', yieldName('gold'), gold, 'stat-gold'),
+          stat('science', yieldName('science'), signed(summary.yields.science), 'stat-science'),
+          stat('culture', yieldName('culture'), signed(summary.yields.culture), 'stat-culture'),
+          stat('morale', t('hud.morale'), morale, 'stat-morale'),
+        ];
+      });
     }
-    const middle = el(
-      'div',
-      { id: 'turn' },
+    fill(
+      topMiddle,
       el('span', { id: 'era', text: eraName(currentEra(s)) }),
       el('span', { id: 'turn-counter', text: t('hud.turnOf', { turn: s.turn, last: s.lastTurn }), data: { turn: s.turn } }),
     );
-    const menuButton = button(t('hud.menu'), () => {
-      menuOpen = !menuOpen;
-      refresh();
-    }, { id: 'menu-button' });
-    fill(topbar, left, middle, menuButton);
+    setLabel(politiesButton, t('hud.polities'), overlay === 'polities');
+    setLabel(victoryButton, t('hud.victory'), overlay === 'victory');
+    setLabel(menuButton, t('hud.menu'), menuOpen);
   };
 
-  /** The player's current research: its name and the turns it still takes. The player does not choose it yet. */
+  const toggleOverlay = (kind: OverlayKind): void => {
+    overlay = overlay === kind ? null : kind;
+    menuOpen = false;
+    kitOpen = false;
+    refresh();
+  };
+
+  /** The player's current research: its name and the turns it still takes. */
   const researchText = (): string => {
     const research = observing() ? null : researchView(state(), player());
     if (research === null) return '—';
@@ -588,11 +1038,65 @@ export function createApp(options: AppOptions): App {
       : t('hud.researching', { tech: techName(research.tech), turns: research.turns });
   };
 
+  /** Culture stored towards the next policy card, over what the card costs. */
+  const policyText = (): string => {
+    const self = observing() ? undefined : state().polities[player()];
+    if (self === undefined) return '—';
+    return `${Math.floor(self.cultureProgress)}/${nextPolicyCost(state(), player())}`;
+  };
+
   const drawSlots = (): void => {
-    fill(
-      slots,
-      el('div', { class: 'panel slot', id: 'slot-research' }, el('span', { class: 'stat-label', text: t('hud.research') }), researchText()),
-      el('div', { class: 'panel slot', id: 'slot-policy' }, el('span', { class: 'stat-label', text: t('hud.policy') }), '—'),
+    const slot = (id: string, kind: OverlayKind, name: IconName, label: string, value: string): HTMLElement =>
+      el(
+        'button',
+        {
+          class: `panel slot${overlay === kind ? ' active' : ''}`,
+          id,
+          disabled: observing(),
+          pressed: overlay === kind,
+          onClick: () => {
+            toggleOverlay(kind);
+          },
+        },
+        icon(name),
+        el('span', { class: 'stat-label', text: label }),
+        el('span', { class: 'slot-value', text: value }),
+      );
+    const research = researchText();
+    const policy = policyText();
+    fillWhen(slots, [getLanguage(), research, policy, overlay, observing()].join('|'), () => [
+      slot('slot-research', 'tech', 'research', t('hud.research'), research),
+      slot('slot-policy', 'policy', 'policy', t('hud.policy'), policy),
+    ]);
+  };
+
+  /** The major nations, each with its relation to the player; a click opens its panel. */
+  const drawMajors = (): void => {
+    const s = state();
+    const me = player();
+    const zh = getLanguage() === 'zh';
+    const standings = s.majors.map((polity) => {
+      const alive = s.polities[polity]?.alive === true;
+      return { polity, alive, standing: me === NO_POLITY || !alive ? null : standingWith(s, me, polity) };
+    });
+    const signature = [zh, me, polityPanel, ...standings.map((item) => `${item.polity}:${item.alive}:${item.standing}`)].join('|');
+    fillWhen(majorsBox, signature, () =>
+      standings.map(({ polity, alive, standing }) => {
+        const entry = map().polities[polity];
+        const name = polityName(map(), polity);
+        const node = el('button', {
+          class: `major${alive ? '' : ' gone'}${polityPanel === polity ? ' active' : ''}`,
+          title: standing === null || standing === 'self' ? name : `${name} · ${standingName(standing)}`,
+          text: zh ? name.slice(0, 2) : name.slice(0, 3),
+          data: { polity, standing: standing ?? '' },
+          onClick: () => {
+            if (polity === me) flyTo(capitalHex(polity));
+            else appView.openPolity(polity);
+          },
+        });
+        node.style.setProperty('--nation', cssColor(entry?.color ?? 0x888888));
+        return node;
+      }),
     );
   };
 
@@ -606,21 +1110,27 @@ export function createApp(options: AppOptions): App {
             flyTo(note.hex);
           }, { class: 'note-text' }),
         );
-        if (note.offerFrom >= 0) {
+        const { offer } = note;
+        if (offer !== null) {
+          const answer = (accept: boolean): void => {
+            if (offer.kind === 'offer') act({ type: 'respond', polity: player(), offer: offer.id, accept });
+            else if (accept) act({ type: 'makePeace', polity: player(), target: offer.from });
+            else host.declinePeace(offer.from);
+            notes = notes.filter((other) => other.id !== note.id);
+            refresh();
+          };
+          row.dataset.offerKind = offer.kind;
           row.append(
             button(t('note.accept'), () => {
-              act({ type: 'makePeace', polity: player(), target: note.offerFrom });
-              notes = notes.filter((other) => other.id !== note.id);
-              refresh();
-            }, { class: 'accent', data: { offer: 'accept' } }),
+              answer(true);
+            }, { class: 'accent', data: { offer: 'accept' }, disabled: host.busy }),
             button(t('note.decline'), () => {
-              notes = notes.filter((other) => other.id !== note.id);
-              refresh();
-            }, { data: { offer: 'decline' } }),
+              answer(false);
+            }, { data: { offer: 'decline' }, disabled: host.busy }),
           );
         } else {
           row.append(
-            button('×', () => {
+            iconOnly('close', t('menu.close'), () => {
               notes = notes.filter((other) => other.id !== note.id);
               refresh();
             }, { class: 'note-close' }),
@@ -637,8 +1147,15 @@ export function createApp(options: AppOptions): App {
     if (unit === undefined) return;
     const def = unitDef(unit.type);
     const me = player();
-    const piece = el('div', { class: 'piece', text: UNIT_CHARACTERS[unit.type] ?? '' });
-    piece.style.borderColor = cssColor(map().polities[unit.owner]?.color ?? 0x888888);
+    const look = pieceOf(unit.type);
+    // the character is the piece's face in both languages; hovering it names the unit
+    const piece = el('div', {
+      class: `piece${look.unique ? ' unique' : ''}`,
+      text: look.character,
+      title: unitName(unit.type),
+      data: { era: look.era, unique: Number(look.unique) },
+    });
+    piece.style.setProperty('--nation', cssColor(map().polities[unit.owner]?.color ?? 0x888888));
     const status = host.orders.has(unit.id)
       ? t('status.travelling')
       : unit.status === 'fortified'
@@ -660,17 +1177,17 @@ export function createApp(options: AppOptions): App {
       ),
     );
     const actions = el('div', { class: 'actions' });
-    const add = (name: string, label: string, action: Action & { unit: number }): void => {
+    const add = (name: string, label: string, action: Action & { unit: number }, sign: IconName): void => {
       const reason = check(state(), action);
       const props = { data: { action: name }, disabled: reason !== null || host.busy, ...(reason === null ? {} : { title: rejectText(reason) }) };
-      actions.append(button(label, () => {
+      actions.append(iconButton(sign, label, () => {
         unitAction(action);
       }, props));
     };
-    if (def.strength > 0) add('fortify', t('action.fortify'), { type: 'fortify', polity: me, unit: unit.id });
-    add('sleep', t('action.sleep'), { type: 'sleep', polity: me, unit: unit.id });
+    if (def.strength > 0) add('fortify', t('action.fortify'), { type: 'fortify', polity: me, unit: unit.id }, 'fortify');
+    add('sleep', t('action.sleep'), { type: 'sleep', polity: me, unit: unit.id }, 'sleep');
     actions.append(
-      button(t('action.skip'), () => {
+      iconButton('skip', t('action.skip'), () => {
         host.skip(unit.id);
         const next = host.pending().find((item) => item.kind === 'unit');
         if (next !== undefined && next.kind === 'unit') {
@@ -683,9 +1200,13 @@ export function createApp(options: AppOptions): App {
     );
     const upgrade = upgradeView(state(), unit.id);
     if (upgrade !== null) {
-      add('upgrade', t('action.upgrade', { gold: upgrade.gold }), { type: 'upgrade', polity: me, unit: unit.id });
+      add('upgrade', t('action.upgrade', { gold: upgrade.gold }), { type: 'upgrade', polity: me, unit: unit.id }, 'upgrade');
     }
-    if (unit.type === SETTLER) add('settle', t('action.settle'), { type: 'settle', polity: me, unit: unit.id });
+    if (unit.type === SETTLER) add('settle', t('action.settle'), { type: 'settle', polity: me, unit: unit.id }, 'settle');
+    const pillage = pillageAction(state(), unit.id);
+    if (pillage !== null) add('pillage', t('action.pillage'), pillage, 'pillage');
+    const gates = demandAction(state(), unit.id);
+    if (gates !== null) add('demandVassalage', t('action.demandVassalage'), gates, 'leader');
     fill(selectionBox, piece, facts, actions);
   };
 
@@ -711,16 +1232,40 @@ export function createApp(options: AppOptions): App {
       act({ type: 'queueBuild', polity: me, city: zone, item });
       refresh();
     };
+    /** A build option with the button that buys it outright next to it. */
+    const buyable = (option: BuildOption, key: string, node: HTMLElement): HTMLElement => {
+      const action: Action = { type: 'buy', polity: me, city: zone, item: option.item };
+      const refused = check(state(), action);
+      return el(
+        'div',
+        { class: 'option-row' },
+        node,
+        button(t('city.buy', { gold: buyCostOf(state(), zone, option.item) }), () => {
+          act(action);
+          refresh();
+        }, {
+          class: 'buy',
+          data: { buy: key },
+          disabled: refused !== null || host.busy,
+          ...(refused === null ? {} : { title: rejectText(refused) }),
+        }),
+      );
+    };
+    const strikes = city.buildings.some((id) => BUILDINGS[id].airStrike);
+    const strikeHexes = strikes ? airStrikeTargets(state(), zone) : [];
+    const aiming = striking !== null && striking.city === zone;
 
     const header = el(
       'header',
       {},
       el('h2', { id: 'city-name', text: cityName(map(), zone) }),
-      button('×', () => {
+      closeButton('city-close', () => {
         cityPanel = null;
         placing = null;
+        striking = null;
+        trade.clear(appView);
         refresh();
-      }, { class: 'close', id: 'city-close' }),
+      }),
     );
     const facts = el(
       'div',
@@ -733,7 +1278,7 @@ export function createApp(options: AppOptions): App {
     const yieldsRow = el(
       'div',
       { class: 'yields', id: 'city-yields' },
-      ...YIELD_ORDER.map((name) => stat(yieldName(name), signed(city.yields[name]), `city-${name}`)),
+      ...YIELD_ORDER.map((name) => stat(name, yieldName(name), signed(city.yields[name]), `city-${name}`)),
     );
     const focusRow = el(
       'div',
@@ -752,13 +1297,13 @@ export function createApp(options: AppOptions): App {
         el(
           'li',
           {},
-          el('span', { class: 'option-name', text: itemName(map(), entry.item) }),
+          el('span', { class: 'option-name', text: itemName(map(), entry.item, me) }),
           el('span', {
             class: 'option-cost',
             text: index === 0 ? `${Math.floor(city.progress)}/${entry.cost}` : String(entry.cost),
           }),
           entry.turns !== null && el('span', { class: 'option-turns', text: t('count.turns', { turns: entry.turns }) }),
-          button('×', () => {
+          iconOnly('close', t('menu.close'), () => {
             act({ type: 'unqueueBuild', polity: me, city: zone, index });
             refresh();
           }, { class: 'close', data: { unqueue: index }, disabled: host.busy }),
@@ -775,21 +1320,33 @@ export function createApp(options: AppOptions): App {
       { class: 'scroll' },
       facts,
       yieldsRow,
+      strikes &&
+        button(t('city.airStrike'), () => {
+          striking = aiming ? null : { city: zone, hexes: strikeHexes };
+          placing = null;
+          clearHover();
+          refresh();
+        }, {
+          id: 'city-airstrike',
+          class: aiming ? 'active' : '',
+          data: { targets: strikeHexes.length },
+          disabled: host.busy || strikeHexes.length === 0,
+          ...(city.airStruck ? { title: rejectText('alreadyStruck') } : strikeHexes.length === 0 ? { title: rejectText('noTarget') } : {}),
+        }),
       el('h3', { text: t('city.focus') }),
       focusRow,
       el('h3', { text: t('city.queue') }),
       queueList,
-      group(t('city.units'), 'build-units', view.units.map((option) =>
-        optionButton(itemName(map(), option.item), option, `unit:${option.item.kind === 'unit' ? option.item.unit : ''}`, queue(option.item)),
-      )),
-      group(t('city.buildings'), 'build-buildings', view.buildings.map((option) =>
-        optionButton(
-          option.item.kind === 'building' ? buildingName(option.item.building) : '',
-          option,
-          `building:${option.item.kind === 'building' ? option.item.building : ''}`,
-          queue(option.item),
-        ),
-      )),
+      group(t('city.units'), 'build-units', view.units.map((option) => {
+        // the key is the item the rules take; the name is what the nation really builds
+        const key = `unit:${option.item.kind === 'unit' ? option.item.unit : ''}`;
+        return buyable(option, key, optionButton(itemName(map(), option.item, me), option, key, queue(option.item)));
+      })),
+      group(t('city.buildings'), 'build-buildings', view.buildings.map((option) => {
+        const key = `building:${option.item.kind === 'building' ? option.item.building : ''}`;
+        const name = option.item.kind === 'building' ? buildingName(option.item.building) : '';
+        return buyable(option, key, optionButton(name, option, key, queue(option.item)));
+      })),
       group(t('city.improvements'), 'build-improvements', view.improvements.map((option) => {
         const gains = IMPROVEMENTS[option.improvement].yields;
         const gain = (['food', 'production', 'gold'] as const)
@@ -799,6 +1356,7 @@ export function createApp(options: AppOptions): App {
         const active = placing !== null && placing.city === zone && placing.improvement === option.improvement;
         return optionButton(`${improvementName(option.improvement)} ${gain}`, option, `improvement:${option.improvement}`, () => {
           placing = active ? null : { city: zone, improvement: option.improvement, hexes: option.hexes };
+          striking = null;
           clearHover();
           refresh();
         }, active);
@@ -812,51 +1370,85 @@ export function createApp(options: AppOptions): App {
         ),
       )),
       group(t('city.sites'), 'build-sites', view.sites.map((option) =>
-        optionButton(itemName(map(), option.item), option, `city:${option.item.kind === 'city' ? option.item.zone : ''}`, queue(option.item)),
+        optionButton(itemName(map(), option.item, me), option, `city:${option.item.kind === 'city' ? option.item.zone : ''}`, queue(option.item)),
       )),
+      trade.draw(appView, zone),
     );
+    // redrawing must not throw the player back to the top of a long panel
+    const scrolled = cityBox.querySelector('.scroll')?.scrollTop ?? 0;
     fill(cityBox, header, body);
+    body.scrollTop = scrolled;
   };
 
   const drawPolityPanel = (): void => {
-    const polity = polityPanel;
-    const entry = polity === null ? undefined : map().polities[polity];
-    polityBox.hidden = entry === undefined;
-    if (entry === undefined || polity === null) return;
-    const s = state();
-    const me = player();
-    const header = el(
-      'header',
-      {},
-      el('h2', { id: 'polity-name', text: polityName(map(), polity) }),
-      button('×', () => {
-        polityPanel = null;
-        refresh();
-      }, { class: 'close', id: 'polity-close' }),
-    );
-    (header.firstElementChild as HTMLElement).style.borderColor = cssColor(entry.color);
-    const kind = entry.kind === 'cityState' ? t('polity.cityState') : s.majors.includes(polity) ? t('polity.major') : t('polity.nation');
-    const cities = s.cities.filter((city) => city !== null && city.owner === polity).length;
-    const lines = el('div', { class: 'line' }, el('span', { text: kind }), el('span', { text: t('polity.cities', { count: cities }) }));
-    const nodes: HTMLElement[] = [header, lines];
-    if (me !== NO_POLITY && s.polities[polity]?.alive === true && s.polities[me]?.alive === true) {
-      const relation = relationView(s, me, polity);
-      const text =
-        relation.kind === 'war'
-          ? t('relation.war', { turn: relation.since })
-          : relation.kind === 'truce'
-            ? t('relation.truce', { turn: relation.until })
-            : t('relation.peace');
-      nodes.push(el('div', { class: 'line', id: 'polity-relation', data: { relation: relation.kind }, text }));
-      const atWar = relation.kind === 'war';
-      nodes.push(
-        button(atWar ? t('polity.makePeace') : t('polity.declareWar'), () => {
-          act({ type: atWar ? 'makePeace' : 'declareWar', polity: me, target: polity });
-          refresh();
-        }, { class: 'accent', id: 'polity-action', data: { action: atWar ? 'makePeace' : 'declareWar' }, disabled: host.busy }),
-      );
-    }
+    const nodes =
+      polityPanel === null
+        ? null
+        : polityPanelNodes(appView, polityPanel, () => {
+            polityPanel = null;
+            refresh();
+          });
+    polityBox.hidden = nodes === null;
+    if (nodes === null) return;
+    const scrolled = polityBox.querySelector('.scroll')?.scrollTop ?? 0;
     fill(polityBox, ...nodes);
+    const body = polityBox.querySelector('.scroll');
+    if (body !== null) body.scrollTop = scrolled;
+  };
+
+  /** The player's own kit: what the nation's name in the top bar opens. */
+  const drawKit = (): void => {
+    const view = kitOpen && screen === 'game' && !observing() ? kitViewOf(map(), player()) : null;
+    if (view === null) kitOpen = false;
+    kitBox.hidden = view === null;
+    kitBox.dataset.nation = view?.nation ?? '';
+    if (view === null) {
+      fill(kitBox);
+      return;
+    }
+    const title = el('h2', { id: 'kit-name', text: polityName(map(), player()) });
+    title.style.setProperty('--nation', cssColor(map().polities[player()]?.color ?? 0x888888));
+    fill(
+      kitBox,
+      el(
+        'header',
+        {},
+        title,
+        difficultyMark(view),
+        closeButton('kit-close', () => {
+          kitOpen = false;
+          refresh();
+        }),
+      ),
+      el('div', { class: 'scroll' }, kitRows(view, false)),
+    );
+  };
+
+  const drawOverlay = (): void => {
+    if (screen !== 'game' || (observing() && (overlay === 'tech' || overlay === 'policy'))) overlay = null;
+    overlayBox.hidden = overlay === null;
+    overlayBox.dataset.overlay = overlay ?? '';
+    if (overlay === null) {
+      fill(overlayBox);
+      return;
+    }
+    const scrolled = overlayBox.querySelector('.scroll');
+    const top = scrolled?.scrollTop ?? 0;
+    const left = scrolled?.scrollLeft ?? 0;
+    const node =
+      overlay === 'tech'
+        ? techOverlay(appView)
+        : overlay === 'policy'
+          ? policyOverlay(appView, policyState)
+          : overlay === 'polities'
+            ? politiesOverlay(appView, politiesState)
+            : victoryOverlay(appView);
+    fill(overlayBox, node);
+    const body = node.querySelector('.scroll');
+    if (body !== null) {
+      body.scrollTop = top;
+      body.scrollLeft = left;
+    }
   };
 
   /** What the main action button is right now. */
@@ -870,11 +1462,24 @@ export function createApp(options: AppOptions): App {
     const next = mainButton(host.pending(), focus);
     if (next.kind === 'nextTurn') return { kind: 'nextTurn', label: t('main.nextTurn'), item: null };
     const { item } = next;
-    const label =
-      item.kind === 'unit'
-        ? t('main.unit', { name: unitName(unitById(item.unit)?.type ?? '') })
-        : t('main.city', { name: cityName(map(), item.city) });
-    return { kind: next.kind, label, item };
+    return { kind: next.kind, label: pendingLabel(item), item };
+  };
+
+  const pendingLabel = (item: PendingItem): string => {
+    switch (item.kind) {
+      case 'unit':
+        return t('main.unit', { name: unitName(unitById(item.unit)?.type ?? '') });
+      case 'city':
+        return t('main.city', { name: cityName(map(), item.city) });
+      case 'research':
+        return t('main.research');
+      case 'policy':
+        return t('main.policy');
+      case 'offer':
+        return t('main.offer', { name: polityName(map(), item.from) });
+      case 'peace':
+        return t('main.peace', { name: polityName(map(), item.from) });
+    }
   };
 
   const scheduleObserver = (): void => {
@@ -882,7 +1487,7 @@ export function createApp(options: AppOptions): App {
       window.clearTimeout(observerTimer);
       observerTimer = null;
     }
-    if (screen !== 'game' || !observing() || paused || automated || host.busy || state().result !== null) return;
+    if (screen !== 'game' || !observing() || paused || automated || animating || host.busy || state().result !== null) return;
     observerTimer = window.setTimeout(() => {
       observerTimer = null;
       void host.endTurn();
@@ -898,59 +1503,72 @@ export function createApp(options: AppOptions): App {
         break;
       case 'nextTurn':
         placing = null;
+        striking = null;
+        overlay = null;
+        trade.clear(appView);
         clearHover();
         void host.endTurn();
         return;
-      case 'unit':
-      case 'city': {
+      case 'none':
+      case 'busy':
+        return;
+      default: {
         const { item } = current;
         if (item === null) return;
         focus = item;
         polityPanel = null;
         placing = null;
-        if (item.kind === 'unit') {
-          select(item.unit);
-          cityPanel = null;
-        } else {
-          select(null);
-          cityPanel = item.city;
+        striking = null;
+        overlay = null;
+        menuOpen = false;
+        kitOpen = false;
+        trade.clear(appView);
+        switch (item.kind) {
+          case 'unit':
+            select(item.unit);
+            cityPanel = null;
+            flyTo(item.hex);
+            break;
+          case 'city':
+            select(null);
+            cityPanel = item.city;
+            flyTo(item.hex);
+            break;
+          case 'research':
+            overlay = 'tech';
+            break;
+          case 'policy':
+            overlay = 'policy';
+            break;
+          case 'offer':
+          case 'peace':
+            select(null);
+            cityPanel = null;
+            polityPanel = item.from;
+            flyTo(capitalHex(item.from));
+            break;
         }
-        flyTo(item.hex);
-        break;
       }
-      default:
-        return;
     }
     refresh();
   };
 
   const drawAction = (): void => {
     const current = mainState();
-    const nodes: HTMLElement[] = [];
-    if (observing() && screen === 'game') {
-      nodes.push(
-        el(
-          'div',
-          { class: 'segmented panel', id: 'speed' },
-          ...SPEEDS.map((value) =>
-            button(t('observer.speed', { speed: value }), () => {
-              speed = value;
-              scheduleObserver();
-              refresh();
-            }, { class: value === speed ? 'active' : '', data: { speed: value } }),
-          ),
-        ),
-      );
+    // an observer's clock redraws the page every turn: these buttons are updated in place, never rebuilt
+    speedBox.hidden = !(observing() && screen === 'game');
+    for (const node of speedButtons) {
+      const value = Number(node.dataset.speed);
+      const label = t('observer.speed', { speed: value });
+      if (node.textContent !== label) node.textContent = label;
+      node.classList.toggle('active', value === speed);
+      node.setAttribute('aria-pressed', String(value === speed));
     }
-    if (current.kind !== 'none') nodes.push(
-      button(current.label, mainAction, {
-        id: 'main-action',
-        class: current.kind === 'busy' ? 'busy' : current.kind === 'nextTurn' ? 'accent' : '',
-        data: { kind: current.kind },
-        disabled: current.kind === 'busy',
-      }),
-    );
-    fill(actionBox, ...nodes);
+    mainNode.hidden = current.kind === 'none';
+    if (mainNode.textContent !== current.label) mainNode.textContent = current.label;
+    mainNode.className = current.kind === 'busy' ? 'busy' : current.kind === 'nextTurn' ? 'accent' : '';
+    mainNode.dataset.kind = current.kind;
+    mainNode.disabled = current.kind === 'busy';
   };
 
   // -------------------------------------------------------- saves and menu
@@ -961,13 +1579,23 @@ export function createApp(options: AppOptions): App {
     cityPanel = null;
     polityPanel = null;
     menuOpen = false;
+    kitOpen = false;
+    overlay = null;
+    policyState.picked = null;
     placing = null;
+    striking = null;
+    routePath = null;
     focus = null;
     notes = [];
     paused = false;
+    enterQueued = false;
+    lastState = state();
     if (state().result === null) writeAutosave(board.source, state());
-    if (!observing()) flyTo(capitalHex(player()), farDistance * 0.3);
-    else board.renderer.setCamera({ distance: farDistance });
+    // the game opens on the player's capital with its zone in view; an observer sees the whole map
+    const home = observing() ? -1 : capitalHex(player());
+    if (home >= 0) board.renderer.focusHex(home, { frame: 'zone', immediate: true });
+    else showWholeMap();
+    showBoard();
     refresh();
     scheduleObserver();
   };
@@ -980,9 +1608,15 @@ export function createApp(options: AppOptions): App {
     cityPanel = null;
     polityPanel = null;
     menuOpen = false;
+    kitOpen = false;
+    overlay = null;
     placing = null;
+    striking = null;
+    routePath = null;
     notes = [];
-    board.renderer.setCamera({ distance: farDistance });
+    lastState = null;
+    showWholeMap();
+    showBoard();
     refresh();
     scheduleObserver();
   };
@@ -1021,102 +1655,260 @@ export function createApp(options: AppOptions): App {
   });
 
   const switchLanguage = (): void => {
-    const next = getLanguage() === 'zh' ? 'en' : 'zh';
-    setLanguage(next);
-    saveLanguage(next);
-    refresh();
+    changeSettings({ language: getLanguage() === 'zh' ? 'en' : 'zh' });
   };
+
+  /** A row of buttons of which one is chosen. */
+  const choice = <T extends string | number>(
+    id: string,
+    name: string,
+    values: readonly T[],
+    current: T,
+    label: (value: T) => string,
+    pick: (value: T) => void,
+  ): HTMLElement =>
+    el(
+      'div',
+      { class: 'segmented', id, data: { value: String(current) } },
+      ...values.map((value) =>
+        button(label(value), () => {
+          pick(value);
+        }, { class: value === current ? 'active' : '', data: { [name]: value }, pressed: value === current }),
+      ),
+    );
 
   const drawMenu = (): void => {
     menuBox.hidden = !menuOpen || screen !== 'game';
     if (menuBox.hidden) return;
-    fill(
-      menuBox,
-      button(t('menu.export'), download, { id: 'menu-export' }),
-      button(t('menu.import'), () => {
-        fileInput.click();
-      }, { id: 'menu-import' }),
-      button(t('language.switch'), switchLanguage, { id: 'menu-language' }),
-      button(t('menu.newGame'), leaveGame, { id: 'menu-new-game' }),
-      button(t('menu.close'), () => {
-        menuOpen = false;
-        refresh();
-      }, { id: 'menu-close' }),
+    const now = settings.current;
+    // rebuilt only when what it shows changed: an observer's clock redraws the page while the menu is open,
+    // and the volume slider must stay under the pointer
+    const signature = [now.quality, now.scale, now.language, now.animationSpeed, now.muted, scale, board.renderer.backend].join('|');
+    fillWhen(menuBox, signature, () => menuNodes());
+  };
+
+  const menuNodes = (): HTMLElement[] => {
+    const now = settings.current;
+    const volume = el('input', { id: 'menu-volume', label: t('menu.volume'), data: { value: now.volume } });
+    volume.type = 'range';
+    volume.min = '0';
+    volume.max = '1';
+    volume.step = String(VOLUME_STEP);
+    volume.value = String(now.volume);
+    volume.addEventListener('input', () => {
+      // no redraw while the slider is held: it would take the slider away from under the pointer
+      settings.set({ volume: Number(volume.value) });
+      sound.setVolume(settings.current.volume);
+      volume.dataset.value = String(settings.current.volume);
+    });
+    const scaleRow = choice('menu-scale', 'scale', SCALE_SETTINGS, now.scale, (value: ScaleSetting) => {
+      const key: TranslationKey = `scale.${value}`;
+      return t(key);
+    }, (value) => {
+      changeSettings({ scale: value });
+    });
+    scaleRow.dataset.scale = String(scale);
+    return [
+      el(
+        'div',
+        { class: 'menu-actions' },
+        iconButton('export', t('menu.export'), download, { id: 'menu-export' }),
+        iconButton('import', t('menu.import'), () => {
+          fileInput.click();
+        }, { id: 'menu-import' }),
+        iconButton('play', t('menu.newGame'), leaveGame, { id: 'menu-new-game' }),
+      ),
+      el('h3', { text: t('menu.quality') }),
+      choice('menu-quality', 'quality', QUALITY_OPTIONS, now.quality, (value) => {
+        const key: TranslationKey = `quality.${value}`;
+        return t(key);
+      }, (value) => {
+        changeSettings({ quality: value });
+      }),
+      el('h3', { text: t('menu.scale') }),
+      scaleRow,
+      el('h3', { text: t('menu.speed') }),
+      choice('menu-speed', 'speed', ANIMATION_SPEEDS, now.animationSpeed, (value) => t('observer.speed', { speed: value }), (value) => {
+        changeSettings({ animationSpeed: value });
+      }),
+      el('h3', { text: t('menu.volume') }),
+      el(
+        'div',
+        { class: 'volume' },
+        volume,
+        iconOnly(now.muted ? 'mute' : 'sound', t('menu.mute'), () => {
+          changeSettings({ muted: !settings.current.muted });
+        }, { id: 'menu-mute', class: now.muted ? 'active' : '', pressed: now.muted }),
+      ),
+      el(
+        'div',
+        { class: 'menu-foot' },
+        button(t('language.switch'), switchLanguage, { id: 'menu-language' }),
+        button(t('menu.close'), () => {
+          menuOpen = false;
+          refresh();
+        }, { id: 'menu-close' }),
+      ),
       el('div', { class: 'footnote', id: 'backend', text: t('hud.backend', { backend: t(`backend.${board.renderer.backend}`) }) }),
-    );
+    ];
   };
 
   // ------------------------------------------------------- start and end
 
+  /** Highlights a nation at nation select; the map behind the list flies to it. */
+  const chooseNation = (id: string): void => {
+    chosenNation = id;
+    const entry = map().polities.find((polity) => polity.id === id);
+    const hex = siteOf(entry?.capitalZone ?? -1);
+    if (hex >= 0) board.renderer.focusHex(hex, { frame: 'zone' });
+    refresh();
+  };
+
   const drawStart = (): void => {
     startScreen.hidden = screen !== 'start';
-    if (startScreen.hidden) return;
+    if (startScreen.hidden) {
+      fill(startScreen);
+      return;
+    }
     const m = map();
     const zh = getLanguage() === 'zh';
-    const majors = new Set(state().majors);
-    const groups = REGIONS.map((region) => {
-      const members = m.polities
-        .map((polity, index) => ({ polity, index }))
-        .filter(({ polity }) => polity.kind === 'nation' && regionOf(polity.id) === region);
-      if (members.length === 0) return null;
-      return el(
-        'section',
-        { class: 'region', data: { region } },
-        el('h3', { text: regionName(region) }),
+    const entries = nationEntries(m, state().majors);
+    const regions = regionsOf(entries);
+    if (startRegion !== 'all' && !regions.includes(startRegion)) startRegion = 'all';
+    const rated = entries.some((entry) => entry.difficulty !== null);
+    if (!rated) startSort = 'region';
+    const shown = listNations(entries, startRegion, startSort);
+    startScreen.dataset.region = startRegion;
+    startScreen.dataset.sort = startSort;
+
+    const nationButton = (entry: NationEntry): HTMLElement => {
+      const polity = m.polities[entry.polity];
+      const kit = kitViewOf(m, entry.polity);
+      const node = el(
+        'button',
+        {
+          class: `nation${chosenNation === entry.id ? ' active' : ''}${entry.major ? ' default-major' : ''}`,
+          data: { nation: entry.id, difficulty: entry.difficulty ?? '', major: Number(entry.major) },
+          pressed: chosenNation === entry.id,
+          ...(entry.major ? { title: t('kit.major') } : {}),
+          onClick: () => {
+            chooseNation(entry.id);
+          },
+        },
+        el('span', { class: 'nation-name', text: (zh ? polity?.nameZh : polity?.nameEn) ?? '' }),
+        el('span', { class: 'nation-other', text: (zh ? polity?.nameEn : polity?.nameZh) ?? '' }),
+        kit !== null && difficultyMark(kit),
+      );
+      node.style.setProperty('--nation', cssColor(polity?.color ?? 0x888888));
+      return node;
+    };
+    // the list is grouped by what it is ordered by: regions, or the four ratings
+    const groupOf = (entry: NationEntry): string => (startSort === 'region' ? entry.region : (entry.difficulty ?? ''));
+    const groupName = (group: string): string => {
+      if (group === '') return regionName('other');
+      const key = (startSort === 'region' ? `region.${group}` : `difficulty.${group}`) as TranslationKey;
+      return t(key);
+    };
+    const groups: HTMLElement[] = [];
+    let members: HTMLElement | null = null;
+    let last: string | null = null;
+    for (const entry of shown) {
+      const group = groupOf(entry);
+      if (group !== last || members === null) {
+        last = group;
+        members = el('div', { class: 'nations' });
+        groups.push(el('section', { class: 'region', data: { group } }, el('h3', { text: groupName(group) }), members));
+      }
+      members.append(nationButton(entry));
+    }
+
+    const filters = el(
+      'div',
+      { class: 'filters' },
+      regions.length > 1 &&
         el(
           'div',
-          { class: 'nations' },
-          ...members.map(({ polity, index }) => {
-            const node = el(
-              'button',
-              {
-                class: `nation${chosenNation === polity.id ? ' active' : ''}${majors.has(index) ? ' major' : ''}`,
-                data: { nation: polity.id },
-                onClick: () => {
-                  chosenNation = polity.id;
-                  refresh();
-                },
-              },
-              el('span', { class: 'nation-name', text: zh ? polity.nameZh : polity.nameEn }),
-              el('span', { class: 'nation-other', text: zh ? polity.nameEn : polity.nameZh }),
-            );
-            node.style.borderLeftColor = cssColor(polity.color);
-            return node;
-          }),
+          { class: 'chips', id: 'regions' },
+          ...(['all', ...regions] as const).map((region) =>
+            button(region === 'all' ? t('start.all') : regionName(region), () => {
+              startRegion = region;
+              refresh();
+            }, { class: region === startRegion ? 'chip active' : 'chip', data: { region }, pressed: region === startRegion }),
+          ),
         ),
-      );
-    });
+      rated &&
+        choice('nation-sort', 'sort', NATION_SORTS, startSort, (value) => {
+          const key: TranslationKey = `start.sort.${value}`;
+          return t(key);
+        }, (value) => {
+          startSort = value;
+          refresh();
+        }),
+    );
+
     const saved = readAutosave(board.source, m);
-    const card = el(
+    const list = el('div', { class: 'scroll', id: 'nations' }, ...groups);
+    const cover = el(
       'div',
-      { class: 'panel card' },
+      { class: 'panel cover-list' },
       el(
         'header',
-        {},
+        { class: 'cover-title' },
         el('h1', { text: t('app.title') }),
+        el('span', { class: 'seal', text: t('start.seal') }),
         button(t('language.switch'), switchLanguage, { id: 'language' }),
       ),
-      el('div', { class: 'scroll', id: 'nations' }, ...groups),
+      filters,
+      list,
       el(
         'footer',
         {},
         saved !== null &&
-          button(t('start.continue'), () => {
+          iconButton('turn', t('start.continue'), () => {
             host.resume(saved);
             enterGame();
           }, { id: 'continue' }),
-        button(t('menu.import'), () => {
+        iconButton('import', t('menu.import'), () => {
           fileInput.click();
         }, { id: 'start-import' }),
-        button(t('start.observe'), () => {
+        iconButton('observe', t('start.observe'), () => {
           void startGame({ observe: true });
         }, { id: 'observe' }),
-        button(t('start.play'), () => {
-          if (chosenNation !== null) void startGame({ nation: chosenNation });
-        }, { id: 'play', class: 'accent', disabled: chosenNation === null }),
       ),
     );
-    fill(startScreen, card);
+
+    // the kit of the highlighted nation, with the button that starts the game
+    const chosen = entries.find((entry) => entry.id === chosenNation);
+    let card: HTMLElement | null = null;
+    if (chosen !== undefined) {
+      const polity = m.polities[chosen.polity];
+      const kit = kitViewOf(m, chosen.polity);
+      const title = el('h2', { id: 'kit-name', text: (zh ? polity?.nameZh : polity?.nameEn) ?? '' });
+      title.style.setProperty('--nation', cssColor(polity?.color ?? 0x888888));
+      card = el(
+        'div',
+        { class: 'panel cover-kit', id: 'kit-card', data: { nation: chosen.id, kit: Number(kit !== null) } },
+        el('header', {}, title, el('span', { class: 'nation-other', text: (zh ? polity?.nameEn : polity?.nameZh) ?? '' })),
+        (kit !== null || chosen.major) &&
+          el(
+            'div',
+            { class: 'line' },
+            kit !== null && difficultyMark(kit),
+            chosen.major && el('span', { class: 'tag', id: 'kit-major', text: t('kit.major') }),
+          ),
+        kit !== null && el('div', { class: 'scroll' }, kitRows(kit, false)),
+        el(
+          'footer',
+          {},
+          iconButton('play', t('start.play'), () => {
+            void startGame({ nation: chosen.id });
+          }, { id: 'play', class: 'accent' }),
+        ),
+      );
+    }
+    const scrolled = startScreen.querySelector('#nations')?.scrollTop ?? 0;
+    fill(startScreen, cover, card);
+    list.scrollTop = scrolled;
   };
 
   const drawEnd = (): void => {
@@ -1177,26 +1969,124 @@ export function createApp(options: AppOptions): App {
 
   // ------------------------------------------------------------- refresh
 
+  /**
+   * A selector that finds a control again after the page was redrawn: its
+   * id, or its tag and `data-*` attributes under the nearest element with one.
+   */
+  const controlKey = (node: Element | null): string | null => {
+    if (!(node instanceof HTMLElement) || !root.contains(node) || node === root) return null;
+    if (node.id !== '') return `#${CSS.escape(node.id)}`;
+    let key = node.tagName.toLowerCase();
+    for (const [name, value] of Object.entries(node.dataset)) {
+      const attribute = name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+      key += `[data-${attribute}="${CSS.escape(value ?? '')}"]`;
+    }
+    const home = node.parentElement?.closest('[id]');
+    return home === null || home === undefined || home === root ? key : `#${CSS.escape(home.id)} ${key}`;
+  };
+
+  /** The first control of whatever lies on top, for a keyboard player whose control went away. */
+  const firstControl = (): HTMLElement | null => {
+    const layers = screen === 'start' ? [startScreen] : screen === 'end' ? [endScreen] : [overlayBox, menuBox, kitBox, cityBox, polityBox, actionBox];
+    for (const layer of layers) {
+      const control = layer.hidden ? null : layer.querySelector<HTMLElement>('button:not(:disabled)');
+      if (control !== null) return control;
+    }
+    return null;
+  };
+
   function refresh(): void {
+    // a redraw rebuilds most controls: a keyboard player keeps the focus on the one they were on
+    const focused = keyboardNav ? controlKey(document.activeElement) : null;
     document.documentElement.lang = getLanguage() === 'zh' ? 'zh-CN' : 'en';
     document.title = t('app.title');
     game.hidden = screen === 'start';
     root.dataset.screen = screen;
     root.dataset.side = screen === 'game' && (cityPanel !== null || polityPanel !== null) ? 'open' : 'closed';
+    sound.setEra(currentEra(state()));
     drawScene();
     drawStart();
     drawEnd();
-    if (screen === 'start') return;
-    drawTopbar();
-    drawSlots();
-    drawNotes();
-    drawSelection();
-    drawCityPanel();
-    drawPolityPanel();
-    drawMenu();
-    drawAction();
-    minimap?.draw(state());
+    if (screen !== 'start') {
+      drawTopbar();
+      drawSlots();
+      drawMajors();
+      drawNotes();
+      drawSelection();
+      drawKit();
+      drawCityPanel();
+      drawPolityPanel();
+      drawMenu();
+      drawAction();
+      drawOverlay();
+      drawLenses();
+      minimap?.draw(state(), lens, player());
+    }
+    if (focused !== null && !root.contains(document.activeElement)) {
+      (root.querySelector<HTMLElement>(focused) ?? firstControl())?.focus({ preventScroll: true });
+    }
   }
+
+  const lensBar = el('div', { class: 'segmented', id: 'lenses' });
+  const drawLenses = (): void => {
+    fillWhen(lensBar, [getLanguage(), lens, observing()].join('|'), () =>
+      LENSES.map((entry) => {
+        const key: TranslationKey = `lens.${entry}`;
+        return button(t(key), () => {
+          lens = entry;
+          refresh();
+        }, {
+          class: entry === lens ? 'active' : '',
+          data: { lens: entry },
+          disabled: entry === 'diplomacy' && observing(),
+          pressed: entry === lens,
+        });
+      }),
+    );
+  };
+
+  /** What the panels and overlays get from the application. */
+  const appView: View = {
+    get state() {
+      return state();
+    },
+    get map() {
+      return map();
+    },
+    get player() {
+      return player();
+    },
+    get busy() {
+      return host.busy;
+    },
+    act,
+    declinePeace(polity) {
+      host.declinePeace(polity);
+    },
+    refresh,
+    flyTo,
+    openPolity(polity) {
+      select(null);
+      cityPanel = null;
+      kitOpen = false;
+      placing = null;
+      striking = null;
+      trade.clear(appView);
+      polityPanel = polity;
+      flyTo(capitalHex(polity));
+      refresh();
+    },
+    closeOverlay() {
+      overlay = null;
+      refresh();
+    },
+    previewPath(hexes) {
+      routePath = hexes;
+      const middle = hexes === null ? undefined : hexes[Math.floor(hexes.length / 2)];
+      if (middle !== undefined) flyTo(middle);
+      drawHighlights();
+    },
+  };
 
   /** Drops what the new state no longer has, and moves to the end screen once there is a result. */
   const settle = (): void => {
@@ -1205,10 +2095,16 @@ export function createApp(options: AppOptions): App {
     if (selection !== null && unitById(selection)?.owner !== me) select(null);
     if (cityPanel !== null && s.cities[cityPanel]?.owner !== me) cityPanel = null;
     if (placing !== null && cityPanel !== placing.city) placing = null;
+    if (striking !== null && cityPanel !== striking.city) striking = null;
+    if (cityPanel === null) trade.clear(appView);
     if (polityPanel !== null && s.polities[polityPanel]?.alive !== true) polityPanel = null;
-    notes = notes.filter((note) =>
-      note.offerFrom >= 0 ? relationView(s, me, note.offerFrom).kind === 'war' : s.turn - note.turn < NOTE_TURNS,
-    );
+    notes = notes.filter((note) => {
+      const { offer } = note;
+      if (offer === null) return s.turn - note.turn < NOTE_TURNS;
+      // a note with an answer stays for as long as the offer stands
+      if (offer.kind === 'offer') return s.offers.some((entry) => entry.id === offer.id);
+      return relationView(s, me, offer.from).kind === 'war' && s.turn - note.turn < NOTE_TURNS;
+    });
     if (s.result !== null && screen === 'game') {
       screen = 'end';
       menuOpen = false;
@@ -1217,18 +2113,28 @@ export function createApp(options: AppOptions): App {
   };
 
   const onChange = (change: HostChange): void => {
+    const before = lastState;
+    lastState = state();
     switch (change.kind) {
       case 'started':
+        playToken++;
+        animating = false;
         return;
       case 'action':
         collect(change.events);
         settle();
+        present(before, change.events);
         return;
       case 'turn':
         focus = null;
         clearHover();
         collect(change.events);
         settle();
+        if (!change.burst && !observing() && screen === 'game') {
+          // the player's turn begins; what they researched is done
+          sound.play('turn');
+          if (change.events.some((event) => gameSound(event, player()) === 'research')) sound.play('research', 0.35);
+        }
         if (change.burst) {
           const now = performance.now();
           if (now - lastBurstRefresh >= BURST_REFRESH) {
@@ -1237,7 +2143,7 @@ export function createApp(options: AppOptions): App {
           }
           return;
         }
-        if (observing()) followEvents(change.events);
+        present(before, change.events, observing() ? followEvents(change.events) : -1);
         refresh();
         return;
       case 'busy':
@@ -1247,6 +2153,14 @@ export function createApp(options: AppOptions): App {
         }
         refresh();
         scheduleObserver();
+        if (!host.busy && enterQueued) {
+          // the press of Enter that came while the others were moving
+          enterQueued = false;
+          if (screen === 'game' && !observing()) {
+            enterApplied++;
+            mainAction();
+          }
+        }
         return;
       case 'attention':
         refresh();
@@ -1273,7 +2187,7 @@ export function createApp(options: AppOptions): App {
       const hex = renderer.pickHex(event.clientX, event.clientY);
       if (hex === null) return;
       if (start.button === 2) {
-        if (screen === 'game' && !host.busy && placing === null) orderTo(hex);
+        if (screen === 'game' && !host.busy && placing === null && striking === null) orderTo(hex);
       } else if (start.button === 0) {
         clickHex(hex, event.pointerType === 'touch', event.clientX, event.clientY);
       }
@@ -1285,8 +2199,7 @@ export function createApp(options: AppOptions): App {
       if (event.pointerType === 'touch' || event.buttons !== 0 || selection === null || screen !== 'game') return;
       const hex = renderer.pickHex(event.clientX, event.clientY);
       if (hex === hoverHex) {
-        tooltip.style.left = `${event.clientX + 16}px`;
-        tooltip.style.top = `${event.clientY + 16}px`;
+        placeTooltip(event.clientX, event.clientY);
         return;
       }
       preview(hex, event.clientX, event.clientY);
@@ -1300,14 +2213,19 @@ export function createApp(options: AppOptions): App {
     minimap = createMinimap(board.map, (hex) => {
       flyTo(hex);
     });
-    fill(minimapBox, minimap.element);
-    const view = minimap;
+    fill(minimapBox, minimap.element, lensBar);
+    const small = minimap;
     const stopFrames = renderer.onFrame(() => {
       const camera = renderer.getCamera();
-      view.setCamera(camera.x, camera.z);
+      small.setCamera(camera.x, camera.z);
     });
     const unsubscribe = host.subscribe(onChange);
-    farDistance = renderer.getCamera().distance;
+    // a new board has a new renderer: quality, language and animation speed go onto it
+    applySettings();
+    boardState = null;
+    lastState = null;
+    playToken++;
+    animating = false;
     detach = () => {
       control.abort();
       stopFrames();
@@ -1338,6 +2256,7 @@ export function createApp(options: AppOptions): App {
       runner.dispose();
       runner = createWorkerRunner(board.map);
       host = createHost(board.map, runner);
+      trade.clear(appView);
       attach();
       options.onBoard?.(board);
     }
@@ -1347,37 +2266,122 @@ export function createApp(options: AppOptions): App {
     enterGame();
   }
 
+  const typing = (event: KeyboardEvent): boolean => {
+    const target = event.target;
+    return (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey
+    );
+  };
+
+  /** True if a keyboard player has a control in focus: Enter and Space then press it, as they do everywhere. */
+  const onControl = (): boolean => {
+    const focused = document.activeElement;
+    return (
+      keyboardNav &&
+      focused instanceof HTMLElement &&
+      root.contains(focused) &&
+      focused.matches('button, input, select, a[href], [tabindex]') &&
+      focused.id !== 'main-action'
+    );
+  };
+
+  // the first gesture starts the sound; Tab means the player is moving through the controls with the keyboard
   window.addEventListener(
     'keydown',
     (event) => {
-      const target = event.target;
-      if (
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.altKey ||
-        screen !== 'game'
-      ) {
-        return;
-      }
+      if (hidden) return;
+      if (event.key === 'Tab') keyboardNav = true;
+      sound.unlock();
+    },
+    { capture: true },
+  );
+  window.addEventListener(
+    'pointerdown',
+    () => {
+      if (hidden) return;
+      keyboardNav = false;
+      sound.unlock();
+    },
+    { capture: true },
+  );
+  root.addEventListener('click', (event) => {
+    if (event.target instanceof Element && event.target.closest('button') !== null) sound.play('click');
+  });
+
+  window.addEventListener(
+    'keydown',
+    (event) => {
+      if (hidden || typing(event) || screen !== 'game') return;
+      if ((event.key === 'Enter' || event.key === ' ') && onControl()) return;
       if (event.key === 'Enter') {
-        // Enter is the main button wherever the focus is, and only once per press
+        // Enter is the main button wherever the mouse left the focus, and only once per press
         event.preventDefault();
-        if (!event.repeat) mainAction();
+        if (event.repeat) return;
+        // while the others move, one press is kept and applied when they are done
+        if (host.busy && !observing()) enterQueued = true;
+        else mainAction();
+      } else if (event.key === ' ') {
+        // held, Space hurries the animations; it never presses the button that has the focus
+        event.preventDefault();
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        if (!event.repeat) board.renderer.setAnimationSpeed(HURRY * settings.current.animationSpeed);
       } else if (event.key === 'Escape') {
-        if (placing !== null) placing = null;
+        if (skipAnimations()) return;
+        if (overlay !== null) overlay = null;
+        else if (striking !== null) striking = null;
+        else if (placing !== null) placing = null;
         else if (menuOpen) menuOpen = false;
+        else if (kitOpen) kitOpen = false;
+        else if (trade.selected !== null) trade.clear(appView);
         else if (cityPanel !== null || polityPanel !== null) {
           cityPanel = null;
           polityPanel = null;
         } else select(null);
         refresh();
+      } else if ((event.key === 't' || event.key === 'T') && !observing()) {
+        toggleOverlay('tech');
+      } else if ((event.key === 'p' || event.key === 'P') && !observing()) {
+        toggleOverlay('policy');
       }
     },
     { capture: true },
   );
+  window.addEventListener(
+    'keyup',
+    (event) => {
+      if (event.key !== ' ' || hidden || screen !== 'game' || onControl()) return;
+      board.renderer.setAnimationSpeed(settings.current.animationSpeed);
+      if (!typing(event)) event.preventDefault();
+    },
+    { capture: true },
+  );
+  window.addEventListener('blur', () => {
+    if (!hidden && screen === 'game') board.renderer.setAnimationSpeed(settings.current.animationSpeed);
+  });
+  window.addEventListener('resize', () => {
+    // hidden, the renderer belongs to somebody else (the render demo)
+    if (hidden) return;
+    const before = scale;
+    applyScale();
+    if (scale !== before) refresh();
+  });
+
+  /** The kit that is on screen and where, for the snapshot. */
+  const shownKit = (): UiSnapshot['kit'] => {
+    const of = (index: number, where: 'start' | 'own' | 'polity'): UiSnapshot['kit'] => {
+      const view = index < 0 ? null : kitViewOf(map(), index);
+      return view === null ? null : { nation: view.nation, where };
+    };
+    if (screen === 'start') return of(map().polities.findIndex((polity) => polity.id === chosenNation), 'start');
+    if (screen !== 'game') return null;
+    if (kitOpen) return of(player(), 'own');
+    return polityPanel === null ? null : of(polityPanel, 'polity');
+  };
 
   attach();
   refresh();
@@ -1390,7 +2394,18 @@ export function createApp(options: AppOptions): App {
       const current = mainState();
       return {
         screen,
-        panel: screen !== 'game' ? null : menuOpen ? 'menu' : cityPanel !== null ? 'city' : polityPanel !== null ? 'polity' : null,
+        panel:
+          screen !== 'game'
+            ? null
+            : menuOpen
+              ? 'menu'
+              : kitOpen
+                ? 'kit'
+                : cityPanel !== null
+                  ? 'city'
+                  : polityPanel !== null
+                    ? 'polity'
+                    : null,
         city: cityPanel,
         polity: polityPanel,
         selectedUnit: selection,
@@ -1399,6 +2414,29 @@ export function createApp(options: AppOptions): App {
         mainButton: { kind: current.kind, label: current.label },
         notifications: notes.length,
         map: board.source,
+        overlay: screen === 'game' ? overlay : null,
+        lens,
+        scale: { setting: settings.current.scale, factor: scale },
+        animating,
+        targeting: striking !== null ? 'airStrike' : placing !== null ? 'improvement' : 'select',
+        routePreview: trade.selected,
+        enterApplied,
+        kit: shownKit(),
+        start:
+          screen !== 'start'
+            ? null
+            : {
+                region: startRegion,
+                sort: startSort,
+                nations: listNations(nationEntries(map(), state().majors), startRegion, startSort).map((entry) => entry.id),
+                chosen: chosenNation,
+              },
+        settings: settings.current,
+        sound: (() => {
+          const { silent, unlocked, volume, muted, era } = sound.status;
+          return { silent, unlocked, volume, muted, era };
+        })(),
+        aids: screen === 'game' ? aidsShown : null,
       };
     },
     startGame,
@@ -1418,12 +2456,16 @@ export function createApp(options: AppOptions): App {
       } finally {
         automated = false;
         board.renderer.setPaused(options.renderOff === true);
+        lastState = state();
+        showBoard();
         refresh();
         scheduleObserver();
       }
     },
     hide() {
+      hidden = true;
       root.hidden = true;
+      sound.dispose();
     },
   };
 }

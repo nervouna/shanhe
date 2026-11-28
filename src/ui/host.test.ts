@@ -40,7 +40,7 @@ describe('createHost', () => {
     host.start({ player: 'jia', seed: 4 });
     expect(host.playing).toBe(true);
     expect(host.state.player).toBe(JIA);
-    expect(host.pending()).toEqual([{ kind: 'city', city: capitalZone, hex: jiaCapital }]);
+    expect(host.pending()).toEqual([{ kind: 'city', city: capitalZone, hex: jiaCapital }, { kind: 'research' }]);
   });
 
   it('applies the player\'s actions and reports rejections without changing the state', () => {
@@ -59,7 +59,7 @@ describe('createHost', () => {
     expect(host.state.cities[capitalZone]!.queue).toHaveLength(1);
     expect(before.cities[capitalZone]!.queue).toHaveLength(0);
     expect(changes.map((change) => change.kind)).toEqual(['action']);
-    expect(host.pending()).toEqual([]);
+    expect(host.pending()).toEqual([{ kind: 'research' }]);
   });
 
   it('ends a turn through the runner exactly as the rules do', async () => {
@@ -172,6 +172,31 @@ describe('createHost', () => {
     // a finished game does not move any more
     expect((await host.runTurns(3)).turns).toBe(0);
     expect(await host.endTurn()).toBe(false);
+  });
+
+  it('stops asking about a policy card the player took out of its slot', () => {
+    const host = createHost(map, createInlineRunner());
+    host.resume(edit(createGame(map, { player: 'jia', seed: 2 }), (draft) => {
+      const self = draft.polities[JIA]!;
+      self.policies = ['wellField'];
+      self.slots = ['wellField', null];
+      self.research = 'farming';
+      for (const city of draft.cities) if (city !== null && city.owner === JIA) city.queue = [{ kind: 'unit', unit: 'warrior' }];
+      draft.units = draft.units.filter((unit) => unit.owner !== JIA);
+    }));
+    expect(host.pending()).toEqual([]);
+    // both slots are empty afterwards, and the card waits for neither
+    expect(host.act({ type: 'slotPolicy', polity: JIA, policy: null, slot: 0 }).ok).toBe(true);
+    expect(host.state.polities[JIA]!.slots).toEqual([null, null]);
+    expect(host.pending()).toEqual([]);
+    // put back and taken out again, it still does not ask
+    expect(host.act({ type: 'slotPolicy', polity: JIA, policy: 'wellField', slot: 1 }).ok).toBe(true);
+    expect(host.pending()).toEqual([]);
+    expect(host.act({ type: 'slotPolicy', polity: JIA, policy: null, slot: 1 }).ok).toBe(true);
+    expect(host.pending()).toEqual([]);
+    // another game starts with nothing emptied
+    host.resume(host.state);
+    expect(host.pending()).toEqual([{ kind: 'policy' }]);
   });
 
   it('runs turns for a player too, and forgets a game that is replaced while turns are running', async () => {

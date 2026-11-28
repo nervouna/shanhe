@@ -1,7 +1,7 @@
 /** Translated names of the rules' things. The template types make the compiler check that every code has a string. */
 
-import { ERAS } from '../core/data.ts';
-import type { BuildingId, Focus, ImprovementId, TechId, Yields } from '../core/data.ts';
+import { ERAS, unitFor } from '../core/data.ts';
+import type { AgreementKind, BuildingId, Focus, ImprovementId, PolicyId, TechId, Yields } from '../core/data.ts';
 import { NO_POLITY } from '../core/game.ts';
 import type { BuildItem, RejectReason } from '../core/game.ts';
 import { dictionaries, getLanguage, t } from '../shared/i18n.ts';
@@ -74,10 +74,23 @@ export function cityName(map: MapData, zone: number): string {
   return getLanguage() === 'zh' ? entry.cityNameZh : entry.cityNameEn;
 }
 
-export function itemName(map: MapData, item: BuildItem): string {
+/**
+ * The unit type a polity really builds for a unit id: its nation's unique
+ * unit where it has one in that place, otherwise the id itself.
+ */
+export function builtUnit(map: MapData, polity: number, unit: string): string {
+  return unitFor(map.polities[polity]?.id ?? '', unit);
+}
+
+/**
+ * The name of something a city builds.
+ *
+ * @param owner the polity that builds it: its unique unit takes the place of the generic one it replaces.
+ */
+export function itemName(map: MapData, item: BuildItem, owner: number = NO_POLITY): string {
   switch (item.kind) {
     case 'unit':
-      return unitName(item.unit);
+      return unitName(builtUnit(map, owner, item.unit));
     case 'building':
       return buildingName(item.building);
     case 'improvement':
@@ -114,5 +127,36 @@ export function regionOf(polityId: string): Region {
 
 export function regionName(region: Region): string {
   const key: TranslationKey = `region.${region}`;
+  return t(key);
+}
+
+/** The name of a resource by its `MapResource.id`: the map's own name for it, or the game's for a strategic resource. */
+export function resourceName(map: MapData, id: string): string {
+  const entry = map.resources.find((resource) => resource.id === id);
+  if (entry !== undefined) return getLanguage() === 'zh' ? entry.nameZh : entry.nameEn;
+  // a strategic resource the map does not have still has a name in the tech tree
+  const key = `resource.${id}`;
+  return Object.hasOwn(dictionaries.zh, key) ? t(key as TranslationKey) : id;
+}
+
+/** The name of an off-map port by its index into `MapData.offMapPorts`. */
+export function portName(map: MapData, port: number): string {
+  const entry = map.offMapPorts[port];
+  if (entry === undefined) return '';
+  return getLanguage() === 'zh' ? entry.nameZh : entry.nameEn;
+}
+
+export function policyName(policy: PolicyId): string {
+  const key: TranslationKey = `policy.${policy}`;
+  return t(key);
+}
+
+export function policyEffect(policy: PolicyId): string {
+  const key: TranslationKey = `policy.${policy}.effect`;
+  return t(key);
+}
+
+export function agreementName(kind: AgreementKind): string {
+  const key: TranslationKey = `agreement.${kind}`;
   return t(key);
 }

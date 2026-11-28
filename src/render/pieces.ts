@@ -1,8 +1,9 @@
 /**
  * Unit pieces: thick round discs like xiangqi pieces, with a band in the
  * polity colour around the side, one Chinese character engraved on top
- * (filled with gold for unique units), a material per era and a ring of
- * hit-point ticks along the rim. All pieces are one instanced mesh, so a
+ * (filled with gold for unique units), a material per era that mirrors the
+ * sky, a ring of hit-point ticks along the rim and a soft shade on the
+ * ground under it. All pieces are one instanced mesh, so a
  * thousand of them cost one draw call.
  */
 
@@ -27,7 +28,7 @@ import {
   vec2,
   vec3,
 } from 'three/tsl';
-import type { Node } from 'three/webgpu';
+import type { Node, Texture } from 'three/webgpu';
 import {
   BufferAttribute,
   BufferGeometry,
@@ -38,12 +39,14 @@ import {
   LinearFilter,
   LinearMipmapLinearFilter,
   Matrix4,
+  MeshBasicNodeMaterial,
   MeshStandardNodeMaterial,
+  PlaneGeometry,
   Quaternion,
   Vector3,
 } from 'three/webgpu';
 import { hexToWorld, indexToOffset } from '../shared/hex.ts';
-import { surfaceHeightAtHex } from './heightField.ts';
+import { surfaceHeightAt, surfaceHeightAtHex } from './heightField.ts';
 import type { Surface } from './heightField.ts';
 import type { RenderUnit } from './scene.ts';
 import { noise } from './shaderLib.ts';
@@ -64,6 +67,8 @@ export interface PiecePose {
 
 export interface Pieces {
   readonly object: InstancedMesh;
+  /** The soft dark patch on the ground under every piece. */
+  readonly shadows: InstancedMesh;
   /** Replaces the pieces. Every pose and effect set since the last call is dropped. */
   setUnits(units: readonly RenderUnit[]): void;
   /** Whether a unit with this id is on the board. */
@@ -202,7 +207,7 @@ function buildPieceGeometry(): BufferGeometry {
 
 type Float = Node<'float'>;
 
-function createMaterial(atlas: GlyphAtlas): MeshStandardNodeMaterial {
+function createMaterial(atlas: GlyphAtlas, environment: Texture): MeshStandardNodeMaterial {
   // per piece: glyph cell, era, unique flag, hit points
   const data = attribute('pieceData', 'vec4');
   const bandColor = attribute('pieceColor', 'vec3');
@@ -293,6 +298,9 @@ function createMaterial(atlas: GlyphAtlas): MeshStandardNodeMaterial {
     float(0.9),
     goldFill,
   );
+  // the polished materials mirror the sky
+  material.envMap = environment;
+  material.envMapIntensity = 0.1;
   // lit ticks and gold stay readable in shadow
   material.emissiveNode = vec3(
     tickColor.mul(tick).mul(lit).mul(0.35).add(color(GOLD).mul(goldFill).mul(0.25)).add(color(GOLD).mul(effect.x).mul(0.9)),
@@ -300,12 +308,47 @@ function createMaterial(atlas: GlyphAtlas): MeshStandardNodeMaterial {
   return material;
 }
 
-export function createPieces(surface: Surface): Pieces {
+/** Radius of the patch of shade under a piece, and how far over the ground it lies, as fractions of the hex size. */
+const SHADE_RADIUS = 0.8;
+const SHADE_LIFT = 0.016;
+
+/**
+ * @param environment the sky, which the polished pieces mirror.
+ */
+export function createPieces(surface: Surface, environment: Texture): Pieces {
   const { map } = surface;
   const layout = map.projection.hexLayout;
   const atlas = new GlyphAtlas();
   const geometry = buildPieceGeometry();
-  const material = createMaterial(atlas);
+  const material = createMaterial(atlas, environment);
+
+  // the base shadow: a flat disc that is darkest under the rim of the piece
+  const shadeGeometry = new PlaneGeometry(2, 2).rotateX(-Math.PI / 2);
+  const shadeMaterial = new MeshBasicNodeMaterial();
+  const fromCentre = length(positionGeometry.xz);
+  shadeMaterial.colorNode = vec3(0.02, 0.018, 0.015);
+  shadeMaterial.opacityNode = smoothstep(1, RADIUS / SHADE_RADIUS, fromCentre).mul(0.42);
+  shadeMaterial.transparent = true;
+  shadeMaterial.depthWrite = false;
+  shadeMaterial.polygonOffset = true;
+  shadeMaterial.polygonOffsetFactor = -5;
+  shadeMaterial.polygonOffsetUnits = -5;
+  const allocateShadows = (size: number): InstancedMesh => {
+    const created = new InstancedMesh(shadeGeometry, shadeMaterial, size);
+    created.name = 'pieceShadows';
+    created.count = 0;
+    created.frustumCulled = false;
+    created.renderOrder = 1;
+    return created;
+  };
+  let shadows: InstancedMesh = allocateShadows(256);
+  /** Lays the shade of instance `index` on the ground under a point. */
+  const shade = (index: number, x: number, z: number, scale: number): void => {
+    const reach = SHADE_RADIUS * layout.size * scale;
+    matrix.makeScale(reach, 1, reach).setPosition(x, surfaceHeightAt(surface, x, z) + SHADE_LIFT * layout.size, z);
+    shadows.setMatrixAt(index, matrix);
+    shadows.instanceMatrix.needsUpdate = true;
+  };
   const polityColors = map.polities.map((polity) => new Color().setHex(polity.color));
   const fallbackColor = new Color(0x888888);
 
@@ -345,8 +388,18 @@ export function createPieces(surface: Surface): Pieces {
     get object() {
       return mesh;
     },
+    get shadows() {
+      return shadows;
+    },
     setUnits(units) {
       if (units.length > capacity) {
+        const shadeParent = shadows.parent;
+        shadeParent?.remove(shadows);
+        shadows.dispose();
+        let shadeSize = capacity;
+        while (shadeSize < units.length) shadeSize *= 2;
+        shadows = allocateShadows(shadeSize);
+        shadeParent?.add(shadows);
         const parent = mesh.parent;
         parent?.remove(mesh);
         mesh.dispose();
@@ -371,6 +424,11 @@ export function createPieces(surface: Surface): Pieces {
         colors.setXYZ(i, band.r, band.g, band.b);
         effects.setXY(i, 0, 0);
       });
+      units.forEach((unit, i) => {
+        const stand = standOn(unit.hex);
+        shade(i, stand.x, stand.z, 1);
+      });
+      shadows.count = units.length;
       mesh.count = units.length;
       mesh.instanceMatrix.needsUpdate = true;
       data.needsUpdate = true;
@@ -395,6 +453,7 @@ export function createPieces(surface: Surface): Pieces {
       matrix.compose(position.set(pose.x, pose.y, pose.z), rotation, scale.set(size, size, size));
       mesh.setMatrixAt(slot.index, matrix);
       mesh.instanceMatrix.needsUpdate = true;
+      shade(slot.index, pose.x, pose.z, pose.scale ?? 1);
     },
     setEffect(id, flash, crack) {
       const slot = slots.get(id);
@@ -405,6 +464,9 @@ export function createPieces(surface: Surface): Pieces {
     },
     dispose() {
       mesh.dispose();
+      shadows.dispose();
+      shadeGeometry.dispose();
+      shadeMaterial.dispose();
       geometry.dispose();
       material.dispose();
       atlas.dispose();

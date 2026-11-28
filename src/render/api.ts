@@ -7,7 +7,6 @@
  */
 
 import {
-  ACESFilmicToneMapping,
   Mesh,
   MeshStandardNodeMaterial,
   PCFShadowMap,
@@ -20,7 +19,7 @@ import {
 import { hexToWorld, indexToOffset, worldToHex } from '../shared/hex.ts';
 import { getLanguage } from '../shared/i18n.ts';
 import type { Language } from '../shared/i18n.ts';
-import { NO_ZONE } from '../shared/mapData.ts';
+import { Feature, NO_ZONE } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
 import type { RenderBackend } from '../shared/types.ts';
 import { createAnimator } from './animator.ts';
@@ -36,23 +35,33 @@ import {
 } from './cameraRig.ts';
 import type { CameraPose, CameraState } from './cameraRig.ts';
 import { createCities } from './cities.ts';
+import { createClouds } from './clouds.ts';
+import type { Part } from './cityGen.ts';
+import { latitudeTerms } from './climate.ts';
 import { createCameraController } from './controls.ts';
 import { createEffects } from './effects.ts';
 import { createSurface, mapWorldRect, surfaceHeightAt, unitsPerMetre } from './heightField.ts';
+import { createGroundLines } from './groundLines.ts';
 import { createHexRaster } from './hexRaster.ts';
 import { POLITICAL_NAMES_FROM, createLabels } from './labels.ts';
 import { createLighting } from './lighting.ts';
 import { createMapTextures } from './mapTextures.ts';
 import { createOverlays } from './overlays.ts';
+import { createPartBatch } from './partBatch.ts';
 import { pickHexOnRay } from './picking.ts';
 import { createPieces } from './pieces.ts';
 import { placePoliticalNames } from './politicalNames.ts';
+import { improvementParts, volcanoParts } from './props.ts';
+import { resolveEffects } from './postEffects.ts';
+import type { PostEffect } from './postEffects.ts';
+import { createPostFx } from './postfx.ts';
 import { QUALITY_SETTINGS, createScaleController, renderPixelRatio } from './renderScale.ts';
 import type { Quality } from './renderScale.ts';
 import type { FrameStats, Renderer, RendererOptions } from './scene.ts';
 import { createMapUniforms } from './shaderLib.ts';
 import { createTerrain } from './terrain.ts';
 import { createTerrainMaterial } from './terrainMaterial.ts';
+import { createVegetation } from './vegetation.ts';
 import { createWater } from './water.ts';
 
 export type { CameraState } from './cameraRig.ts';
@@ -63,6 +72,9 @@ const TABLE_COLOR = 0x2b2622;
 
 /** The camera stays this far above the ground under it, in hex sizes. */
 const CAMERA_CLEARANCE = 0.5;
+
+/** How high the clouds float over the ground, in hex sizes. */
+const CLOUD_HEIGHT = 5;
 
 /** Weight of the newest frame in the running averages of the statistics. */
 const STATS_BLEND = 0.1;
@@ -76,6 +88,16 @@ const BORDER_WIDTH = 0.085;
 /** City houses smaller than this on screen are not drawn, in CSS pixels. */
 const MIN_HOUSE_PIXELS = 0.8;
 
+const NO_IMPROVEMENTS: ReadonlyMap<number, number> = new Map();
+
+/** A string that changes when the entries of a map do. */
+function keyOfMap(map: ReadonlyMap<number, number>): string {
+  if (map.size === 0) return '';
+  let key = '';
+  for (const [hex, value] of map) key += `${hex}:${value},`;
+  return key;
+}
+
 /**
  * Starts drawing `mapData` on `canvas`. Resolves once the renderer has
  * picked its backend: WebGPU where the browser has it, WebGL 2 otherwise.
@@ -85,7 +107,8 @@ export async function createRenderer(
   mapData: MapData,
   options: RendererOptions = {},
 ): Promise<Renderer> {
-  const renderer = new WebGPURenderer({ canvas, antialias: true });
+  // edges are smoothed by the finish (`postfx.ts`), not by multisampling
+  const renderer = new WebGPURenderer({ canvas, antialias: false });
   await renderer.init();
   const backend: RenderBackend =
     (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true
@@ -93,8 +116,9 @@ export async function createRenderer(
       : 'webgl';
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = PCFShadowMap;
-  renderer.toneMapping = ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1;
+  // a frame is several passes: the counters are reset once per frame by hand
+  renderer.info.autoReset = false;
 
   const layout = mapData.projection.hexLayout;
   const surface = createSurface(mapData, options.heightmap);
@@ -104,29 +128,65 @@ export async function createRenderer(
 
   const scene = new Scene();
   const camera = new PerspectiveCamera(CAMERA_FOV, 1, 0.1, 100);
-  const lighting = createLighting(scene, span);
+  const lighting = createLighting(scene, renderer, span, surface.field.maxY - surface.field.minY);
 
   const textures = createMapTextures(mapData, createHexRaster(mapData));
-  const uniforms = createMapUniforms(rect, layout, unitsPerMetre(mapData), textures);
+  const uniforms = createMapUniforms(rect, layout, unitsPerMetre(mapData), textures, latitudeTerms(mapData.projection));
   const terrainMaterial = createTerrainMaterial(uniforms);
   // the table the map stands on, a little below its lowest point
   const tableY = surface.field.minY - 0.35 * layout.size;
   const terrain = createTerrain(surface.field, terrainMaterial, tableY);
-  const water = createWater(surface, uniforms);
+  const water = createWater(surface, uniforms, lighting.environment);
   const overlays = createOverlays(surface, uniforms);
   const tableGeometry = new PlaneGeometry(span * 40, span * 40).rotateX(-Math.PI / 2);
   const tableMaterial = new MeshStandardNodeMaterial({ color: TABLE_COLOR, roughness: 0.9 });
   const table = new Mesh(tableGeometry, tableMaterial);
   table.position.set((rect.minX + rect.maxX) / 2, tableY, (rect.minZ + rect.maxZ) / 2);
   table.receiveShadow = true;
-  const pieces = createPieces(surface);
-  const cities = createCities(surface);
+  const clouds = createClouds(uniforms, rect, surface.field.maxY + CLOUD_HEIGHT * layout.size);
+  const groundLines = createGroundLines(surface, uniforms);
+  const vegetation = createVegetation(surface, uniforms);
+  const pieces = createPieces(surface, lighting.environment);
+  const cities = createCities(surface, uniforms);
+  const props = createPartBatch(uniforms, layout.size, 'props');
   const labels = createLabels();
   const effects = createEffects();
-  scene.add(terrain.object, water.object, overlays.object, table, pieces.object, cities.object, effects.object);
-  scene.add(labels.object);
+  scene.add(terrain.object, water.object, groundLines.object, overlays.object, table, vegetation.object, pieces.shadows, pieces.object, cities.object, props.object, effects.object, clouds.object);
+  // with the finish, labels are drawn on their own and laid over the picture
+  const labelScene = new Scene();
+  renderer.setClearColor(0x000000, 0);
+  const postfx = createPostFx(renderer, scene, labelScene, camera);
 
   const hexCount = mapData.width * mapData.height;
+
+  /** Draws what stands on hexes besides cities: volcano cones and the buildings of improvements. */
+  const showProps = (improvements: ReadonlyMap<number, number>): void => {
+    const parts: Part[] = [];
+    const place = (hex: number, local: readonly Part[]): void => {
+      const centre = hexToWorld(indexToOffset(hex, mapData.width), layout);
+      for (const part of local) {
+        const x = centre.x + part.x * layout.size;
+        const z = centre.z + part.z * layout.size;
+        parts.push({
+          ...part,
+          x,
+          y: surfaceHeightAt(surface, x, z) + part.y * layout.size,
+          z,
+          w: part.w * layout.size,
+          h: part.h * layout.size,
+          d: part.d * layout.size,
+        });
+      }
+    };
+    for (let hex = 0; hex < hexCount; hex++) {
+      if (mapData.feature[hex] === Feature.Volcano) place(hex, volcanoParts(hex));
+    }
+    for (const [hex, kind] of improvements) {
+      if (Number.isInteger(hex) && hex >= 0 && hex < hexCount) place(hex, improvementParts(kind, hex));
+    }
+    props.set(parts);
+  };
+  showProps(NO_IMPROVEMENTS);
   const validHex = (hex: number): boolean => Number.isInteger(hex) && hex >= 0 && hex < hexCount;
 
   // the owner of every hex as drawn: the map's, the scene's overrides, and what animations changed
@@ -152,6 +212,13 @@ export async function createRenderer(
   showNames();
 
   let quality: Quality = options.quality ?? 'auto';
+  let effectOverrides: Readonly<Partial<Record<PostEffect, boolean>>> = {};
+  const applyEffects = (): void => {
+    postfx.setState(resolveEffects(quality, backend, effectOverrides));
+    (postfx.active ? labelScene : scene).add(labels.object);
+    lighting.setToneMapped(postfx.state.toneMapping);
+  };
+  applyEffects();
   let settings = QUALITY_SETTINGS[quality];
   const scaleController = createScaleController({ targetMs: TARGET_FRAME_MS });
   let renderScale = settings.scale ?? 1;
@@ -204,9 +271,17 @@ export async function createRenderer(
   const viewHeight = 2 * Math.tan((CAMERA_FOV * Math.PI) / 360);
   /** Anything that casts a shadow changed: the shadow map is drawn again. */
   let shadowDirty = true;
+  /** Only pieces in motion changed what casts shadows. */
+  let shadowMoving = false;
+  /** Drawn time in seconds: what the drifting light and the clouds follow. */
+  let seconds = 0;
   let political = 0;
   let shownLabels = 0;
   let terrainBuilds = 0;
+  let shownTrees = 0;
+  let treeBuilds = 0;
+  let treesChanged = false;
+  let cloudLayer = 0;
   const applyCamera = (state: CameraState, firstFrame: boolean): void => {
     const pose = poseOf(state);
     camera.position.set(...pose.position);
@@ -230,11 +305,34 @@ export async function createRenderer(
       0.42 * layout.size,
     );
     cities.object.visible = (0.12 * layout.size) / perPixel >= MIN_HOUSE_PIXELS;
+    props.object.visible = cities.object.visible;
     const update = terrain.update(camera.position, viewHeight, firstFrame ? Infinity : undefined);
     terrainBuilds = update.builds;
-    lighting.update(target, state.distance, pose.tilt, shadowDirty || update.changed);
+    const grown = vegetation.update(camera.position, firstFrame ? 64 : undefined);
+    shownTrees = grown.trees;
+    treeBuilds = grown.builds;
+    if (grown.changed) treesChanged = true;
+    // forests come in a few chunks per frame: their shadows follow in steps, not every frame
+    if (treesChanged && (firstFrame || grown.builds === 0 || stats.frames % 12 === 0)) {
+      treesChanged = false;
+      shadowDirty = true;
+    }
+    lighting.update(
+      target,
+      state.distance,
+      pose.tilt,
+      shadowDirty || update.changed ? true : shadowMoving ? 'moving' : false,
+      seconds,
+    );
     shadowDirty = false;
+    shadowMoving = false;
+    uniforms.clock.value = seconds;
+    // the cloud that shades a point floats between it and the sun
+    const sunward = (surface.field.maxY * 0.5 + CLOUD_HEIGHT * layout.size) / lighting.sunDirection.y;
+    uniforms.cloudOffset.value.set(lighting.sunDirection.x * sunward, lighting.sunDirection.z * sunward);
     shownLabels = labels.update(camera, Math.max(1, canvas.clientWidth), height, zoom, political);
+    postfx.update(state.distance, zoom);
+    cloudLayer = clouds.update(zoom);
   };
 
   /** Whether the centre of any of the hexes is in the view, with a margin of one hex. */
@@ -281,6 +379,9 @@ export async function createRenderer(
     politicalMap: false,
     labels: 0,
     animating: false,
+    shadowDraws: 0,
+    trees: 0,
+    cloudLayer: 0,
   };
   const listeners = new Set<(stats: FrameStats) => void>();
   let lastTime: number | null = null;
@@ -290,6 +391,9 @@ export async function createRenderer(
   const minFrameMs = options.maxFps === undefined ? 0 : 1000 / options.maxFps - 2;
   let ownersKey = '';
   let fogged = false;
+  let improvementsKey = '';
+  let roadsKey = '';
+  let routesKey = '';
 
   const frame = (): void => {
     if (disposed) return;
@@ -305,7 +409,7 @@ export async function createRenderer(
 
     // the adaptive scale follows the time between frames. A capped frame
     // rate says nothing about the load, and building terrain is a passing cost.
-    if (settings.scale === null && options.maxFps === undefined && stats.frames > 2 && terrainBuilds === 0) {
+    if (settings.scale === null && options.maxFps === undefined && stats.frames > 2 && terrainBuilds === 0 && treeBuilds === 0) {
       const next = scaleController.sample(elapsed);
       if (next !== renderScale) {
         renderScale = next;
@@ -315,11 +419,14 @@ export async function createRenderer(
 
     const moving = animator.frame(start);
     // pieces in motion cast moving shadows, and one more frame settles them
-    if (animator.playing || wasMoving) shadowDirty = true;
+    if (animator.playing || wasMoving) shadowMoving = true;
+    seconds += Math.min(elapsed, 250) / 1000;
     wasMoving = animator.playing;
     applyCamera(controller.update(elapsed / 1000), stats.frames === 0);
     if (moving) effects.update((elapsed / 1000) * animationSpeed, camera);
-    renderer.render(scene, camera);
+    renderer.info.reset();
+    if (postfx.active) postfx.render();
+    else renderer.render(scene, camera);
     const cpu = performance.now() - start;
     const info = renderer.info.render;
     const first = stats.frames < 2;
@@ -335,6 +442,9 @@ export async function createRenderer(
       politicalMap: political >= POLITICAL_NAMES_FROM,
       labels: shownLabels,
       animating: animator.playing,
+      shadowDraws: lighting.shadowDraws,
+      trees: shownTrees,
+      cloudLayer,
     };
     for (const listener of listeners) listener(stats);
   };
@@ -384,6 +494,27 @@ export async function createRenderer(
       }
       if (next.fog !== null || fogged) textures.setFog(next.fog);
       fogged = next.fog !== null;
+
+      const improvements = next.improvements ?? NO_IMPROVEMENTS;
+      const improvementKey = keyOfMap(improvements);
+      if (improvementKey !== improvementsKey) {
+        improvementsKey = improvementKey;
+        textures.setImprovements(improvements);
+        showProps(improvements);
+        shadowDirty = true;
+      }
+      const roads = next.roads ?? NO_IMPROVEMENTS;
+      const roadKey = keyOfMap(roads);
+      if (roadKey !== roadsKey) {
+        roadsKey = roadKey;
+        groundLines.setRoads(roads);
+      }
+      const routes = next.routes ?? [];
+      const routeKey = routes.length === 0 ? '' : JSON.stringify(routes.map((r) => [r.polity, r.sea, r.path]));
+      if (routeKey !== routesKey) {
+        routesKey = routeKey;
+        groundLines.setRoutes(routes);
+      }
     },
     pickHex(clientX, clientY) {
       const bounds = canvas.getBoundingClientRect();
@@ -424,10 +555,20 @@ export async function createRenderer(
       scaleController.reset();
       renderScale = settings.scale ?? 1;
       resize();
+      // choosing a tier means its effects: switches set by hand are dropped
+      effectOverrides = {};
+      applyEffects();
       shadowDirty = true;
     },
     get quality() {
       return quality;
+    },
+    setEffects(overrides) {
+      effectOverrides = overrides === null ? {} : { ...effectOverrides, ...overrides };
+      applyEffects();
+    },
+    getEffects() {
+      return postfx.state;
     },
     setLanguage(next) {
       if (next === language) return;
@@ -492,15 +633,20 @@ export async function createRenderer(
       listeners.clear();
       controller.dispose();
       terrain.dispose();
+      vegetation.dispose();
+      groundLines.dispose();
       water.dispose();
       pieces.dispose();
       cities.dispose();
+      props.dispose();
+      clouds.dispose();
       labels.dispose();
       effects.dispose();
       overlays.dispose();
       tableGeometry.dispose();
       tableMaterial.dispose();
       terrainMaterial.dispose();
+      postfx.dispose();
       textures.dispose();
       lighting.dispose();
       renderer.dispose();

@@ -22,6 +22,7 @@ import {
   select,
   sign,
   smoothstep,
+  texture,
   uniform,
   vec2,
   vec3,
@@ -30,6 +31,7 @@ import type { Node, UniformNode } from 'three/webgpu';
 import { Vector2, Vector4 } from 'three/webgpu';
 import type { HexLayout } from '../shared/hex.ts';
 import type { WorldRect } from '../shared/mapData.ts';
+import type { LatitudeTerms } from './climate.ts';
 import type { MapTextures } from './mapTextures.ts';
 
 type Float = Node<'float'>;
@@ -54,6 +56,16 @@ export interface MapUniforms {
   readonly borderExtra: UniformNode<'float'>;
   /** World units of height per metre. */
   readonly unitsPerMetre: UniformNode<'float'>;
+  /** Drawn time in seconds: what the clouds and the water move by. */
+  readonly clock: UniformNode<'float'>;
+  /** Where the cloud that shades a ground point floats, relative to the point: towards the sun. */
+  readonly cloudOffset: UniformNode<'vec2'>;
+  /** How dark a cloud's shadow is, 0 to 1. */
+  readonly cloudShadow: UniformNode<'float'>;
+  /** Opacity of the cloud layer seen from above, 0 near the ground. */
+  readonly cloudLayer: UniformNode<'float'>;
+  /** `apexZ`, `scale`, `c`, `n` of `LatitudeTerms` in `climate.ts`. */
+  readonly latitude: UniformNode<'vec4'>;
   readonly textures: MapTextures;
 }
 
@@ -62,6 +74,7 @@ export function createMapUniforms(
   layout: HexLayout,
   unitsPerMetre: number,
   textures: MapTextures,
+  latitude: LatitudeTerms,
 ): MapUniforms {
   return {
     mapRect: uniform(
@@ -74,6 +87,11 @@ export function createMapUniforms(
     political: uniform(0),
     borderExtra: uniform(0),
     unitsPerMetre: uniform(unitsPerMetre),
+    clock: uniform(0),
+    cloudOffset: uniform(new Vector2()),
+    cloudShadow: uniform(0.22),
+    cloudLayer: uniform(0),
+    latitude: uniform(new Vector4(latitude.apexZ, latitude.scale, latitude.c, latitude.n)),
     textures,
   };
 }
@@ -91,6 +109,36 @@ export function noise(p: Vec2 | Vec3): Float {
 /** Fractal noise, roughly in -1..1. */
 export function fbm(p: Vec2 | Vec3, octaves = 4): Float {
   return mx_fractal_noise_float(p, octaves, 2.03, 0.5);
+}
+
+/** The four noises of the noise texture at a point; `uv` 1 is one repeat. */
+export function noiseTile(u: MapUniforms, uv: Vec2): Node<'vec4'> {
+  return texture(u.textures.noise, uv);
+}
+
+/** Sine of the latitude of a ground point, as `sinLatitudeAt` in `climate.ts`. */
+export function sinLatitude(u: MapUniforms, xz: Vec2): Float {
+  const dz = xz.y.sub(u.latitude.x);
+  const distance2 = xz.x.mul(xz.x).add(dz.mul(dz));
+  return float(u.latitude.z.sub(u.latitude.y.mul(distance2)).div(u.latitude.w.mul(2)));
+}
+
+/**
+ * How much cloud floats over a ground point, 0 to 1: two layers of soft
+ * noise drifting at different speeds. One unit of the pattern is a few
+ * dozen hexes, so that a cloud covers a province, not a field.
+ */
+export function cloudCover(u: MapUniforms, xz: Vec2): Float {
+  const p = xz.div(u.hexSize);
+  const wind = vec2(u.clock.mul(0.0042), u.clock.mul(0.0017));
+  const large = texture(u.textures.noise, p.div(58).add(wind)).a;
+  const small = texture(u.textures.noise, p.div(23).sub(wind.mul(1.7)).add(vec2(0.37, 0.11))).a;
+  return smoothstep(0.5, 0.72, large.mul(0.65).add(small.mul(0.35)));
+}
+
+/** What is left of the light on a ground point under the drifting clouds, as a factor. */
+export function cloudShade(u: MapUniforms, xz: Vec2): Float {
+  return float(1).sub(cloudCover(u, xz.add(u.cloudOffset)).mul(u.cloudShadow));
 }
 
 /** `a - b * floor(a / b)`: the same on both backends for negative `a`. */
@@ -123,15 +171,21 @@ export function hexGridLine(u: MapUniforms, xz: Vec2): Float {
   return smoothstep(float(1).sub(width), float(1).sub(width.mul(0.35)), d).mul(u.gridOpacity);
 }
 
+/** As {@link hexGridLine}, for a hex edge distance that is already at hand. */
+export function gridLineAt(u: MapUniforms, d: Float): Float {
+  const width = max(float(0.035), fwidth(d).mul(1.25));
+  return smoothstep(float(1).sub(width), float(1).sub(width.mul(0.35)), d).mul(u.gridOpacity);
+}
+
 /** Lays the hex grid overlay over a colour. */
 export function withGrid(u: MapUniforms, color: Vec3, xz: Vec2): Vec3 {
   return mix(color, vec3(0.04, 0.05, 0.06), hexGridLine(u, xz).mul(0.42));
 }
 
-/** Desaturates and dims a colour where the fog of war says the hex is not in view. */
+/** Slightly desaturates and dims a colour where the fog of war says the hex is not in view. */
 export function withFogOfWar(color: Vec3, visibility: Float): Vec3 {
   const grey = dot(color, vec3(0.2126, 0.7152, 0.0722));
-  const dimmed = mix(vec3(grey), color, 0.35).mul(0.78);
+  const dimmed = mix(vec3(grey), color, 0.5).mul(0.85);
   return mix(dimmed, color, visibility);
 }
 
