@@ -1064,6 +1064,54 @@
         font-variant-numeric: tabular-nums;
         z-index: 4;
       }
+      /* the details of a hex: beside the pointer at rest, above the finger of a long press */
+      #hex-card {
+        position: fixed;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        max-width: 280px;
+        padding: 6px var(--s3);
+        pointer-events: none;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        z-index: 4;
+      }
+      .card-line {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0 var(--s2);
+      }
+      .card-line .title {
+        font-size: 15px;
+      }
+      .card-aside,
+      .card-fog {
+        color: var(--dim);
+      }
+      /* whose it is: the nation's colour in front of its name */
+      .card-unit .card-aside,
+      .card-city .card-aside,
+      .card-owner .card-aside {
+        padding-left: 6px;
+        border-left: 3px solid var(--nation, var(--line-strong));
+        line-height: 1.2;
+      }
+      .card-unitFacts + .card-city,
+      .card-unitFacts + .card-unit,
+      .card-unitFacts + .card-ground,
+      .card-cityFacts + .card-ground {
+        margin-top: var(--s1);
+        padding-top: var(--s1);
+        border-top: 1px solid var(--line);
+      }
+      .piece.mini {
+        width: 24px;
+        height: 24px;
+        border-width: 2px;
+        font-size: 14px;
+      }
 
       /* the major nations, top right: the band is the nation's colour, the foot its standing with the player */
       #majors {

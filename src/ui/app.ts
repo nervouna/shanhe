@@ -21,6 +21,8 @@ import { pieceOf, remember, sceneOf, wholeMapView } from './board.ts';
 import type { BoardMemory, BoardView } from './board.ts';
 import { createTradeSection } from './cityTrade.ts';
 import { levelEffect, levelName } from './difficulty.ts';
+import { cardLines, hexCard } from './hexCard.ts';
+import type { HexCard, Knowledge } from './hexCard.ts';
 import { standingWith, vassalRoomText } from './diplomacy.ts';
 import { button, el, fill, fillWhen, iconButton, iconOnly, stat } from './dom.ts';
 import { createHost } from './host.ts';
@@ -82,6 +84,8 @@ import { browserAudio, createSoundEngine, cuesFor, gameSound } from './sound.ts'
 import { inSight, knownState, sightOf, strikeTargets } from './sight.ts';
 import { clearAutosave, readAutosave, readMemory, writeAutosave, writeMemory } from './storage.ts';
 import type { MapSource } from './storage.ts';
+import { LONG_PRESS_MS, isTap, tapTarget } from './touchOrder.ts';
+import type { Press } from './touchOrder.ts';
 import { createWorkerRunner } from './turnRunner.ts';
 import { cssColor, signed } from './view.ts';
 import type { View } from './view.ts';
@@ -205,6 +209,24 @@ export interface UiSnapshot {
    * units of other polities are on it.
    */
   readonly fog: { readonly on: boolean; readonly hiddenUnits: number; readonly foreignUnits: number };
+  /**
+   * The details card on screen: the hex it is about, how well the player
+   * knows the hex, the ids of the units and the zone of the city it names,
+   * what brought it up (the pointer at rest, or a long press) and its text.
+   * Null while no card is shown.
+   */
+  readonly card: {
+    readonly hex: number;
+    readonly knowledge: Knowledge;
+    readonly units: readonly number[];
+    readonly city: number | null;
+    readonly by: 'hover' | 'press';
+    readonly text: string;
+  } | null;
+  /** The hex a first tap left pending as the target of an order (touch), or null. */
+  readonly touchTarget: number | null;
+  /** Orders given by a confirming second tap since the page was loaded. */
+  readonly touchOrders: number;
 }
 
 export interface App {
@@ -251,6 +273,8 @@ interface Placing {
   readonly hexes: readonly number[];
 }
 
+/** Milliseconds the pointer must rest on a hex before its details are shown. */
+const REST_MS = 350;
 /** How much faster animations run while Space is held. */
 const HURRY = 4;
 /** The view is sampled at this many points a side to find the hexes in it. */
@@ -331,6 +355,10 @@ export function createApp(options: AppOptions): App {
   let reach: number[] = [];
   let reachKey = '';
   let touchTarget: number | null = null;
+  let touchOrders = 0;
+  /** The details card on screen. */
+  let cardShown: { readonly card: HexCard; readonly by: 'hover' | 'press'; readonly text: string } | null = null;
+  let restTimer: number | null = null;
   let lastBurstRefresh = 0;
   let toastTimer: number | null = null;
 
@@ -382,13 +410,15 @@ export function createApp(options: AppOptions): App {
   );
   const toast = el('div', { id: 'toast', class: 'panel' });
   const tooltip = el('div', { id: 'tooltip', class: 'panel' });
+  const cardBox = el('div', { id: 'hex-card', class: 'panel' });
   const fileInput = el('input', { id: 'import-file' });
   fileInput.type = 'file';
   fileInput.accept = '.json,application/json';
   fileInput.hidden = true;
-  fill(root, game, startScreen, endScreen, toast, tooltip, fileInput);
+  fill(root, game, startScreen, endScreen, toast, tooltip, cardBox, fileInput);
   toast.hidden = true;
   tooltip.hidden = true;
+  cardBox.hidden = true;
   overlayBox.hidden = true;
 
   // ------------------------------------------------------------- helpers
@@ -466,6 +496,58 @@ export function createApp(options: AppOptions): App {
   const placeTooltip = (clientX: number, clientY: number): void => {
     tooltip.style.left = `${(clientX + 16) / scale}px`;
     tooltip.style.top = `${(clientY + 16) / scale}px`;
+  };
+
+  const hideCard = (): void => {
+    if (restTimer !== null) window.clearTimeout(restTimer);
+    restTimer = null;
+    if (cardShown === null) return;
+    cardShown = null;
+    cardBox.hidden = true;
+  };
+
+  /**
+   * Shows the details of a hex next to a point of the page: under the
+   * pointer at rest, above the finger of a long press. Only what the player
+   * knows goes on it.
+   */
+  const showCard = (hex: number, clientX: number, clientY: number, by: 'hover' | 'press'): void => {
+    const card = hexCard(state(), hex, viewOf(state()));
+    const lines = cardLines(card, map(), host.orders);
+    cardShown = { card, by, text: lines.map((line) => line.parts.join(' · ')).join('\n') };
+    fill(
+      cardBox,
+      ...lines.map((line) => {
+        const row = el('div', { class: `card-line card-${line.kind}`, data: { line: line.kind } });
+        if (line.unit !== undefined) {
+          const look = pieceOf(line.unit.type);
+          row.append(
+            el('span', { class: `piece mini${look.unique ? ' unique' : ''}`, text: look.character, data: { era: look.era } }),
+          );
+        }
+        line.parts.forEach((part, index) => {
+          const named = index === 0 && (line.kind === 'unit' || line.kind === 'city');
+          row.append(el('span', { class: named ? 'title' : line.kind === 'owner' || index > 0 ? 'card-aside' : '', text: part }));
+        });
+        if (line.polity !== undefined) row.style.setProperty('--nation', cssColor(map().polities[line.polity]?.color ?? 0x888888));
+        return row;
+      }),
+    );
+    cardBox.dataset.hex = String(hex);
+    cardBox.dataset.knowledge = card.knowledge;
+    cardBox.dataset.by = by;
+    cardBox.hidden = false;
+    // beside the pointer and clear of the order preview; above a finger, which would cover it
+    const width = cardBox.offsetWidth;
+    const height = cardBox.offsetHeight;
+    const maxX = window.innerWidth / scale - width - 8;
+    const maxY = window.innerHeight / scale - height - 8;
+    const x = by === 'press' ? clientX / scale - width / 2 : clientX / scale + 16;
+    const below = (clientY + 16) / scale + (tooltip.hidden ? 0 : tooltip.offsetHeight + 4);
+    const above = clientY / scale - height - 28;
+    const y = by === 'hover' ? below : above < 8 ? clientY / scale + 28 : above;
+    cardBox.style.left = `${Math.max(8, Math.min(maxX, x))}px`;
+    cardBox.style.top = `${Math.max(8, Math.min(maxY, y))}px`;
   };
 
   /** Sends an action of the player and says why if the rules refuse it. */
@@ -802,15 +884,19 @@ export function createApp(options: AppOptions): App {
 
     if (touch && selection !== null && !ownUnit && !ownCity) {
       // touch has no right button: the first tap previews, the second one on the same hex orders
-      if (touchTarget === hex) orderTo(hex);
-      else {
+      const tap = tapTarget(touchTarget, hex, () => {
         preview(hex, clientX, clientY);
-        touchTarget = tooltip.hidden ? null : hex;
-        if (touchTarget === null) {
-          select(null);
-          refresh();
-        }
+        return !tooltip.hidden;
+      });
+      if (tap.effect === 'confirm') {
+        touchOrders++;
+        orderTo(hex);
+      } else if (tap.effect === 'deselect') {
+        select(null);
+        refresh();
       }
+      // `orderTo` and `select` have cleared the target; a preview or a dropped target keeps the piece selected
+      else touchTarget = tap.pending;
       return;
     }
 
@@ -2047,6 +2133,8 @@ export function createApp(options: AppOptions): App {
   const onChange = (change: HostChange): void => {
     const before = lastState;
     lastState = state();
+    // the card is about the state it was made from
+    if (change.kind !== 'attention' && change.kind !== 'busy') hideCard();
     switch (change.kind) {
       case 'started':
         playToken++;
@@ -2109,16 +2197,37 @@ export function createApp(options: AppOptions): App {
     const { canvas, renderer } = board;
     const control = new AbortController();
     const { signal } = control;
-    let press: { id: number; x: number; y: number; button: number } | null = null;
+    let press: (Press & { readonly button: number }) | null = null;
+    let pressTimer: number | null = null;
+    const endPress = (): void => {
+      if (pressTimer !== null) window.clearTimeout(pressTimer);
+      pressTimer = null;
+      press = null;
+    };
 
     canvas.addEventListener('pointerdown', (event) => {
-      press = { id: event.pointerId, x: event.clientX, y: event.clientY, button: event.button };
+      // a second finger makes it a pinch or a twist: no tap, no long press
+      const second = press !== null && press.pointer !== event.pointerId;
+      endPress();
+      if (second) return;
+      const { pointerId, clientX, clientY } = event;
+      press = { pointer: pointerId, x: clientX, y: clientY, button: event.button, long: false };
+      if (event.pointerType === 'mouse' || screen !== 'game') return;
+      // a finger that rests shows the details of the hex under it; its release is then no tap
+      pressTimer = window.setTimeout(() => {
+        pressTimer = null;
+        if (press === null || press.pointer !== pointerId || screen !== 'game') return;
+        const hex = renderer.pickHex(clientX, clientY);
+        if (hex === null) return;
+        press = { ...press, long: true };
+        showCard(hex, clientX, clientY, 'press');
+      }, LONG_PRESS_MS);
     }, { signal });
     canvas.addEventListener('pointerup', (event) => {
       const start = press;
-      press = null;
-      if (start === null || start.id !== event.pointerId) return;
-      if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > CLICK_SLOP) return;
+      const tapped = isTap(start, event.pointerId, event.clientX, event.clientY, CLICK_SLOP);
+      if (start !== null && start.pointer === event.pointerId) endPress();
+      if (start === null || !tapped) return;
       const hex = renderer.pickHex(event.clientX, event.clientY);
       if (hex === null) return;
       if (start.button === 2) {
@@ -2128,22 +2237,48 @@ export function createApp(options: AppOptions): App {
       }
     }, { signal });
     canvas.addEventListener('pointercancel', () => {
-      press = null;
+      endPress();
     }, { signal });
     canvas.addEventListener('pointermove', (event) => {
-      if (event.pointerType === 'touch' || event.buttons !== 0 || selection === null || screen !== 'game') return;
-      const hex = renderer.pickHex(event.clientX, event.clientY);
-      if (hex === hoverHex) {
-        placeTooltip(event.clientX, event.clientY);
+      if (event.pointerType !== 'mouse') {
+        // a finger that travels is dragging the map
+        if (
+          press !== null && press.pointer === event.pointerId && !press.long &&
+          Math.hypot(event.clientX - press.x, event.clientY - press.y) > CLICK_SLOP
+        ) {
+          endPress();
+        }
         return;
       }
-      preview(hex, event.clientX, event.clientY);
+      if (event.buttons !== 0 || screen !== 'game') return;
+      const { clientX, clientY } = event;
+      const hex = selection !== null || cardShown !== null ? renderer.pickHex(clientX, clientY) : null;
+      // the card is about one hex: it leaves when the pointer does, and comes once the pointer rests again
+      if (cardShown === null || cardShown.card.hex !== hex) {
+        hideCard();
+        restTimer = window.setTimeout(() => {
+          restTimer = null;
+          if (screen !== 'game') return;
+          const rested = renderer.pickHex(clientX, clientY);
+          if (rested !== null) showCard(rested, clientX, clientY, 'hover');
+        }, REST_MS);
+      }
+      if (selection === null) return;
+      if (hex === hoverHex) {
+        placeTooltip(clientX, clientY);
+        return;
+      }
+      preview(hex, clientX, clientY);
     }, { signal });
-    canvas.addEventListener('pointerleave', () => {
+    canvas.addEventListener('pointerleave', (event) => {
+      // a finger leaves the canvas whenever it lifts: what its tap left pending stays
+      if (event.pointerType !== 'mouse') return;
+      hideCard();
       if (hoverHex === null) return;
       clearHover();
       drawHighlights();
     }, { signal });
+    canvas.addEventListener('wheel', hideCard, { signal, passive: true });
 
     minimap = createMinimap(board.map, (hex) => {
       flyTo(hex);
@@ -2233,6 +2368,7 @@ export function createApp(options: AppOptions): App {
     (event) => {
       if (hidden) return;
       if (event.key === 'Tab') keyboardNav = true;
+      hideCard();
       sound.unlock();
     },
     { capture: true },
@@ -2242,6 +2378,7 @@ export function createApp(options: AppOptions): App {
     () => {
       if (hidden) return;
       keyboardNav = false;
+      hideCard();
       sound.unlock();
     },
     { capture: true },
@@ -2376,6 +2513,19 @@ export function createApp(options: AppOptions): App {
         })(),
         aids: screen === 'game' ? aidsShown : null,
         fog: { on: shown.fog, hiddenUnits: shown.hidden, foreignUnits: shown.foreign },
+        card:
+          cardShown === null
+            ? null
+            : {
+                hex: cardShown.card.hex,
+                knowledge: cardShown.card.knowledge,
+                units: cardShown.card.units.map((unit) => unit.id),
+                city: cardShown.card.city?.zone ?? null,
+                by: cardShown.by,
+                text: cardShown.text,
+              },
+        touchTarget,
+        touchOrders,
       };
     },
     startGame,

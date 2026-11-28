@@ -664,6 +664,192 @@ test('a player game opens on the capital, framed with its zone', async ({ page }
   expect(errors).toEqual([]);
 });
 
+/** Points of the page, one for each hex of the list that is on the canvas and under no part of the interface. */
+async function hexPoints(page: Page, hexes: readonly number[]): Promise<Record<number, { x: number; y: number }>> {
+  return page.evaluate((wanted) => {
+    const handle = window.__shanhe;
+    if (handle === undefined) throw new Error('window.__shanhe is not set');
+    const sums = new Map<number, { x: number; y: number; count: number }>();
+    for (let y = 48; y < window.innerHeight - 8; y += 4) {
+      for (let x = 8; x < window.innerWidth - 8; x += 4) {
+        const hex = handle.render.pickHex(x, y);
+        if (hex === null || !wanted.includes(hex) || document.elementFromPoint(x, y)?.id !== 'map') continue;
+        const sum = sums.get(hex) ?? { x: 0, y: 0, count: 0 };
+        sums.set(hex, { x: sum.x + x, y: sum.y + y, count: sum.count + 1 });
+      }
+    }
+    const points: Record<number, { x: number; y: number }> = {};
+    for (const [hex, sum] of sums) {
+      const point = { x: Math.round(sum.x / sum.count), y: Math.round(sum.y / sum.count) };
+      // the middle of the samples must be the hex itself, on the bare canvas
+      if (handle.render.pickHex(point.x, point.y) === hex && document.elementFromPoint(point.x, point.y)?.id === 'map') points[hex] = point;
+    }
+    return points;
+  }, hexes);
+}
+
+test('resting the pointer on a hex shows its details, in both languages and with a piece selected', async ({ page }) => {
+  const errors = collectErrors(page);
+  await open(page, '/?map=fixture&render=off');
+  await page.evaluate(() => window.__shanhe?.startGame({ nation: 'jia', seed: 3, map: 'fixture' }));
+  const card = () => page.evaluate(() => window.__shanhe?.ui.card ?? null);
+  const setup = await page.evaluate(() => {
+    const state = window.__shanhe?.state;
+    if (state === undefined) throw new Error('no state');
+    const unit = state.units.find((entry) => entry.owner === state.player);
+    if (unit === undefined) throw new Error('the player has no unit');
+    const zone = state.polities[state.player]?.capital ?? -1;
+    const land = state.map.zone.reduce<number[]>((list, value, hex) => (value === zone && hex !== unit.hex ? [...list, hex] : list), []);
+    return { unit: { id: unit.id, hex: unit.hex, hp: unit.hp }, zone, site: state.map.zones[zone]?.siteHex ?? -1, land };
+  });
+  // the garrison stands in the capital: one hex with a piece and a city
+  expect(setup.unit.hex).toBe(setup.site);
+  const points = await hexPoints(page, [setup.unit.hex, ...setup.land]);
+  const onUnit = points[setup.unit.hex];
+  const groundHex = setup.land.find((hex) => points[hex] !== undefined);
+  if (onUnit === undefined || groundHex === undefined) throw new Error('the capital is not on screen');
+  const onGround = points[groundHex] as { x: number; y: number };
+
+  // nothing is selected: the pointer comes to rest on the piece, and the card names it
+  expect(await card()).toBeNull();
+  await page.mouse.move(onUnit.x, onUnit.y);
+  await page.waitForFunction(() => window.__shanhe?.ui.card !== null);
+  const first = await card();
+  expect(first).toMatchObject({ hex: setup.unit.hex, knowledge: 'visible', units: [setup.unit.id], city: setup.zone, by: 'hover' });
+  expect(first?.text).toContain('勇士 · 甲国');
+  expect(first?.text).toContain(`生命 ${setup.unit.hp}`);
+  expect(first?.text).toContain('甲都 · 甲国');
+  await expect(page.locator('#hex-card')).toBeVisible();
+  await expect(page.locator('#hex-card [data-line="unit"] .piece')).toHaveText('兵');
+  await expect(page.locator('#hex-card [data-line="city"]')).toHaveCount(1);
+  expect((await page.evaluate(() => window.__shanhe?.ui.selectedUnit)) ?? null).toBeNull();
+  await capture(page, 'card-zh');
+
+  // on bare ground it names the ground and whose land it is
+  await page.mouse.move(onGround.x, onGround.y);
+  await page.waitForFunction((hex) => window.__shanhe?.ui.card?.hex === hex, groundHex);
+  const ground = await card();
+  expect(ground).toMatchObject({ units: [], city: null, knowledge: 'visible' });
+  expect(ground?.text.split('\n').at(-1)).toBe('甲国');
+  await expect(page.locator('#hex-card [data-line="unit"]')).toHaveCount(0);
+
+  // a key or a press takes the card away
+  await page.keyboard.press('Shift');
+  expect(await card()).toBeNull();
+  await expect(page.locator('#hex-card')).toBeHidden();
+
+  // in English the piece keeps its character and the card names it
+  await page.click('#menu-button');
+  await page.click('#menu-language');
+  await page.click('#menu-close');
+  await page.mouse.move(onGround.x, onGround.y);
+  await page.mouse.move(onUnit.x, onUnit.y);
+  await page.waitForFunction((hex) => window.__shanhe?.ui.card?.hex === hex, setup.unit.hex);
+  const english = await card();
+  expect(english?.text).toContain('Warrior · Jia');
+  expect(english?.text).toContain(`HP ${setup.unit.hp}`);
+  await expect(page.locator('#hex-card [data-line="unit"] .piece')).toHaveText('兵');
+  await capture(page, 'card-en');
+
+  // with the piece selected the order preview still comes, and the card with it
+  await page.mouse.click(onUnit.x, onUnit.y);
+  expect(await page.evaluate(() => window.__shanhe?.ui.selectedUnit)).toBe(setup.unit.id);
+  expect(await card()).toBeNull();
+  await page.mouse.move(onGround.x, onGround.y);
+  const aids = await page.evaluate(() => window.__shanhe?.ui.aids);
+  expect(aids?.path).toBeGreaterThan(1);
+  await expect(page.locator('#tooltip')).toBeVisible();
+  await page.waitForFunction((hex) => window.__shanhe?.ui.card?.hex === hex, groundHex);
+  await expect(page.locator('#tooltip')).toBeVisible();
+  await page.click('#menu-button');
+  await page.click('#menu-language');
+  expect(errors).toEqual([]);
+});
+
+test('touch: a long press shows the details, a tap previews an order and a second tap gives it', async ({ browser }) => {
+  const context = await browser.newContext({ hasTouch: true, viewport: viewport ?? { width: 960, height: 540 } });
+  const page = await context.newPage();
+  const errors = collectErrors(page);
+  await open(page, '/?map=fixture&render=off');
+  await page.evaluate(() => window.__shanhe?.startGame({ nation: 'jia', seed: 3, map: 'fixture' }));
+  const session = await context.newCDPSession(page);
+  const touch = (type: 'touchStart' | 'touchEnd', point?: { x: number; y: number }): Promise<unknown> =>
+    session.send('Input.dispatchTouchEvent', { type, touchPoints: point === undefined ? [] : [{ x: point.x, y: point.y, id: 1 }] });
+  const snapshot = () =>
+    page.evaluate(() => {
+      const handle = window.__shanhe;
+      if (handle === undefined) throw new Error('window.__shanhe is not set');
+      const { ui, state } = handle;
+      const unit = state.units.find((entry) => entry.owner === state.player);
+      return { selected: ui.selectedUnit, target: ui.touchTarget, orders: ui.touchOrders, aids: ui.aids, card: ui.card, hex: unit?.hex ?? -1, moves: unit?.moves ?? -1 };
+    });
+  const setup = await page.evaluate(() => {
+    const state = window.__shanhe?.state;
+    if (state === undefined) throw new Error('no state');
+    const unit = state.units.find((entry) => entry.owner === state.player);
+    if (unit === undefined) throw new Error('the player has no unit');
+    const zone = state.polities[state.player]?.capital ?? -1;
+    const land = state.map.zone.reduce<number[]>((list, value, hex) => (value === zone && hex !== unit.hex ? [...list, hex] : list), []);
+    return { unit: { id: unit.id, hex: unit.hex }, land };
+  });
+  const points = await hexPoints(page, [setup.unit.hex, ...setup.land]);
+  const onUnit = points[setup.unit.hex];
+  const targets = setup.land.filter((hex) => points[hex] !== undefined);
+  const [targetHex, otherHex] = targets;
+  if (onUnit === undefined || targetHex === undefined || otherHex === undefined) throw new Error('the capital is not on screen');
+  const onTarget = points[targetHex] as { x: number; y: number };
+  const onOther = points[otherHex] as { x: number; y: number };
+  // the pointer events of every touch on the map, in order
+  await page.evaluate(() => {
+    const log: string[] = [];
+    (window as unknown as { touchLog: string[] }).touchLog = log;
+    const canvas = document.querySelector('#map');
+    for (const name of ['pointerdown', 'pointerup', 'pointercancel', 'pointerout', 'pointerleave']) {
+      canvas?.addEventListener(name, (event) => log.push(`${name}:${(event as PointerEvent).pointerType}`));
+    }
+  });
+  const events = () => page.evaluate(() => (window as unknown as { touchLog: string[] }).touchLog.splice(0));
+
+  // a finger that rests shows the details; lifting it selects nothing and gives no order
+  await touch('touchStart', onUnit);
+  await page.waitForFunction(() => window.__shanhe?.ui.card?.by === 'press');
+  expect((await snapshot()).card).toMatchObject({ hex: setup.unit.hex, units: [setup.unit.id], by: 'press' });
+  await touch('touchEnd');
+  expect(await snapshot()).toMatchObject({ selected: null, target: null, orders: 0 });
+  await events();
+
+  // a tap selects the piece
+  await page.touchscreen.tap(onUnit.x, onUnit.y);
+  expect(await snapshot()).toMatchObject({ selected: setup.unit.id, target: null, card: null });
+  await events();
+
+  // the first tap on a target previews the order. The finger lifts and leaves the canvas: the target stays
+  await page.touchscreen.tap(onTarget.x, onTarget.y);
+  expect(await events()).toEqual(['pointerdown:touch', 'pointerup:touch', 'pointerout:touch', 'pointerleave:touch']);
+  const previewed = await snapshot();
+  expect(previewed).toMatchObject({ selected: setup.unit.id, target: targetHex, orders: 0, hex: setup.unit.hex });
+  expect(previewed.aids?.path).toBeGreaterThan(1);
+  await expect(page.locator('#tooltip')).toBeVisible();
+  await capture(page, 'touch-preview');
+
+  // a tap elsewhere moves the target, and the piece stays where it is
+  await page.touchscreen.tap(onOther.x, onOther.y);
+  expect(await snapshot()).toMatchObject({ selected: setup.unit.id, target: otherHex, orders: 0, hex: setup.unit.hex });
+  await page.touchscreen.tap(onTarget.x, onTarget.y);
+  expect(await snapshot()).toMatchObject({ target: targetHex, orders: 0, hex: setup.unit.hex });
+
+  // the second tap on the same hex gives the order
+  await page.touchscreen.tap(onTarget.x, onTarget.y);
+  const ordered = await snapshot();
+  expect(ordered).toMatchObject({ target: null, orders: 1 });
+  expect(ordered.hex).not.toBe(setup.unit.hex);
+  expect(ordered.moves).toBeLessThan(previewed.moves);
+  await expect(page.locator('#tooltip')).toBeHidden();
+  await capture(page, 'touch-ordered');
+  expect(errors).toEqual([]);
+  await context.close();
+});
+
 /**
  * Acceptance check of issue #9, not part of the regular run: it is the only
  * flow on the real map. `SHANHE_REAL_MAP=1` turns it on. The page draws
