@@ -4,6 +4,7 @@ import type { MapData } from '../shared/mapData.ts';
 import { Terrain } from '../shared/mapData.ts';
 import {
   BUILDINGS,
+  FAVOUR,
   CITY_STATE,
   IMPROVEMENTS,
   PILLAGE,
@@ -20,7 +21,7 @@ import { hexesApart } from './combat.ts';
 import { at, atWar, isEmbarked, ownerOf, polityOf } from './context.ts';
 import type { Ctx } from './context.ts';
 import { cityMods, modsOf, percentOf, routeMatches, unitMatches } from './modifiers.ts';
-import { hasAgreement, isCityState } from './relations.ts';
+import { favourOf, hasAgreement, isCityState } from './relations.ts';
 import { isStrategic } from './tech.ts';
 import { NO_POLITY } from './types.ts';
 import type { ModifierOf } from './mods.ts';
@@ -281,7 +282,8 @@ export function checkRouteTarget(ctx: Ctx, polity: number, from: number, to: unk
     if (typeof target.zone !== 'number' || !Number.isInteger(target.zone) || target.zone === from) return 'badTarget';
     const city = ctx.state.cities[target.zone];
     if (city === undefined || city === null) return 'badTarget';
-    return atWar(ctx, polity, city.owner) ? 'atWar' : null;
+    if (atWar(ctx, polity, city.owner)) return 'atWar';
+    return embargoed(ctx, polity, city.owner) ? 'refused' : null;
   }
   if (target.kind === 'port') {
     const port = typeof target.port === 'number' ? ctx.map.offMapPorts[target.port] : undefined;
@@ -293,6 +295,19 @@ export function checkRouteTarget(ctx: Ctx, polity: number, from: number, to: unk
     return reserved !== null && reserved !== at(ctx.map.polities, polity).id ? 'portClosed' : null;
   }
   return 'badTarget';
+}
+
+/** True if the cities of `host` are closed to the trade routes of `polity`: favour between the two nations is down to `FAVOUR.embargo`. */
+export function embargoed(ctx: Ctx, polity: number, host: number): boolean {
+  return polity !== host && favourOf(ctx, polity, host) <= FAVOUR.embargo;
+}
+
+/** Ends every route that runs to a city now closed to its owner by an embargo. */
+export function processEmbargoes(ctx: Ctx): void {
+  for (const route of [...ctx.state.routes]) {
+    const host = route.toCity < 0 ? undefined : ctx.state.cities[route.toCity]?.owner;
+    if (host !== undefined && embargoed(ctx, route.owner, host)) endRoute(ctx, route, 'cancelled');
+  }
 }
 
 /** Why `polity` cannot open a route from its city in `from` to the target, or null. */

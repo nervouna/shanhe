@@ -28,6 +28,7 @@ import { ambitionOf, kitOfNation, styleFor } from './kits.ts';
 import { forgetMods, modsOf, nationOf } from './modifiers.ts';
 import type { Modifier } from './mods.ts';
 import { growSlots } from './policies.ts';
+import { leakPercent } from './power.ts';
 import { NO_POLITY } from './types.ts';
 import type { GameState, RejectReason, Unit } from './types.ts';
 
@@ -114,8 +115,13 @@ export function realmPercent(state: GameState, polity: number): number {
  */
 export function techCost(state: GameState, polity: number, tech: TechId): number {
   const def = TECHS[tech];
-  const known = state.polities.some((other, index) => index !== polity && other.alive && other.techs.includes(tech));
-  let percent = known ? -RESEARCH.catchUpPercent : 0;
+  const knowers: number[] = [];
+  state.polities.forEach((other, index) => {
+    if (index !== polity && other.alive && other.techs.includes(tech)) knowers.push(index);
+  });
+  const known = knowers.length > 0;
+  // Known elsewhere: the catch-up discount, and more if a nation the polity fears is among those who know it.
+  let percent = known ? -RESEARCH.catchUpPercent - leakPercent(state, polity, knowers) : 0;
   for (const modifier of kitMods(state, polity)) {
     if (modifier.type === 'techCost' && (modifier.knownByOther !== true || known)) percent += modifier.percent;
   }

@@ -4,7 +4,7 @@
  * the player, and how favour moves.
  */
 
-import { AGREEMENT_KINDS, AI, DEAL, DIPLOMACY, FAVOUR, SPECIALTY, UNITS, WAR } from './data.ts';
+import { AGREEMENT_KINDS, AI, BALANCE, DEAL, DIPLOMACY, FAVOUR, SPECIALTY, UNITS, WAR } from './data.ts';
 import type { AgreementKind } from './data.ts';
 import { forgetInfluence, updateSuzerain } from './cityStates.ts';
 import { militaryStrength } from './combat.ts';
@@ -22,6 +22,8 @@ import {
 } from './context.ts';
 import type { Ctx } from './context.ts';
 import { personalityOf } from './kits.ts';
+import { balanceOfPower, commonThreats, fearedOf, standsAgainst } from './power.ts';
+import type { Balance } from './power.ts';
 import { modsOf, nationOf, percentOf } from './modifiers.ts';
 import {
   addFavour,
@@ -134,7 +136,8 @@ export function acceptsAgreement(ctx: Ctx, target: number, proposer: number, kin
     favourOf(ctx, target, proposer) - favourShift(ctx, target, proposer, kind) - personalityOf(nationOf(ctx, target)).favour;
   switch (kind) {
     case 'tradePact':
-      return !major || favour >= AI.tradePactFavour;
+      // A nation on the simplified AI trades with anybody it does not thoroughly dislike.
+      return favour >= (major ? AI.tradePactFavour : BALANCE.simpleTradePactFavour);
     case 'openBorders':
       return favour >= AI.openBordersFavour;
     case 'alliance': {
@@ -498,21 +501,150 @@ export function polityGone(ctx: Ctx, polity: number): void {
 
 // --------------------------------------------------------- turn processing
 
-interface Standing {
-  a: number;
-  b: number;
+/** What can stand between two nations and move their favour. The last two come from the balance of power. */
+export type StandingCause =
+  | 'border'
+  | 'war'
+  | 'sharedEnemy'
+  | 'deal'
+  | 'route'
+  | Exclude<AgreementKind, 'truce'>
+  | 'leader'
+  | 'commonThreat';
+
+export interface StandingTerm {
+  readonly cause: StandingCause;
+  /** What it adds to the level favour moves towards. */
+  readonly value: number;
+  /** How many times it counts: deals, routes and shared enemies. 1 for the others. */
+  readonly count: number;
+  /** For `leader`: the one of the two that is feared. For `commonThreat`: the leader both stand against. */
+  readonly polity?: number;
+}
+
+/** What stands between two living nations, and the level their favour moves towards. */
+export interface PairStanding {
+  readonly a: number;
+  readonly b: number;
+  readonly terms: StandingTerm[];
+  /** The sum of the terms, within the limits of favour. */
   target: number;
-  deals: number;
-  routes: number;
+}
+
+/**
+ * What stands between every pair of living nations that has anything
+ * between them, by relation key: the shared border, war, the agreements in
+ * force, deals, routes, shared enemies and the balance of power. Both the
+ * turn processing and the query the interface reads favour through use it.
+ */
+export function favourStandings(ctx: Ctx, balance: Balance = balanceOfPower(ctx)): Map<string, PairStanding> {
+  const { state, topo } = ctx;
+  const standings = new Map<string, PairStanding>();
+  const standing = (x: number, y: number): PairStanding | null => {
+    if (x === y || !isNation(ctx, x) || !isNation(ctx, y)) return null;
+    if (!polityOf(ctx, x).alive || !polityOf(ctx, y).alive) return null;
+    const key = relationKey(x, y);
+    let entry = standings.get(key);
+    if (entry === undefined) {
+      entry = { a: Math.min(x, y), b: Math.max(x, y), terms: [], target: 0 };
+      standings.set(key, entry);
+    }
+    return entry;
+  };
+  const add = (x: number, y: number, cause: StandingCause, each: number, count = 1, polity?: number): void => {
+    const entry = count > 0 ? standing(x, y) : null;
+    if (entry === null) return;
+    entry.terms.push(polity === undefined ? { cause, value: each * count, count } : { cause, value: each * count, count, polity });
+  };
+  /** Deals and routes per pair, each counted up to the limit. */
+  const counted = new Map<string, { x: number; y: number; cause: 'deal' | 'route'; count: number }>();
+  const countUp = (x: number, y: number, cause: 'deal' | 'route'): void => {
+    const key = `${cause}:${relationKey(x, y)}`;
+    const entry = counted.get(key);
+    if (entry === undefined) counted.set(key, { x, y, cause, count: 1 });
+    else entry.count = Math.min(FAVOUR.maxCounted, entry.count + 1);
+  };
+
+  // Shared borders.
+  const bordering = new Set<string>();
+  topo.zoneNeighbors.forEach((list, zone) => {
+    const owner = at(state.zoneOwner, zone);
+    for (const other of list) {
+      const neighbour = at(state.zoneOwner, other);
+      if (other <= zone || owner === neighbour || owner === NO_POLITY || neighbour === NO_POLITY) continue;
+      const key = relationKey(owner, neighbour);
+      if (bordering.has(key)) continue;
+      bordering.add(key);
+      add(owner, neighbour, 'border', FAVOUR.border);
+    }
+  });
+  for (const key of Object.keys(state.relations)) {
+    const relation = state.relations[key];
+    if (relation !== undefined && relation.atWar) add(relation.a, relation.b, 'war', FAVOUR.war);
+  }
+  for (const agreement of state.agreements) {
+    if (agreement.kind !== 'truce') add(agreement.a, agreement.b, agreement.kind, FAVOUR[agreement.kind]);
+  }
+  for (const deal of state.deals) countUp(deal.seller, deal.buyer, 'deal');
+  for (const route of state.routes) {
+    const owner = route.toCity < 0 ? undefined : state.cities[route.toCity]?.owner;
+    if (owner !== undefined) countUp(route.owner, owner, 'route');
+  }
+  for (const entry of counted.values()) add(entry.x, entry.y, entry.cause, FAVOUR[entry.cause], entry.count);
+
+  // The balance of power: a leader is feared by everybody below it, and those who stand against it draw together.
+  const nations: number[] = [];
+  for (let polity = 0; polity < ctx.n; polity++) {
+    if (isNation(ctx, polity) && polityOf(ctx, polity).alive) nations.push(polity);
+  }
+  const borders = (x: number, y: number): boolean => bordering.has(relationKey(x, y));
+  for (const leader of nations) {
+    if (at(balance.fear, leader) <= 0) continue;
+    for (const other of nations) {
+      const feared = other === leader ? null : fearedOf(balance, leader, other);
+      if (feared !== null && feared.leader === leader) add(leader, other, 'leader', -feared.fear, 1, leader);
+    }
+  }
+  const threats = commonThreats(ctx, balance);
+  const joined = new Set<string>();
+  for (const leader of threats) {
+    const group = nations.filter((polity) => standsAgainst(ctx, balance, polity, leader, borders));
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        const key = relationKey(at(group, i), at(group, j));
+        // Once per pair, for the leader they fear most.
+        if (joined.has(key)) continue;
+        joined.add(key);
+        add(at(group, i), at(group, j), 'commonThreat', BALANCE.commonThreat, 1, leader);
+      }
+    }
+  }
+
+  // Shared enemies, for every pair that has anything between it or any favour left.
+  for (const key of Object.keys(state.favour)) {
+    const [a, b] = key.split(':').map(Number);
+    standing(a ?? -1, b ?? -1);
+  }
+  for (const entry of standings.values()) {
+    let shared = 0;
+    for (let other = 0; other < ctx.n && shared < FAVOUR.maxCounted; other++) {
+      if (ctx.war[entry.a * ctx.n + other] === 1 && ctx.war[entry.b * ctx.n + other] === 1) shared++;
+    }
+    if (shared > 0) entry.terms.push({ cause: 'sharedEnemy', value: FAVOUR.sharedEnemy * shared, count: shared });
+    const sum = entry.terms.reduce((total, term) => total + term.value, 0);
+    entry.target = Math.max(-FAVOUR.max, Math.min(FAVOUR.max, sum));
+  }
+  return standings;
 }
 
 /**
  * One turn of diplomacy: agreements and deals that have run their term end,
  * a deal whose seller lost the resource ends, offers nobody answered lapse,
- * and favour moves one step towards what the pair's standing gives.
+ * favour moves one step towards what the pair's standing gives, and a vassal
+ * that has come to dislike an overlord too weak to hold it goes its own way.
  */
 export function processDiplomacy(ctx: Ctx): void {
-  const { state, topo } = ctx;
+  const { state } = ctx;
   for (const agreement of [...state.agreements]) {
     if (agreement.until !== 0 && agreement.until <= state.turn) endAgreement(ctx, agreement, 'expired');
   }
@@ -524,68 +656,40 @@ export function processDiplomacy(ctx: Ctx): void {
     if (state.turn - offer.turn >= DIPLOMACY.offerTurns - 1) dropOffer(ctx, offer);
   }
 
-  const standings = new Map<string, Standing>();
-  const standing = (x: number, y: number): Standing | null => {
-    if (x === y || !isNation(ctx, x) || !isNation(ctx, y)) return null;
-    if (!polityOf(ctx, x).alive || !polityOf(ctx, y).alive) return null;
-    const key = relationKey(x, y);
-    let entry = standings.get(key);
-    if (entry === undefined) {
-      entry = { a: Math.min(x, y), b: Math.max(x, y), target: 0, deals: 0, routes: 0 };
-      standings.set(key, entry);
-    }
-    return entry;
-  };
   for (const key of Object.keys(state.favour)) {
     const [a, b] = key.split(':').map(Number);
-    if (standing(a ?? -1, b ?? -1) === null) dropKey(state.favour, key);
+    const gone =
+      a === undefined || b === undefined || !isNation(ctx, a) || !isNation(ctx, b) ||
+      !polityOf(ctx, a).alive || !polityOf(ctx, b).alive;
+    if (gone) dropKey(state.favour, key);
   }
-  // Shared borders.
-  const bordering = new Set<string>();
-  topo.zoneNeighbors.forEach((list, zone) => {
-    const owner = at(state.zoneOwner, zone);
-    for (const other of list) {
-      const neighbour = at(state.zoneOwner, other);
-      if (other <= zone || owner === neighbour || owner === NO_POLITY || neighbour === NO_POLITY) continue;
-      const key = relationKey(owner, neighbour);
-      if (bordering.has(key)) continue;
-      bordering.add(key);
-      const entry = standing(owner, neighbour);
-      if (entry !== null) entry.target += FAVOUR.border;
-    }
-  });
-  for (const key of Object.keys(state.relations)) {
-    const relation = state.relations[key];
-    if (relation === undefined || !relation.atWar) continue;
-    const entry = standing(relation.a, relation.b);
-    if (entry !== null) entry.target += FAVOUR.war;
-  }
-  for (const agreement of state.agreements) {
-    if (agreement.kind === 'truce') continue;
-    const entry = standing(agreement.a, agreement.b);
-    if (entry !== null) entry.target += FAVOUR[agreement.kind];
-  }
-  for (const deal of state.deals) {
-    const entry = standing(deal.seller, deal.buyer);
-    if (entry !== null && entry.deals++ < FAVOUR.maxCounted) entry.target += FAVOUR.deal;
-  }
-  for (const route of state.routes) {
-    const owner = route.toCity < 0 ? undefined : state.cities[route.toCity]?.owner;
-    const entry = owner === undefined ? null : standing(route.owner, owner);
-    if (entry !== null && entry.routes++ < FAVOUR.maxCounted) entry.target += FAVOUR.route;
-  }
-  for (const entry of standings.values()) {
-    let shared = 0;
-    for (let other = 0; other < ctx.n && shared < FAVOUR.maxCounted; other++) {
-      if (ctx.war[entry.a * ctx.n + other] === 1 && ctx.war[entry.b * ctx.n + other] === 1) shared++;
-    }
-    const target = Math.max(-FAVOUR.max, Math.min(FAVOUR.max, entry.target + shared * FAVOUR.sharedEnemy));
+  for (const entry of favourStandings(ctx).values()) {
     const key = relationKey(entry.a, entry.b);
     const current = state.favour[key] ?? 0;
-    const next = current < target ? Math.min(target, current + FAVOUR.drift) : Math.max(target, current - FAVOUR.drift);
+    const next =
+      current < entry.target ? Math.min(entry.target, current + FAVOUR.drift) : Math.max(entry.target, current - FAVOUR.drift);
     if (next === 0) dropKey(state.favour, key);
     else state.favour[key] = next;
   }
+
+  // Vassals drift away from an overlord they dislike, unless its army overawes them.
+  for (const agreement of [...state.agreements]) {
+    if (agreement.kind !== 'vassalage' || state.turn - agreement.since < DIPLOMACY.minTurns) continue;
+    if (!vassalLeaves(ctx, agreement.b, agreement.a)) continue;
+    endAgreement(ctx, agreement, 'cancelled');
+    enforceBorders(ctx);
+  }
+}
+
+/**
+ * True if `vassal` would leave `overlord` now: favour between them is down
+ * to `BALANCE.vassalLeavesFavour` and the overlord's army is less than
+ * `BALANCE.vassalAweRatio` times its own. How long the vassalage has lasted
+ * is not looked at here.
+ */
+export function vassalLeaves(ctx: Ctx, vassal: number, overlord: number): boolean {
+  if (favourOf(ctx, vassal, overlord) > BALANCE.vassalLeavesFavour) return false;
+  return militaryStrength(ctx, overlord) < militaryStrength(ctx, vassal) * BALANCE.vassalAweRatio;
 }
 
 /** True for a kind of agreement an action may name. */

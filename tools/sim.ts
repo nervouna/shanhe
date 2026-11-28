@@ -14,8 +14,8 @@
  * (alliances formed, vassals made, trade routes at the end, policies unlocked
  * by the winner), and how much of the fighting crossed the sea (sea
  * invasions: cities taken on a landmass where the captor held none; naval
- * battles: fights with a ship on either side), the winner table and the
- * earliest end of a game.
+ * battles: fights with a ship on either side), the winner table, the
+ * earliest end of a game and how many units stood on the map at turn 90.
  *
  * `--report` adds the balance report of `report.ts`: per major nation and per
  * era its cities, population, yields, techs, army and wars, and what it spent
@@ -41,6 +41,8 @@ const ERA_NAMES = ['Ancient', 'Classical', 'Medieval', 'Early Modern', 'Industri
 const VICTORIES: readonly GameResult['kind'][] = ['conquest', 'science', 'economic'];
 /** The window the design aims at for the first major nation's entry into the Modern era. */
 const MODERN_WINDOW = [110, 140] as const;
+/** The turn at which the units on the map are counted: the middle of the game, when armies are at their largest. */
+const CENSUS_TURN = 90;
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -112,6 +114,8 @@ interface Outcome {
   turn: number;
   /** Seconds the game took. */
   seconds: number;
+  /** Units on the map, tribes included, when turn `CENSUS_TURN` began; -1 if the game ended before. */
+  unitsAtCensus: number;
   report: GameReport | null;
 }
 
@@ -128,7 +132,9 @@ function playGame(seed: number, announce: boolean): Outcome {
   let worst = 0;
   const started = performance.now();
   const collector = withReport ? createCollector(state) : null;
+  let unitsAtCensus = -1;
   while (state.result === null) {
+    if (state.turn === CENSUS_TURN) unitsAtCensus = state.units.length;
     const turn = state.turn;
     const before = performance.now();
     const step = endTurn(state);
@@ -178,6 +184,7 @@ function playGame(seed: number, announce: boolean): Outcome {
     winnerName: winner?.nameEn ?? '?',
     turn: result.turn,
     seconds: total / 1000,
+    unitsAtCensus,
     report: collector?.finish(state) ?? null,
   };
 }
@@ -220,6 +227,19 @@ console.log(
     `${modern} of ${outcomes.length} game(s)`,
 );
 const range = (values: number[]): string => `${Math.min(...values)} to ${Math.max(...values)}`;
+/** The median of the values: the middle one, or the mean of the middle two. */
+function median(values: readonly number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = sorted.length >> 1;
+  return sorted.length % 2 === 1 ? (sorted[middle] ?? 0) : ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
+}
+const census = outcomes.map((outcome) => outcome.unitsAtCensus).filter((count) => count >= 0);
+if (census.length > 0) {
+  console.log(
+    `units on the map at turn ${CENSUS_TURN}: ${range(census)}, median ${median(census)} ` +
+      `(${census.length} of ${outcomes.length} game(s) reached it)`,
+  );
+}
 console.log(
   `alliances formed: ${range(outcomes.map((outcome) => outcome.alliances))}; ` +
     `vassals made: ${range(outcomes.map((outcome) => outcome.vassals))}; ` +

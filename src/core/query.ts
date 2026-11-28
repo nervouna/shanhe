@@ -19,9 +19,9 @@ import {
 } from './combat.ts';
 import { at, atWar, cityAtHex, createCtx, isEmbarked, relationKey } from './context.ts';
 import type { Ctx } from './context.ts';
-import { AIR_STRIKE, FAVOUR, PROJECT, TRADE, conquestTarget, unitDef } from './data.ts';
+import { AIR_STRIKE, PROJECT, TRADE, conquestTarget, unitDef } from './data.ts';
 import type { AgreementKind, PolicyId, TechId } from './data.ts';
-import { dealPrice } from './diplomacy.ts';
+import { dealPrice, favourStandings } from './diplomacy.ts';
 import { kitOf, roadUpgradeOf } from './modifiers.ts';
 import { openPolicies } from './policies.ts';
 import { isNation } from './relations.ts';
@@ -207,12 +207,27 @@ export interface FavourTerm {
   readonly count: number;
 }
 
+/**
+ * What the balance of power puts between two nations: `leader` is the fear
+ * of the one of the two that leads the race for victory (`polity` is that
+ * one), `commonThreat` what draws two nations together that both stand
+ * against a leader (`polity` is that leader).
+ */
+export interface PowerTerm {
+  readonly cause: 'leader' | 'commonThreat';
+  /** What it adds to the level favour moves towards. */
+  readonly value: number;
+  readonly polity: number;
+}
+
 export interface FavourStanding {
   /** Favour now, from -100 to 100. */
   readonly favour: number;
-  /** The level it moves towards by `FAVOUR.drift` a turn: the sum of the terms, within the limits. */
+  /** The level it moves towards by `FAVOUR.drift` a turn: the sum of `terms` and `power`, within the limits. */
   readonly target: number;
   readonly terms: readonly FavourTerm[];
+  /** The terms the balance of power adds. */
+  readonly power: readonly PowerTerm[];
 }
 
 /**
@@ -224,45 +239,20 @@ export function favourStanding(state: GameState, a: number, b: number): FavourSt
   const ctx = ctxOf(state);
   if (a === b || !isNation(ctx, a) || !isNation(ctx, b)) return null;
   if (state.polities[a]?.alive !== true || state.polities[b]?.alive !== true) return null;
+  const standing = favourStandings(ctx).get(relationKey(a, b));
   const terms: FavourTerm[] = [];
-  const add = (cause: FavourCause, each: number, count = 1): void => {
-    if (count > 0) terms.push({ cause, value: each * count, count });
-  };
-
-  let bordering = false;
-  for (let zone = 0; zone < state.zoneOwner.length && !bordering; zone++) {
-    if (state.zoneOwner[zone] !== a) continue;
-    bordering = at(ctx.topo.zoneNeighbors, zone).some((other) => state.zoneOwner[other] === b);
-  }
-  if (bordering) add('border', FAVOUR.border);
-  if (atWar(ctx, a, b)) add('war', FAVOUR.war);
-  for (const agreement of state.agreements) {
-    if (agreement.kind === 'truce') continue;
-    if ((agreement.a === a && agreement.b === b) || (agreement.a === b && agreement.b === a)) {
-      add(agreement.kind, FAVOUR[agreement.kind]);
+  const power: PowerTerm[] = [];
+  for (const term of standing?.terms ?? []) {
+    if (term.cause === 'leader' || term.cause === 'commonThreat') {
+      power.push({ cause: term.cause, value: term.value, polity: term.polity ?? NO_POLITY });
+    } else {
+      terms.push({ cause: term.cause, value: term.value, count: term.count });
     }
   }
-  const deals = state.deals.filter(
-    (deal) => (deal.seller === a && deal.buyer === b) || (deal.seller === b && deal.buyer === a),
-  ).length;
-  add('deal', FAVOUR.deal, Math.min(deals, FAVOUR.maxCounted));
-  const routes = state.routes.filter((route) => {
-    const owner = route.toCity < 0 ? undefined : state.cities[route.toCity]?.owner;
-    return (route.owner === a && owner === b) || (route.owner === b && owner === a);
-  }).length;
-  add('route', FAVOUR.route, Math.min(routes, FAVOUR.maxCounted));
-  let shared = 0;
-  for (let other = 0; other < ctx.n && shared < FAVOUR.maxCounted; other++) {
-    if (ctx.war[a * ctx.n + other] === 1 && ctx.war[b * ctx.n + other] === 1) shared++;
-  }
-  add('sharedEnemy', FAVOUR.sharedEnemy, shared);
-
-  const sum = terms.reduce((total, term) => total + term.value, 0);
-  return {
-    favour: state.favour[relationKey(a, b)] ?? 0,
-    target: Math.max(-FAVOUR.max, Math.min(FAVOUR.max, sum)),
-    terms,
-  };
+  // The order the interface has always listed them in.
+  const order: readonly FavourCause[] = ['border', 'war', 'tradePact', 'openBorders', 'alliance', 'vassalage', 'deal', 'route', 'sharedEnemy'];
+  terms.sort((x, y) => order.indexOf(x.cause) - order.indexOf(y.cause));
+  return { favour: state.favour[relationKey(a, b)] ?? 0, target: standing?.target ?? 0, terms, power };
 }
 
 // -------------------------------------------------------------------- deals

@@ -142,23 +142,30 @@ export interface AmbitionStyle {
   readonly startsWars: boolean;
   /** The focus its cities take when they have food to spare. */
   readonly surplusFocus: 'production' | 'gold';
+  /** The share of its supply limit it keeps under arms at peace. At war every leader fills the limit. */
+  readonly peaceArmy: number;
+  /** The share of its spare income it is ready to pay for units beyond its supply limit while it is at war. */
+  readonly overSupply: number;
+  /** The share of the army it wants that its cities recruit at peace before their first buildings. */
+  readonly armyFirst: number;
 }
 
 export const AMBITION_STYLES: Readonly<Record<Ambition, AmbitionStyle>> = {
   balanced: {
     warRatio: 1, armyShare: 1, buildFirst: [], research: {}, policy: {}, startsWars: true, surplusFocus: 'production',
+    peaceArmy: 0.8, overSupply: 0, armyFirst: 0.5,
   },
   conquest: {
     warRatio: 0.8, armyShare: 1.4, buildFirst: ['workshop'], research: { military: 2 }, policy: { military: 2 },
-    startsWars: true, surplusFocus: 'production',
+    startsWars: true, surplusFocus: 'production', peaceArmy: 1, overSupply: 0.7, armyFirst: 1,
   },
   learning: {
     warRatio: 1, armyShare: 1, buildFirst: ['academy', 'university'], research: { science: 2 }, policy: { civil: 2 },
-    startsWars: false, surplusFocus: 'production',
+    startsWars: false, surplusFocus: 'production', peaceArmy: 0.6, overSupply: 0, armyFirst: 0.5,
   },
   wealth: {
     warRatio: 1, armyShare: 1, buildFirst: ['market', 'bank'], research: { economy: 2 }, policy: { economy: 2 },
-    startsWars: false, surplusFocus: 'gold',
+    startsWars: false, surplusFocus: 'gold', peaceArmy: 0.6, overSupply: 0, armyFirst: 0.5,
   },
 };
 

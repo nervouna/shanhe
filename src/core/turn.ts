@@ -11,6 +11,8 @@ import {
   WAR,
   conquestTarget,
   noYields,
+  supplyLimitFor,
+  supplySurcharge,
   unitDef,
 } from './data.ts';
 import type { Yields } from './data.ts';
@@ -22,7 +24,7 @@ import { endDeal, processDiplomacy } from './diplomacy.ts';
 import { rememberSight } from './fog.ts';
 import { hexMatches, modsOf, percentOf, unitMatches } from './modifiers.ts';
 import { followWorld, processResearch, worldEra } from './tech.ts';
-import { processRoads, processRoutes } from './trade.ts';
+import { processEmbargoes, processRoads, processRoutes } from './trade.ts';
 import { NO_POLITY } from './types.ts';
 import type { GameResult, Unit } from './types.ts';
 
@@ -69,6 +71,26 @@ export function unitUpkeep(ctx: Ctx, unit: Unit): number {
   }
   for (const ability of def.abilities) if (ability.type === 'unitUpkeep') percent += ability.percent;
   return (def.upkeep * Math.max(0, 100 + percent)) / 100;
+}
+
+/** True for a unit that counts against its owner's supply limit: everything that fights, on land or at sea. */
+export function needsSupply(unit: Unit): boolean {
+  return unitDef(unit.type).strength > 0;
+}
+
+/** The polity's supply: its limit (`supplyLimitFor` of its cities and people), the units that count against it, and what the excess costs a turn. */
+export function supplyOf(ctx: Ctx, polity: number): { limit: number; used: number; surcharge: number } {
+  let cities = 0;
+  let pop = 0;
+  for (const city of ctx.state.cities) {
+    if (city === null || city.owner !== polity) continue;
+    cities++;
+    pop += city.pop;
+  }
+  let used = 0;
+  for (const unit of ctx.state.units) if (unit.owner === polity && needsSupply(unit)) used++;
+  const limit = supplyLimitFor(cities, pop);
+  return { limit, used, surcharge: supplySurcharge(used - limit) };
 }
 
 /** HP a resting unit regains this turn. */
@@ -147,6 +169,7 @@ export function endRound(ctx: Ctx): void {
   const totals: Yields[] = state.polities.map(() => noYields());
   const upkeep: number[] = state.polities.map(() => 0);
   const cityCount: number[] = state.polities.map(() => 0);
+  const popCount: number[] = state.polities.map(() => 0);
   for (let zone = 0; zone < state.cities.length; zone++) {
     const city = state.cities[zone];
     if (city === undefined || city === null) continue;
@@ -155,6 +178,7 @@ export function endRound(ctx: Ctx): void {
     for (const key of YIELD_KEYS) total[key] += city.yields[key];
     for (const id of city.buildings) upkeep[city.owner] = at(upkeep, city.owner) + BUILDINGS[id].upkeep;
     cityCount[city.owner] = at(cityCount, city.owner) + 1;
+    popCount[city.owner] = at(popCount, city.owner) + city.pop;
   }
 
   // Trade routes, then the tribute of vassals to their overlord and of city-states to their suzerain.
@@ -182,8 +206,10 @@ export function endRound(ctx: Ctx): void {
   // Treasuries.
   const unitCosts: number[] = state.polities.map(() => 0);
   const shipTrade: number[] = state.polities.map(() => 0);
+  const supplied: number[] = state.polities.map(() => 0);
   for (const unit of state.units) {
     if (unit.owner === NO_POLITY) continue;
+    if (needsSupply(unit)) supplied[unit.owner] = at(supplied, unit.owner) + 1;
     unitCosts[unit.owner] = at(unitCosts, unit.owner) + unitUpkeep(ctx, unit);
     shipTrade[unit.owner] = at(shipTrade, unit.owner) + tributeTrade(ctx, unit);
   }
@@ -196,9 +222,12 @@ export function endRound(ctx: Ctx): void {
     let unitPercent = 0;
     for (const modifier of modsOf(ctx, index, 'unitUpkeep')) if (modifier.unit === undefined) unitPercent += modifier.percent;
     polity.yields = total;
+    // Units beyond the supply limit cost more, each more than the last; no modifier softens that.
+    const beyond = at(supplied, index) - supplyLimitFor(at(cityCount, index), at(popCount, index));
     polity.upkeep =
       Math.floor((at(upkeep, index) * (100 + percentOf(ctx, index, 'buildingUpkeep'))) / 100) +
-      Math.floor((units * (100 + unitPercent)) / 100);
+      Math.floor((units * (100 + unitPercent)) / 100) +
+      supplySurcharge(beyond);
     polity.routeIncome = at(routeIncome, index);
     polity.tributeReceived = at(received, index);
     polity.tributePaid = at(paid, index);
@@ -245,6 +274,7 @@ export function endRound(ctx: Ctx): void {
 
   // Diplomacy, city-states, roads, and improvements that have been repaired.
   processDiplomacy(ctx);
+  processEmbargoes(ctx);
   processInfluence(ctx);
   processRoads(ctx);
   for (const key of Object.keys(state.pillaged)) {
