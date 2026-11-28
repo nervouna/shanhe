@@ -536,17 +536,35 @@ export function foundCity(ctx: Ctx, zone: number, owner: number): City {
   return city;
 }
 
-/** The hex a new unit of the city appears on, or -1 if there is no room. */
+/**
+ * The hex a new unit of the city appears on, or -1 if there is no room: the
+ * city's own hex for a land unit, else the nearest free hex the unit may
+ * stand on within `CITY.musterRadius` of it.
+ */
 export function spawnHex(ctx: Ctx, city: City, def: UnitDef): number {
   const { topo, map } = ctx;
   const site = at(map.zones, city.zone).siteHex;
   if (def.domain === 'land' && !ctx.unitAt.has(site)) return site;
-  for (let d = 0; d < 6; d++) {
-    const hex = topo.neighbors[site * 6 + d] as number;
-    if (hex < 0 || ctx.unitAt.has(hex) || !terrainAllows(ctx, def, hex, city.owner)) continue;
-    if ((topo.water[hex] === 1) !== (def.domain === 'sea')) continue;
-    if (!bordersOpen(ctx, city.owner, hex) || cityAtHex(ctx, hex) !== null) continue;
-    return hex;
+  const fits = (hex: number): boolean => {
+    if (ctx.unitAt.has(hex) || !terrainAllows(ctx, def, hex, city.owner)) return false;
+    if ((topo.water[hex] === 1) !== (def.domain === 'sea')) return false;
+    return bordersOpen(ctx, city.owner, hex) && cityAtHex(ctx, hex) === null;
+  };
+  // Ring by ring, in the order of the six directions.
+  const seen = new Set<number>([site]);
+  let ring = [site];
+  for (let radius = 1; radius <= CITY.musterRadius; radius++) {
+    const next: number[] = [];
+    for (const from of ring) {
+      for (let d = 0; d < 6; d++) {
+        const hex = topo.neighbors[from * 6 + d] as number;
+        if (hex < 0 || seen.has(hex)) continue;
+        seen.add(hex);
+        next.push(hex);
+      }
+    }
+    for (const hex of next) if (fits(hex)) return hex;
+    ring = next;
   }
   return -1;
 }

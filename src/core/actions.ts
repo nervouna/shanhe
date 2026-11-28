@@ -76,12 +76,13 @@ import {
   offerPending,
   signAgreement,
   signDeal,
+  submits,
 } from './diplomacy.ts';
 import { canSee, knowsCity, lookAround } from './fog.ts';
-import { KIT } from './kits.ts';
+import { KIT, ambitionOf } from './kits.ts';
 import { inHomeWaters, nationOf, percentOf, unitMatches, unitMods, visionRange } from './modifiers.ts';
 import { checkSlot, checkUnlock, openPolicies, slotPolicy, unlockPolicy } from './policies.ts';
-import { addFavour, findAgreement, hasAgreement, isCityState } from './relations.ts';
+import { addFavour, findAgreement, hasAgreement, isCityState, vassalsOf } from './relations.ts';
 import { checkResearch, openTechs, ownsResource, upgradeTargetFor } from './tech.ts';
 import {
   checkPillage,
@@ -93,6 +94,7 @@ import {
   routeSlots,
   routesOf,
 } from './trade.ts';
+import { capitalsHeld } from './turn.ts';
 import { NO_POLITY } from './types.ts';
 import type { Action, BuildItem, City, RejectReason, Unit } from './types.ts';
 
@@ -244,8 +246,20 @@ export function acceptsPeace(ctx: Ctx, polity: number, proposer: number): boolea
   // Only a major nation fights on; everybody else is glad of peace.
   if (!ctx.state.majors.includes(polity)) return true;
   const self = polityOf(ctx, polity);
-  if (self.warWeariness >= AI.peaceWeariness) return true;
-  if (ctx.state.turn - relation.since >= AI.stalemateTurns) return true;
+  // A peace that makes the other its vassal is a victory: it takes it while it has room for vassals,
+  // and a leader out for conquest always takes a holder of a major nation's capital.
+  if (submits(ctx, proposer, polity)) {
+    const conquering = ambitionOf(ctx.state.seed, polity, nationOf(ctx, polity)) === 'conquest';
+    if (conquering && capitalsHeld(ctx, proposer) > 0) return true;
+    // A leader out for conquest keeps its last place for a holder of a capital.
+    const room = (DIPLOMACY.vassalsByEra[self.era] ?? 0) - vassalsOf(ctx, polity).length;
+    if (vassalsOf(ctx, polity).length < AI.maxVassals && room > (conquering ? 1 : 0)) return true;
+  }
+  // A leader out for conquest holds out longer, and a war in which the enemy keeps losing cities is no stalemate.
+  const conquering = ambitionOf(ctx.state.seed, polity, nationOf(ctx, polity)) === 'conquest';
+  if (self.warWeariness >= (conquering ? AI.conquestPeaceWeariness : AI.peaceWeariness)) return true;
+  const progress = Math.max(relation.since, polityOf(ctx, proposer).cityLostOn);
+  if (ctx.state.turn - progress >= AI.stalemateTurns) return true;
   return militaryStrength(ctx, polity) < militaryStrength(ctx, proposer) * AI.warStrengthRatio;
 }
 
@@ -548,7 +562,11 @@ function perform(ctx: Ctx, action: Action): void {
         ctx.events.push({ type: 'peaceOffered', from: action.polity, to: action.target });
         return;
       }
-      endWar(ctx, action.polity, action.target);
+      // Whoever asked for the peace may have to pay for it with its freedom.
+      const asker = theirOffer > 0 ? action.target : action.polity;
+      const other = asker === action.polity ? action.target : action.polity;
+      if (submits(ctx, asker, other)) makeVassal(ctx, asker, other, true);
+      else endWar(ctx, action.polity, action.target);
       return;
     }
     case 'unlockPolicy':

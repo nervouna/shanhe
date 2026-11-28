@@ -24,7 +24,7 @@ import { lookAround } from './fog.ts';
 import { KIT } from './kits.ts';
 import { cityMatches, cityMods, fightPercent, modsOf, percentOf, unitMods } from './modifiers.ts';
 import type { Fight } from './modifiers.ts';
-import { isNation } from './relations.ts';
+import { isNation, vassalsFull } from './relations.ts';
 import { eraOf } from './tech.ts';
 import { routesAfterCapture } from './trade.ts';
 import { NO_POLITY } from './types.ts';
@@ -383,6 +383,8 @@ export function captureCity(ctx: Ctx, city: City, unit: Unit): void {
   const loser = polityOf(ctx, from);
   loser.warWeariness = Math.min(WAR.wearinessMax, loser.warWeariness + WAR.wearinessPerCityLost);
   loser.cityLostOn = state.turn;
+  const captor = polityOf(ctx, to);
+  captor.warWeariness = Math.max(0, captor.warWeariness - WAR.wearinessPerCityTaken);
   // Culture for taking another nation's original capital.
   const first = city.originalOwner;
   if (first !== NO_POLITY && first !== to && isNation(ctx, first) && at(ctx.map.polities, first).capitalZone === city.zone) {
@@ -421,7 +423,7 @@ export function checkDemandVassalage(ctx: Ctx, unit: Unit, target: number): Reje
   if (hexesApart(ctx, unit.hex, target) !== 1) return 'notAdjacent';
   if (!isNation(ctx, unit.owner) || !isNation(ctx, city.owner)) return 'badTarget';
   if (polityOf(ctx, city.owner).capital !== city.zone) return 'notACapital';
-  if (modsOf(ctx, city.owner, 'noVassal').length > 0) return 'refused';
+  if (modsOf(ctx, city.owner, 'noVassal').length > 0 || vassalsFull(ctx, unit.owner)) return 'refused';
   if (city.hp > 0) return 'cityNotFallen';
   if (polityOf(ctx, unit.owner).overlord !== NO_POLITY || polityOf(ctx, city.owner).overlord !== NO_POLITY) {
     return 'vassal';
@@ -441,6 +443,8 @@ export function demandVassalage(ctx: Ctx, unit: Unit, target: number): void {
   unit.status = 'ready';
   city.hp = Math.floor(maxCityHp(city) * CITY.captureHpFraction);
   city.attackedOn = ctx.state.turn;
+  const victor = polityOf(ctx, unit.owner);
+  victor.warWeariness = Math.max(0, victor.warWeariness - WAR.wearinessPerVassalMade);
   makeVassal(ctx, city.owner, unit.owner, true);
 }
 

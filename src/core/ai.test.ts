@@ -174,14 +174,33 @@ describe('AI: war', () => {
     });
     const { state, events } = endTurn(threatened);
     const bought = of(events, 'itemBought');
-    expect(bought).toHaveLength(1);
     expect(bought[0]).toMatchObject({ city: YIDU, item: { kind: 'unit', unit: 'warrior' } });
     expect(state.polities[YI]!.gold).toBeLessThan(500);
-    // At peace it buys nothing.
+    // With the gold of the reserve alone, and at peace, it buys nothing.
     const calm = edit(game, (draft) => {
-      draft.polities[YI]!.gold = 500;
+      draft.polities[YI]!.gold = AI.goldReserve;
     });
     expect(of(endTurn(calm).events, 'itemBought')).toHaveLength(0);
+  });
+
+  it('does not sit on its gold: a major buys what its cities are building, above a reserve', () => {
+    const game = createGame(map, { seed: 2, majors: ['yi'] });
+    const rich = edit(game, (draft) => {
+      draft.polities[YI]!.gold = 2000;
+      draft.polities[JIA]!.gold = 2000;
+    });
+    const { state, events } = endTurn(rich);
+    const bought = of(events, 'itemBought');
+    expect(bought.length).toBeGreaterThan(0);
+    expect(bought.length).toBeLessThanOrEqual(AI.buysPerTurn);
+    expect(bought.every((event) => state.cities[event.city]!.owner === YI)).toBe(true);
+    expect(state.polities[YI]!.gold).toBeLessThan(2000);
+    // A nation on the simplified AI keeps what it has; and below the reserve a major buys nothing.
+    expect(state.polities[JIA]!.gold).toBeGreaterThanOrEqual(2000);
+    const poor = edit(game, (draft) => {
+      draft.polities[YI]!.gold = AI.goldReserve;
+    });
+    expect(of(endTurn(poor).events, 'itemBought')).toHaveLength(0);
   });
 
   it('keeps the nations on the simplified AI out of wars of their own, but not out of their allies\' wars', () => {

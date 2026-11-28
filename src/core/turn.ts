@@ -139,7 +139,7 @@ export function endRound(ctx: Ctx): void {
     const wars = warCount(ctx, index);
     polity.warWeariness =
       wars > 0
-        ? Math.min(WAR.wearinessMax, polity.warWeariness + wars * WAR.wearinessPerWarTurn)
+        ? Math.min(WAR.wearinessMax, polity.warWeariness + WAR.wearinessPerWarTurn)
         : Math.max(0, polity.warWeariness - WAR.wearinessDecay);
   });
 
