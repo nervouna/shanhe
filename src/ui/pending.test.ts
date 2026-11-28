@@ -166,7 +166,7 @@ describe('pendingItems: research, policies and offers', () => {
     expect(policyPending(later, new Set(['citizenLevy']))).toBe(true);
   });
 
-  it('never asks a city on repeat for a project, and asks a city that has only city projects left', () => {
+  it('never asks a city on repeat for a project, asks again once repeat is off, and stops asking a city that has taken up a city project', () => {
     const state = settled();
     const idle = edit(state, (draft) => {
       draft.cities[capital]!.queue = [];
