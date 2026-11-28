@@ -4,14 +4,15 @@ import { CITY_STATE } from '../core/data.ts';
 import { NO_POLITY } from '../core/game.ts';
 import type { GameState } from '../core/game.ts';
 import { favourStanding, peaceMakesVassal } from '../core/query.ts';
-import type { FavourCause } from '../core/query.ts';
 import { t } from '../shared/i18n.ts';
 import type { TranslationKey } from '../shared/i18n.ts';
 import {
   agreementsBetween,
+  causeText,
   controlReasonText,
   dealsBetween,
   diplomaticControls,
+  favourRows,
   knownAmbition,
   offerText,
   offersFrom,
@@ -27,14 +28,6 @@ import { peaceOffers } from './pending.ts';
 import { relationView } from './rules.ts';
 import { cssColor, signed } from './view.ts';
 import type { View } from './view.ts';
-
-function causeName(cause: FavourCause): string {
-  if (cause === 'border' || cause === 'war' || cause === 'sharedEnemy' || cause === 'deal' || cause === 'route') {
-    const key: TranslationKey = `cause.${cause}`;
-    return t(key);
-  }
-  return agreementName(cause);
-}
 
 function controlLabel(state: GameState, control: DiplomaticControl): string {
   const { map } = state;
@@ -158,11 +151,11 @@ export function polityPanel(view: View, polity: number, onClose: () => void): HT
           el(
             'ul',
             { class: 'facts-list' },
-            ...standing.terms.map((item) =>
+            ...favourRows(standing).map((item) =>
               el(
                 'li',
-                { data: { cause: item.cause } },
-                el('span', { class: 'option-name', text: causeName(item.cause) }),
+                { data: item.polity === NO_POLITY ? { cause: item.cause } : { cause: item.cause, polity: item.polity } },
+                el('span', { class: 'option-name', text: causeText(map, item) }),
                 el('span', { class: 'option-cost', text: signed(item.value) }),
               ),
             ),

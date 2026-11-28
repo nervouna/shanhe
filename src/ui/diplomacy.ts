@@ -9,9 +9,11 @@ import type { Action, Agreement, Deal, GameState, Offer, RejectReason } from '..
 import { ambitionOf } from '../core/kits.ts';
 import type { Ambition } from '../core/kits.ts';
 import { atWarWith, checkAction, dealOptions, peaceMakesVassal, vassalRoom } from '../core/query.ts';
+import type { FavourCause, FavourStanding, PowerTerm } from '../core/query.ts';
 import { t } from '../shared/i18n.ts';
+import type { TranslationKey } from '../shared/i18n.ts';
 import type { MapData } from '../shared/mapData.ts';
-import { agreementName, rejectText, resourceName } from './names.ts';
+import { agreementName, polityName, rejectText, resourceName } from './names.ts';
 
 /** The agreements a polity can propose and cancel, in the order the panel lists them. */
 export const PROPOSABLE: readonly Exclude<AgreementKind, 'truce'>[] = ['tradePact', 'openBorders', 'alliance', 'vassalage'];
@@ -203,4 +205,39 @@ export function vassalRoomText(state: GameState, polity: number): string {
  */
 export function peaceText(state: GameState, me: number, other: number): string {
   return peaceMakesVassal(state, me, other) ? t('offer.submission') : t('polity.makePeace');
+}
+
+/** One cause of the favour between two nations, as the polity panel lists it. */
+export interface FavourRow {
+  readonly cause: FavourCause | PowerTerm['cause'];
+  /** What it adds to the level favour moves towards. */
+  readonly value: number;
+  /** The nation a term of the balance of power names: the feared leader. `NO_POLITY` for the other causes. */
+  readonly polity: number;
+}
+
+/**
+ * Every cause of a favour standing in the order the panel lists them: the
+ * standing terms, then those of the balance of power. Their values add up to
+ * the level favour moves towards, as long as that is within the limits.
+ */
+export function favourRows(standing: FavourStanding): FavourRow[] {
+  return [
+    ...standing.terms.map((term): FavourRow => ({ cause: term.cause, value: term.value, polity: NO_POLITY })),
+    ...standing.power.map((term): FavourRow => ({ cause: term.cause, value: term.value, polity: term.polity })),
+  ];
+}
+
+/** What a cause of favour is called; one of the balance of power names its leader. */
+export function causeText(map: MapData, row: FavourRow): string {
+  const { cause } = row;
+  if (cause === 'leader' || cause === 'commonThreat') {
+    const key: TranslationKey = `cause.${cause}`;
+    return t(key, { name: polityName(map, row.polity) });
+  }
+  if (cause === 'border' || cause === 'war' || cause === 'sharedEnemy' || cause === 'deal' || cause === 'route') {
+    const key: TranslationKey = `cause.${cause}`;
+    return t(key);
+  }
+  return agreementName(cause);
 }
