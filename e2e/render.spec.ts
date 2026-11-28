@@ -2,8 +2,9 @@
  * Smoke tests in headless Chromium: the render demo and the default page
  * must start without any console error and draw frames. The demo also
  * shows its gallery, switches every effect of the finish and the fog of war,
- * plays a move and a melee animation to their end and is the political map,
- * under clouds, at the far zoom.
+ * plays a move and a melee animation to their end, which draws the shadow
+ * maps of the pieces again, and is the political map, under clouds, at the
+ * far zoom.
  *
  * A software renderer on a small machine can take seconds per frame, so
  * nothing here waits for a moment to be caught: the checks read promises,
@@ -112,8 +113,11 @@ test('the render demo draws frames without console errors', async ({ page }) => 
   // ambient occlusion and bloom switch themselves off on the WebGL fallback
   expect(finish.effects.ambientOcclusion).toBe(report.backend === 'webgpu');
   expect(finish.effects.bloom).toBe(report.backend === 'webgpu');
-  // the shadow cascades have been drawn
-  expect(finish.stats.shadowDraws).toBeGreaterThanOrEqual(2);
+  // the shadow cascades have been drawn: per cascade a map of the ground and one of the pieces
+  expect(finish.stats.pieceShadowDraws).toBeGreaterThanOrEqual(2);
+  expect(finish.stats.shadowDraws).toBeGreaterThanOrEqual(finish.stats.pieceShadowDraws + 2);
+  expect(finish.stats.shadowTriangles).toBeGreaterThanOrEqual(0);
+  expect(finish.stats.shadowTriangles).toBeLessThanOrEqual(finish.stats.triangles);
   expect(finish.stats.trees).toBeGreaterThanOrEqual(0);
 
   // the gallery: a city of every family in every era, pieces, improvements, roads and routes
@@ -214,6 +218,7 @@ test('the render demo draws frames without console errors', async ({ page }) => 
     const renderer = window.__shanhe?.render.renderer;
     if (renderer === undefined) throw new Error('window.__shanhe is not set');
     const before = renderer.getAnimationCounts();
+    const shadowsBefore = renderer.getStats();
     const startHex = renderer.getUnitHex(actors.attacker);
     await renderer.play([{ type: 'move', unit: actors.attacker, path: actors.path }]);
     const afterMove = renderer.getAnimationCounts();
@@ -231,8 +236,19 @@ test('the render demo draws frames without console errors', async ({ page }) => 
       defenderHex: renderer.getUnitHex(actors.defender),
       missing: renderer.getUnitHex(-1),
       animating: renderer.getStats().animating,
+      shadowsBefore,
     };
   }, stage);
+  // pieces that moved cast their shadows elsewhere: once a frame is drawn, their shadow maps were drawn again
+  await drawFrames(page, 2);
+  const shadowsAfter = await page.evaluate(() => window.__shanhe?.render.stats);
+  expect(shadowsAfter?.pieceShadowDraws).toBeGreaterThan(played.shadowsBefore.pieceShadowDraws);
+  expect(shadowsAfter?.shadowDraws).toBeGreaterThan(played.shadowsBefore.shadowDraws);
+  console.log(
+    `shadow maps drawn over both animations: ${(shadowsAfter?.pieceShadowDraws ?? 0) - played.shadowsBefore.pieceShadowDraws} of the pieces, ` +
+      `${(shadowsAfter?.shadowDraws ?? 0) - (shadowsAfter?.pieceShadowDraws ?? 0) - played.shadowsBefore.shadowDraws + played.shadowsBefore.pieceShadowDraws} of the ground, ` +
+      `in ${(shadowsAfter?.frames ?? 0) - played.shadowsBefore.frames} frames`,
+  );
   if (captureDir === undefined) expect(played.startHex).toBe(stage.path[0]);
   expect(played.afterMove.move.animated).toBe(played.before.move.animated + 1);
   expect(played.afterMove.move.finished).toBe(played.before.move.finished + 1);

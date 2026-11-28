@@ -13,6 +13,7 @@
 import { BufferAttribute, BufferGeometry, Group, Mesh } from 'three/webgpu';
 import type { Material, Vector3 } from 'three/webgpu';
 import type { HeightField } from './heightField.ts';
+import { castGroundShadow } from './shadowLayers.ts';
 
 export interface Terrain {
   readonly object: Group;
@@ -221,7 +222,7 @@ export function createTerrain(field: HeightField, material: Material, floorY: nu
       const j1 = Math.min(j0 + chunkCells, rows - 1);
       const coarse = buildChunkGeometry(field, i0, j0, i1, j1, 2 ** maxLevel, floorY);
       const mesh = new Mesh(coarse, material);
-      mesh.castShadow = true;
+      castGroundShadow(mesh);
       mesh.receiveShadow = true;
       mesh.visible = false;
       object.add(mesh);
@@ -235,7 +236,7 @@ export function createTerrain(field: HeightField, material: Material, floorY: nu
         const bj1 = Math.min(bj0 + blockCells, rows - 1);
         const whole = buildChunkGeometry(field, bi0, bj0, bi1, bj1, 2 ** maxLevel, floorY);
         const blockMesh = new Mesh(whole, material);
-        blockMesh.castShadow = true;
+        castGroundShadow(blockMesh);
         blockMesh.receiveShadow = true;
         object.add(blockMesh);
         block = {
