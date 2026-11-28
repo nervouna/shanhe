@@ -963,6 +963,14 @@
         min-width: 0;
         margin-bottom: 0;
       }
+      /* a name and its figures that do not fit one line (English) take two: the figures go under the name */
+      #ui #city-panel button.option {
+        flex-wrap: wrap;
+        row-gap: 0;
+      }
+      #city-panel button.option .option-name {
+        flex: 1 0 auto;
+      }
       #ui #trade-picker button.option {
         flex-wrap: wrap;
         row-gap: 0;
