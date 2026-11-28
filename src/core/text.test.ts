@@ -9,6 +9,7 @@ const EVENTS = {
   policySlotted: true,
   offerMade: true,
   offerAnswered: true,
+  offerRefused: true,
   agreementSigned: true,
   agreementEnded: true,
   warJoined: true,
@@ -83,7 +84,7 @@ describe('text keys of the rules', () => {
   ];
 
   it('exist in Chinese and in English for every card, agreement, city-state type, event and reject code', () => {
-    expect(keys.length).toBe(48 + 5 + 5 + 9 + 19 + 30);
+    expect(keys.length).toBe(48 + 5 + 5 + 9 + 20 + 30);
     for (const language of ['zh', 'en'] as const) {
       const dictionary: Record<string, string> = dictionaries[language];
       for (const key of keys) expect(dictionary[key], `${language}:${key}`).toBeTruthy();

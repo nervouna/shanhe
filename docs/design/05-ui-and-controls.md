@@ -54,7 +54,7 @@ The queue, in order:
 | Proposal | Another nation proposed an agreement or a resource deal | Opens that nation's panel, which shows the proposal with accept and decline |
 | Peace offer | A polity at war with the player offered peace during the last turn | Opens its panel. Declining lasts for the turn |
 
-Pending proposals and peace offers also appear as notifications with the same two buttons. The rules take "accept" for any pending proposal and drop it without a word when nothing can come of it any more (the buyer cannot pay the price of a deal, the agreement already stands, a war has begun). The interface asks the rules first: such a proposal has its accept button disabled and carries the reason, in the notification and in the nation's panel; declining stays possible.
+Pending proposals and peace offers also appear as notifications with the same two buttons. The rules take "accept" for any pending proposal. A deal whose buyer cannot pay the price they refuse with that reason and keep: it waits until it is declined, runs out, or the gold is there. A proposal nothing can come of any more (the agreement already stands, a war has begun) they drop. The interface asks the rules first: such a proposal has its accept button disabled and carries the reason, in the notification and in the nation's panel; declining stays possible. Should the rules still refuse an accepted deal, the reason is shown and the proposal and its notification stay. Gold another nation gives the player is a notification, one for each giver in a turn.
 
 ## Panels
 

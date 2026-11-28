@@ -610,6 +610,8 @@ export function createApp(options: AppOptions): App {
   const act = (action: Action): boolean => {
     const result = host.act(action);
     if (!result.ok) showToast(rejectText(result.reason));
+    // the rules took the answer and refused the deal: the proposal still waits, and the player is told why
+    else for (const event of result.events) if (event.type === 'offerRefused') showToast(rejectText(event.reason));
     return result.ok;
   };
 
@@ -1146,7 +1148,9 @@ export function createApp(options: AppOptions): App {
             if (offer.kind === 'offer') act({ type: 'respond', polity: player(), offer: offer.id, accept });
             else if (accept) act({ type: 'makePeace', polity: player(), target: offer.from });
             else host.declinePeace(offer.from);
-            notes = notes.filter((other) => other.id !== note.id);
+            // a deal the rules refused for want of gold still waits, and so does its notification
+            const waits = offer.kind === 'offer' && state().offers.some((entry) => entry.id === offer.id);
+            if (!waits) notes = notes.filter((other) => other.id !== note.id);
             refresh();
           };
           row.dataset.offerKind = offer.kind;

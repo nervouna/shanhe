@@ -637,11 +637,11 @@ export function settleSites(state: GameState): number[] {
 
 /**
  * Why accepting the pending offer would come to nothing, or null if the
- * agreement or the deal would be made. The rules take the answer either way
- * and drop the offer; this says beforehand whether "accept" still means
- * what the offer says: the buyer may no longer afford the price, a war may
- * have begun, the agreement may already stand. `noSuchOffer` if no such
- * offer waits.
+ * agreement or the deal would be made. This says beforehand whether "accept"
+ * still means what the offer says: the buyer may not afford the price
+ * (`notEnoughGold`: the rules then refuse and keep the offer), a war may
+ * have begun or the agreement may already stand (the rules then drop the
+ * offer). `noSuchOffer` if no such offer waits.
  */
 export function offerObstacle(state: GameState, offerId: number): RejectReason | null {
   const offer = state.offers.find((entry) => entry.id === offerId);

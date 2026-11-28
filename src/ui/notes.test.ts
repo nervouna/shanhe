@@ -47,6 +47,23 @@ describe('noteDrafts', () => {
     expect(drafts[0]!.text()).toContain(map.polities[BING]!.nameZh);
   });
 
+  it('tells a player of the gold another nation gives them, one notification for each giver', () => {
+    const events: GameEvent[] = [
+      { type: 'goldGifted', from: YI, to: JIA, amount: 120 },
+      { type: 'goldGifted', from: YI, to: BING, amount: 120 },
+      { type: 'goldGifted', from: YI, to: JIA, amount: 120 },
+      { type: 'goldGifted', from: BING, to: JIA, amount: 30 },
+    ];
+    const drafts = noteDrafts(played, events, sightOf(played));
+    expect(drafts.map((draft) => draft.text())).toEqual(['乙国赠予甲国 240 金', '丙国赠予甲国 30 金']);
+    expect(drafts[0]!.hex).toBe(site(yiSeat));
+    setLanguage('en');
+    expect(drafts[0]!.text()).toBe('Yi gave Jia 240 gold');
+    // what others give each other, and what the player gives, is no news
+    expect(texts(played, [{ type: 'goldGifted', from: JIA, to: YI, amount: 30 }])).toEqual([]);
+    expect(texts(watched, events)).toEqual([]);
+  });
+
   it('tells a player of what they are a party to, in sight or not', () => {
     const lost: GameEvent = { type: 'cityCaptured', city: map.polities[JIA]!.capitalZone, from: JIA, to: YI };
     const taken: GameEvent = { type: 'cityCaptured', city: yiSeat, from: YI, to: JIA };

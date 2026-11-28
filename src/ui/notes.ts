@@ -71,8 +71,14 @@ export function noteDrafts(
     drafts.push({ text, hex: canPoint(state, sight, hex) ? hex : -1, offer, settles });
   };
 
+  /** Gold given to the player, by giver: a rich neighbour gives several times in one turn. */
+  const gifts = new Map<number, number>();
+
   for (const event of events) {
     switch (event.type) {
+      case 'goldGifted':
+        if (event.to === me) gifts.set(event.from, (gifts.get(event.from) ?? 0) + event.amount);
+        break;
       case 'warDeclared':
         if (all || event.by === me || event.on === me) {
           add(() => t('note.war', { a: polityName(m, event.by), b: polityName(m, event.on) }), capitalHex(event.on));
@@ -277,6 +283,9 @@ export function noteDrafts(
       default:
         break;
     }
+  }
+  for (const [from, amount] of gifts) {
+    add(() => t('event.goldGifted', { from: polityName(m, from), to: polityName(m, me), amount }), capitalHex(from));
   }
   return drafts;
 }
