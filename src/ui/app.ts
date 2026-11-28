@@ -9,7 +9,7 @@ import { BUILDINGS, DEFAULT_DIFFICULTY, DIFFICULTY_LEVELS, FOCUSES, IMPROVEMENTS
 import type { DifficultyLevel, Yields } from '../core/data.ts';
 import { NO_POLITY, currentEra, hexOwner, nextPolicyCost } from '../core/game.ts';
 import type { Action, GameEvent, GameState, Unit } from '../core/game.ts';
-import { buyCostOf, hexDistance } from '../core/query.ts';
+import { buyCostOf, hexDistance, offerObstacle } from '../core/query.ts';
 import type { HexHighlight, Renderer, SelectionAids } from '../render/scene.ts';
 import { indexToOffset } from '../shared/hex.ts';
 import { getLanguage, setLanguage, t } from '../shared/i18n.ts';
@@ -1145,10 +1145,17 @@ export function createApp(options: AppOptions): App {
             refresh();
           };
           row.dataset.offerKind = offer.kind;
+          // the rules take "accept" even when nothing can come of it: the button says why instead
+          const obstacle = offer.kind === 'offer' ? offerObstacle(state(), offer.id) : null;
           row.append(
             button(t('note.accept'), () => {
               answer(true);
-            }, { class: 'accent', data: { offer: 'accept' }, disabled: host.busy }),
+            }, {
+              class: 'accent',
+              data: { offer: 'accept', refused: obstacle ?? '' },
+              disabled: host.busy || obstacle !== null,
+              ...(obstacle === null ? {} : { title: rejectText(obstacle) }),
+            }),
             button(t('note.decline'), () => {
               answer(false);
             }, { data: { offer: 'decline' }, disabled: host.busy }),

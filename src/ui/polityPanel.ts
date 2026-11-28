@@ -3,7 +3,7 @@
 import { CITY_STATE } from '../core/data.ts';
 import { NO_POLITY } from '../core/game.ts';
 import type { GameState } from '../core/game.ts';
-import { favourStanding, peaceMakesVassal } from '../core/query.ts';
+import { favourStanding, offerObstacle, peaceMakesVassal } from '../core/query.ts';
 import { t } from '../shared/i18n.ts';
 import type { TranslationKey } from '../shared/i18n.ts';
 import {
@@ -23,7 +23,7 @@ import type { DiplomaticControl } from './diplomacy.ts';
 import { button, el, iconOnly } from './dom.ts';
 import { kitViewOf } from './kit.ts';
 import { kitRows } from './kitPanel.ts';
-import { agreementName, polityName, resourceName } from './names.ts';
+import { agreementName, polityName, rejectText, resourceName } from './names.ts';
 import { peaceOffers } from './pending.ts';
 import { relationView } from './rules.ts';
 import { counted } from './text.ts';
@@ -191,20 +191,27 @@ export function polityPanel(view: View, polity: number, onClose: () => void): HT
       body.append(el('ul', { class: 'facts-list', id: 'polity-agreements' }, ...agreements, ...deals));
     }
 
-    const answer = (accept: boolean, onClick: () => void): HTMLButtonElement =>
+    const answer = (accept: boolean, onClick: () => void, refused = false): HTMLButtonElement =>
       button(accept ? t('note.accept') : t('note.decline'), () => {
         onClick();
         view.refresh();
-      }, { class: accept ? 'accent' : '', data: { answer: accept ? 'accept' : 'decline' }, disabled: view.busy });
-    const offers = offersFrom(state, polity).map((offer) =>
-      el(
+      }, { class: accept ? 'accent' : '', data: { answer: accept ? 'accept' : 'decline' }, disabled: view.busy || refused });
+    const offers = offersFrom(state, polity).map((offer) => {
+      // the rules take "accept" even when nothing can come of it: the button says so instead
+      const obstacle = offerObstacle(state, offer.id);
+      return el(
         'div',
-        { class: 'offer', data: { offer: offer.id } },
-        el('span', { class: 'option-name', text: offerText(map, offer) }),
-        answer(true, () => view.act({ type: 'respond', polity: me, offer: offer.id, accept: true })),
+        { class: 'offer', data: { offer: offer.id, refused: obstacle ?? '' } },
+        el(
+          'span',
+          { class: 'option-name' },
+          offerText(map, offer),
+          obstacle !== null && el('span', { class: 'reason', text: rejectText(obstacle) }),
+        ),
+        answer(true, () => view.act({ type: 'respond', polity: me, offer: offer.id, accept: true }), obstacle !== null),
         answer(false, () => view.act({ type: 'respond', polity: me, offer: offer.id, accept: false })),
-      ),
-    );
+      );
+    });
     if (peaceOffers(state).includes(polity)) {
       offers.push(
         el(
