@@ -428,6 +428,53 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
   await page.keyboard.press('Escape');
   expect((await ui()).panel).toBeNull();
 
+  // an overlay holds the focus. Opened from the keyboard, the focus goes into it
+  await page.locator('#victory-button').focus();
+  await page.keyboard.press('Shift+Tab');
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe('polities-button');
+  await page.keyboard.press('Enter');
+  expect((await ui()).overlay).toBe('polities');
+  const inside = (): Promise<boolean> => page.evaluate(() => document.activeElement?.closest('#overlay') !== null);
+  expect(await inside()).toBe(true);
+  // Tab goes through every control of the overlay and wraps; it never reaches what lies behind
+  const controls = await page.locator('#overlay button:not(:disabled)').count();
+  expect(controls).toBeGreaterThan(3);
+  const visited = new Set<string>();
+  for (let press = 0; press < controls + 2; press++) {
+    await page.keyboard.press('Tab');
+    expect(await inside()).toBe(true);
+    visited.add(
+      await page.evaluate(() => {
+        const node = document.activeElement;
+        return `${node?.id ?? ''}|${node?.closest('tr')?.getAttribute('data-polity') ?? ''}|${node?.getAttribute('data-sort') ?? ''}`;
+      }),
+    );
+  }
+  expect(visited.size).toBe(controls);
+  await page.keyboard.press('Shift+Tab');
+  expect(await inside()).toBe(true);
+  // the HUD behind it takes neither the focus nor a press
+  const behind = await page.evaluate(() => {
+    const button = document.querySelector<HTMLElement>('#main-action');
+    button?.focus();
+    const focused = document.activeElement === button;
+    button?.click();
+    return { focused, inert: [...document.querySelectorAll<HTMLElement>('#game > *')].filter((node) => node.id !== 'overlay' && !node.inert).length };
+  });
+  expect(behind).toEqual({ focused: false, inert: 0 });
+  const held = await page.evaluate(() => ({ turn: window.__shanhe?.state.turn, ui: window.__shanhe?.ui }));
+  // nor does Enter reach the main button from an overlay
+  await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  });
+  await page.keyboard.press('Enter');
+  expect(await page.evaluate(() => ({ turn: window.__shanhe?.state.turn, ui: window.__shanhe?.ui }))).toEqual(held);
+  // Escape closes it, and the focus is back on what opened it
+  await page.keyboard.press('Escape');
+  expect((await ui()).overlay).toBeNull();
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe('polities-button');
+  expect(await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('#game > *')].filter((node) => node.inert).length)).toBe(0);
+
   // the lenses of the minimap
   await page.click('#lenses [data-lens="diplomacy"]');
   expect((await ui()).lens).toBe('diplomacy');

@@ -24,6 +24,7 @@ Desktop (mouse and keyboard) and touch are both first-class. The UI ships in Chi
 - **Only what is in sight.** Paths, reach and previews are worked out on what the player knows (see "Fog of war" below): a unit the fog hides is no target, blocks no planned path and answers no click. An order onto its hex is a move; the piece stops in front of it when the rules refuse the step.
 - **Placing improvements.** After picking an improvement in a build queue, valid hexes are highlighted; the build list names the yield the improvement gives. The valid hexes are the rules': a nation whose trait opens more ground (夜郎's mountains) is offered it.
 - **Keyboard.** Every control can be reached with Tab and pressed with Enter or Space; the control in focus has a ring. Until Tab is used, Enter is the main action button wherever the mouse left the focus, and holding Space speeds the animations up. A redraw keeps the focus on the control it was on.
+- **A full-screen overlay holds the focus**, and so does the end screen. Tab and Shift+Tab move through its controls and wrap at its ends; the HUD behind it is inert: it takes neither the focus, nor a click, nor Enter as the main action button. Opened from the keyboard, the focus goes to the overlay's first control. However it is closed (Escape, its close button, a choice made in it), the focus goes back to the control that opened it.
 
 ## HUD layout
 

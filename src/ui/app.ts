@@ -25,6 +25,7 @@ import { cardLines, hexCard } from './hexCard.ts';
 import type { HexCard, Knowledge } from './hexCard.ts';
 import { standingWith, vassalRoomText } from './diplomacy.ts';
 import { button, el, fill, fillWhen, iconButton, iconOnly, stat } from './dom.ts';
+import { focusMove, trapIndex } from './focus.ts';
 import { createHost } from './host.ts';
 import type { Host, HostChange, RunReport } from './host.ts';
 import { icon } from './icons.ts';
@@ -360,6 +361,10 @@ export function createApp(options: AppOptions): App {
   /** The details card on screen. */
   let cardShown: { readonly card: HexCard; readonly by: 'hover' | 'press'; readonly text: string } | null = null;
   let restTimer: number | null = null;
+  /** The layer that held the focus at the last redraw: an overlay's kind, `end` for the end screen, or null. */
+  let heldLayer: string | null = null;
+  /** The control that had the focus when that layer opened: it gets the focus back when the layer closes. */
+  let opener: string | null = null;
   let lastBurstRefresh = 0;
   let toastTimer: number | null = null;
 
@@ -2021,9 +2026,21 @@ export function createApp(options: AppOptions): App {
     return null;
   };
 
+  /** The layer that holds the focus: a full-screen overlay or the end screen. Null if nothing does. */
+  const focusLayer = (): { readonly id: string; readonly box: HTMLElement } | null =>
+    screen === 'end' ? { id: 'end', box: endScreen } : screen === 'game' && overlay !== null ? { id: overlay, box: overlayBox } : null;
+
+  /** The controls of a layer that Tab stops at, in the order of the page. */
+  const controlsOf = (box: HTMLElement): HTMLElement[] =>
+    [...box.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])')].filter(
+      (node) => node.getClientRects().length > 0,
+    );
+
   function refresh(): void {
     // a redraw rebuilds most controls: a keyboard player keeps the focus on the one they were on
     const focused = keyboardNav ? controlKey(document.activeElement) : null;
+    // what has the focus when a layer opens gets it back when the layer closes
+    if (heldLayer === null && focusLayer() !== null) opener = controlKey(document.activeElement);
     document.documentElement.lang = getLanguage() === 'zh' ? 'zh-CN' : 'en';
     document.title = t('app.title');
     game.hidden = screen === 'start';
@@ -2048,7 +2065,19 @@ export function createApp(options: AppOptions): App {
       drawLenses();
       minimap?.draw(state(), lens, player(), sightOf(state())?.fog ?? null);
     }
-    if (focused !== null && !root.contains(document.activeElement)) {
+    // a layer holds the focus: what lies behind it can be neither reached nor pressed
+    const layer = focusLayer();
+    for (const node of game.children) {
+      if (node instanceof HTMLElement && node !== overlayBox) node.inert = layer !== null;
+    }
+    const move = focusMove({ was: heldLayer, now: layer?.id ?? null, keyboard: keyboardNav });
+    heldLayer = layer?.id ?? null;
+    if (move === 'into' && layer !== null) {
+      controlsOf(layer.box)[0]?.focus({ preventScroll: true });
+    } else if (move === 'back') {
+      if (opener !== null) root.querySelector<HTMLElement>(opener)?.focus({ preventScroll: true });
+      opener = null;
+    } else if (focused !== null && !root.contains(document.activeElement)) {
       (root.querySelector<HTMLElement>(focused) ?? firstControl())?.focus({ preventScroll: true });
     }
   }
@@ -2375,7 +2404,18 @@ export function createApp(options: AppOptions): App {
     'keydown',
     (event) => {
       if (hidden) return;
-      if (event.key === 'Tab') keyboardNav = true;
+      if (event.key === 'Tab') {
+        keyboardNav = true;
+        // Tab stays inside the layer that holds the focus
+        const layer = focusLayer();
+        if (layer !== null) {
+          const controls = controlsOf(layer.box);
+          const active = document.activeElement;
+          const at = active instanceof HTMLElement ? controls.indexOf(active) : -1;
+          event.preventDefault();
+          controls[trapIndex(controls.length, at, event.shiftKey)]?.focus({ preventScroll: true });
+        }
+      }
       hideCard();
       sound.unlock();
     },
@@ -2403,7 +2443,8 @@ export function createApp(options: AppOptions): App {
       if (event.key === 'Enter') {
         // Enter is the main button wherever the mouse left the focus, and only once per press
         event.preventDefault();
-        if (event.repeat) return;
+        // the main button lies behind an open overlay: Enter does not reach it
+        if (event.repeat || overlay !== null) return;
         // while the others move, one press is kept and applied when they are done
         if (host.busy && !observing()) enterQueued = true;
         else mainAction();
