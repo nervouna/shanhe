@@ -26,6 +26,7 @@ import { kitRows } from './kitPanel.ts';
 import { agreementName, polityName, resourceName } from './names.ts';
 import { peaceOffers } from './pending.ts';
 import { relationView } from './rules.ts';
+import { counted } from './text.ts';
 import { cssColor, signed } from './view.ts';
 import type { View } from './view.ts';
 
@@ -83,7 +84,7 @@ export function polityPanel(view: View, polity: number, onClose: () => void): HT
       'div',
       { class: 'line' },
       el('span', { text: kind }),
-      el('span', { text: t('polity.cities', { count: cities }) }),
+      el('span', { text: counted('polity.cities', cities, { count: cities }) }),
       // who leads it and how they play, where it has a leader
       kit !== null && el('span', { id: 'polity-leader', text: kit.leader.name }),
       kit !== null &&

@@ -83,6 +83,7 @@ import type { Settings } from './settings.ts';
 import { browserAudio, createSoundEngine, cuesFor, gameSound } from './sound.ts';
 import { inSight, knownState, sightOf, strikeTargets } from './sight.ts';
 import { clearAutosave, readAutosave, readMemory, writeAutosave, writeMemory } from './storage.ts';
+import { counted, gainText, majorRows, turnsText } from './text.ts';
 import type { MapSource } from './storage.ts';
 import { LONG_PRESS_MS, isTap, tapTarget } from './touchOrder.ts';
 import type { Press } from './touchOrder.ts';
@@ -833,17 +834,17 @@ export function createApp(options: AppOptions): App {
           text = exact.capture
             ? t('preview.capture')
             : t('preview.attack', { theirs: exact.toDefender, ours: exact.toAttacker });
-          if (path.total > 1) text += ` · ${t('count.turns', { turns: path.total })}`;
+          if (path.total > 1) text += ` · ${turnsText(path.total)}`;
         } else if (path !== null) {
           // a city out of sight: the way up to it, and nothing about a fight nobody can foresee
           hoverPlan = { path, attack: null };
-          text = path.total > 0 ? t('count.turns', { turns: path.total }) : rejectText('unseen');
+          text = path.total > 0 ? turnsText(path.total) : rejectText('unseen');
         }
       } else {
         const path = findPath(known, unit.id, hex);
         if (path !== null && path.total > 0) {
           hoverPlan = { path, attack: null };
-          text = t('count.turns', { turns: path.total });
+          text = turnsText(path.total);
         }
       }
       if (text !== '') {
@@ -995,7 +996,7 @@ export function createApp(options: AppOptions): App {
     if (research === null) return '—';
     return research.turns === null
       ? techName(research.tech)
-      : t('hud.researching', { tech: techName(research.tech), turns: research.turns });
+      : counted('hud.researching', research.turns, { tech: techName(research.tech), turns: research.turns });
   };
 
   /** Culture stored towards the next policy card, over what the card costs. */
@@ -1034,12 +1035,14 @@ export function createApp(options: AppOptions): App {
   const drawMajors = (): void => {
     const s = state();
     const me = player();
-    const zh = getLanguage() === 'zh';
+    const rows = majorRows(s.majors.length);
+    majorsBox.dataset.rows = String(rows);
+    root.style.setProperty('--majors-rows', String(rows));
     const standings = s.majors.map((polity) => {
       const alive = s.polities[polity]?.alive === true;
       return { polity, alive, standing: me === NO_POLITY || !alive ? null : standingWith(s, me, polity) };
     });
-    const signature = [zh, me, polityPanel, ...standings.map((item) => `${item.polity}:${item.alive}:${item.standing}`)].join('|');
+    const signature = [getLanguage(), me, polityPanel, ...standings.map((item) => `${item.polity}:${item.alive}:${item.standing}`)].join('|');
     fillWhen(majorsBox, signature, () =>
       standings.map(({ polity, alive, standing }) => {
         const entry = map().polities[polity];
@@ -1047,7 +1050,7 @@ export function createApp(options: AppOptions): App {
         const node = el('button', {
           class: `major${alive ? '' : ' gone'}${polityPanel === polity ? ' active' : ''}`,
           title: standing === null || standing === 'self' ? name : `${name} · ${standingName(standing)}`,
-          text: zh ? name.slice(0, 2) : name.slice(0, 3),
+          text: name,
           data: { polity, standing: standing ?? '' },
           onClick: () => {
             if (polity === me) flyTo(capitalHex(polity));
@@ -1090,7 +1093,7 @@ export function createApp(options: AppOptions): App {
           );
         } else {
           row.append(
-            iconOnly('close', t('menu.close'), () => {
+            iconOnly('close', t('note.dismiss'), () => {
               notes = notes.filter((other) => other.id !== note.id);
               refresh();
             }, { class: 'note-close' }),
@@ -1177,7 +1180,7 @@ export function createApp(options: AppOptions): App {
       { class: active ? 'option active' : 'option', data: { build: key }, onClick, disabled: host.busy },
       el('span', { class: 'option-name', text: label }),
       el('span', { class: 'option-cost', text: t('city.cost', { cost: option.cost }) }),
-      option.turns !== null && el('span', { class: 'option-turns', text: t('count.turns', { turns: option.turns }) }),
+      option.turns !== null && el('span', { class: 'option-turns', text: turnsText(option.turns) }),
     );
     return node;
   };
@@ -1235,7 +1238,7 @@ export function createApp(options: AppOptions): App {
       el('span', { text: t('city.pop', { pop: city.pop }) }),
       el('span', { text: t('city.hp', { hp: Math.round(city.hp), max: view.maxHp }) }),
       el('span', { text: `${t('hud.morale')} ${Math.round(city.morale)}` }),
-      city.unrest > 0 && el('span', { class: 'status', text: t('city.unrest', { turns: city.unrest }) }),
+      city.unrest > 0 && el('span', { class: 'status', text: counted('city.unrest', city.unrest, { turns: city.unrest }) }),
     );
     const yieldsRow = el(
       'div',
@@ -1264,8 +1267,8 @@ export function createApp(options: AppOptions): App {
             class: 'option-cost',
             text: index === 0 ? `${Math.floor(city.progress)}/${entry.cost}` : String(entry.cost),
           }),
-          entry.turns !== null && el('span', { class: 'option-turns', text: t('count.turns', { turns: entry.turns }) }),
-          iconOnly('close', t('menu.close'), () => {
+          entry.turns !== null && el('span', { class: 'option-turns', text: turnsText(entry.turns) }),
+          iconOnly('close', t('queue.remove'), () => {
             act({ type: 'unqueueBuild', polity: me, city: zone, index });
             refresh();
           }, { class: 'close', data: { unqueue: index }, disabled: host.busy }),
@@ -1340,7 +1343,7 @@ export function createApp(options: AppOptions): App {
         const gains = IMPROVEMENTS[option.improvement].yields;
         const gain = (['food', 'production', 'gold'] as const)
           .filter((name) => gains[name] !== 0)
-          .map((name) => `${signed(gains[name])}${yieldName(name)}`)
+          .map((name) => gainText(name, gains[name]))
           .join(' ');
         const active = placing !== null && placing.city === zone && placing.improvement === option.improvement;
         return optionButton(`${improvementName(option.improvement)} ${gain}`, option, `improvement:${option.improvement}`, () => {
@@ -1839,10 +1842,15 @@ export function createApp(options: AppOptions): App {
           'div',
           { class: 'chips', id: 'regions' },
           ...(['all', ...regions] as const).map((region) =>
-            button(region === 'all' ? t('start.all') : regionName(region), () => {
+            button(region === 'all' ? t('start.all') : t(`region.short.${region}`), () => {
               startRegion = region;
               refresh();
-            }, { class: region === startRegion ? 'chip active' : 'chip', data: { region }, pressed: region === startRegion }),
+            }, {
+              class: region === startRegion ? 'chip active' : 'chip',
+              data: { region },
+              pressed: region === startRegion,
+              ...(region === 'all' ? {} : { title: regionName(region) }),
+            }),
           ),
         ),
       rated &&

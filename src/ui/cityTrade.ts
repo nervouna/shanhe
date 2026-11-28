@@ -80,7 +80,7 @@ export function createTradeSection(): TradeSection {
             route.pillagedUntil >= state.turn
               ? el('span', { class: 'status', text: t('trade.pillaged') })
               : el('span', { class: 'option-cost', text: t('trade.income', { gold: route.income }) }),
-            iconOnly('close', t('menu.close'), () => {
+            iconOnly('close', t('trade.cancel'), () => {
               view.act({ type: 'cancelRoute', polity: me, route: route.id });
               view.refresh();
             }, { class: 'close', data: { cancelRoute: route.id }, disabled: view.busy }),

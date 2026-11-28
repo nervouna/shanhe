@@ -25,6 +25,7 @@ import { balanceRows } from './balance.ts';
 import { POLITY_SORTS, check, polityRows, politySummary, sortPolityRows, victoryView } from './rules.ts';
 import type { PolitySort, VictoryLine } from './rules.ts';
 import { layoutTechTree, techUnlocks, techViews } from './techTree.ts';
+import { counted, turnsText } from './text.ts';
 import type { TechUnlock } from './techTree.ts';
 import { cssColor, signed } from './view.ts';
 import type { View } from './view.ts';
@@ -55,8 +56,16 @@ function sheet(id: string, title: string, view: View, extra: (Node | null)[], bo
 
 // ------------------------------------------------------------------- techs
 
-/** Size of a node of the tree and the space between nodes, in CSS pixels at scale 1. */
-const NODE = { width: 150, height: 66, gapX: 44, gapY: 10, top: 26 } as const;
+/**
+ * Size of a node of the tree and the space between nodes, in CSS pixels at
+ * scale 1. English names and unlock lists are longer than Chinese ones: its
+ * nodes are wider and hold three lines of unlocks, and the tree still fits
+ * a 1280 × 720 window.
+ */
+const NODES = {
+  zh: { width: 150, height: 66, gapX: 44, gapY: 10, top: 26 },
+  en: { width: 182, height: 83, gapX: 28, gapY: 4, top: 26 },
+} as const;
 
 function unlockText(view: View, unlock: TechUnlock): string {
   switch (unlock.kind) {
@@ -84,6 +93,7 @@ const SVG = 'http://www.w3.org/2000/svg';
 /** The tech tree: eras as columns, prerequisites as lines; a click sets the research and closes the overlay. */
 export function techOverlay(view: View): HTMLElement {
   const { state, player } = view;
+  const NODE = NODES[getLanguage()];
   const layout = layoutTechTree();
   const views = techViews(state, player);
   const x = (era: number): number => era * (NODE.width + NODE.gapX);
@@ -139,7 +149,7 @@ export function techOverlay(view: View): HTMLElement {
       const unique = 'unique' in unlock && unlock.unique;
       gains.append(unique ? el('span', { class: 'unique', text: unlockText(view, unlock), data: { unique: unlock.kind } }) : unlockText(view, unlock));
     });
-    const meta = t('tech.cost', { cost: info.cost }) + (info.turns === null ? '' : ` · ${t('count.turns', { turns: info.turns })}`);
+    const meta = t('tech.cost', { cost: info.cost }) + (info.turns === null ? '' : ` · ${turnsText(info.turns)}`);
     const chosen = info.status === 'open' || info.status === 'current';
     const item = el(
       'button',
@@ -280,7 +290,7 @@ export function policyOverlay(view: View, local: PolicyOverlayState): HTMLElemen
 
   const swaps =
     self.freeSwaps > 0
-      ? t('policy.freeSwaps', { count: self.freeSwaps })
+      ? counted('policy.freeSwaps', self.freeSwaps, { count: self.freeSwaps })
       : state.turn < self.swapReadyOn
         ? t('policy.cooldown', { turn: self.swapReadyOn })
         : '';
@@ -439,7 +449,7 @@ export function victoryOverlay(view: View): HTMLElement {
     'victory-overlay',
     t('hud.victory'),
     view,
-    [el('span', { class: 'stat', id: 'victory-turns', text: t('victory.turnsLeft', { turns: progress.turnsLeft }) })],
+    [el('span', { class: 'stat', id: 'victory-turns', text: counted('victory.turnsLeft', progress.turnsLeft, { turns: progress.turnsLeft }) })],
     el('div', { class: 'scroll sheet-body' }, table, balance),
   );
 }
