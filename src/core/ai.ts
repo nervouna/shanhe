@@ -73,7 +73,7 @@ import { bestUnit, knows, ownsResource, pursuesScience, researches, suggestResea
 import { checkPillage, checkRouteTarget, routeIncome, routeSlots, routesOf } from './trade.ts';
 import { capitalsHeld } from './turn.ts';
 import { NO_POLITY } from './types.ts';
-import type { Action, BuildItem, City, RouteTarget, Unit } from './types.ts';
+import type { Action, BuildItem, City, RejectReason, RouteTarget, Unit } from './types.ts';
 
 /** Applies an action if it is legal and says whether it was. */
 export type Act = (action: Action) => boolean;
@@ -1059,6 +1059,26 @@ function pathField(ctx: Ctx, polity: number, goal: number, limit = PATH_LIMIT, b
   return cost;
 }
 
+/** True if a unit stands on the hex and `polity` sees it. A unit it does not see is not there for its plans. */
+function seesUnitOn(ctx: Ctx, polity: number, hex: number): boolean {
+  return ctx.unitAt.has(hex) && canSee(ctx, polity, hex);
+}
+
+/**
+ * Why the AI believes `unit` cannot step onto `to`, or null: the rules'
+ * own check, except that a unit its polity does not see does not stand in
+ * the way. If the rules then refuse the step, the unit stays where it is for
+ * the turn and looks for no other way: it has learned nothing from the
+ * refusal.
+ */
+export function stepKnown(ctx: Ctx, unit: Unit, to: number): RejectReason | null {
+  const reason = checkStep(ctx, unit, to);
+  if (reason !== 'hexOccupied' || seesUnitOn(ctx, unit.owner, to)) return reason;
+  // What is left of `hexOccupied` without the unit: somebody else's city.
+  const city = cityAtHex(ctx, to);
+  return city !== null && city.owner !== unit.owner ? reason : null;
+}
+
 /** Steps the unit down the field while it has movement. Returns true if it moved at all. */
 function advanceAlong(ctx: Ctx, unit: Unit, field: Int16Array, act: Act, stopAt: number): boolean {
   let moved = false;
@@ -1068,7 +1088,7 @@ function advanceAlong(ctx: Ctx, unit: Unit, field: Int16Array, act: Act, stopAt:
     for (let d = 0; d < 6; d++) {
       const next = ctx.topo.neighbors[unit.hex * 6 + d] as number;
       if (next < 0 || (field[next] as number) >= bestCost) continue;
-      if (checkStep(ctx, unit, next) !== null) continue;
+      if (stepKnown(ctx, unit, next) !== null) continue;
       best = next;
       bestCost = field[next] as number;
     }
@@ -1314,7 +1334,7 @@ function campField(ctx: Ctx, polity: number, cities: City[]): Int16Array {
   const own = (hex: number): boolean => topo.water[hex] !== 1 && topo.enterable[hex] === 1 && ownerOf(ctx, hex) === polity;
   let frontier: number[] = [];
   for (let hex = 0; hex < topo.count; hex++) {
-    if (!own(hex) || ctx.unitAt.has(hex) || cityAtHex(ctx, hex) !== null || nearGates(ctx, hex, cities)) continue;
+    if (!own(hex) || seesUnitOn(ctx, polity, hex) || cityAtHex(ctx, hex) !== null || nearGates(ctx, hex, cities)) continue;
     cost[hex] = 0;
     frontier.push(hex);
   }
@@ -1405,7 +1425,7 @@ function advanceOneStep(ctx: Ctx, unit: Unit, field: Int16Array, act: Act): bool
   for (let d = 0; d < 6; d++) {
     const next = ctx.topo.neighbors[unit.hex * 6 + d] as number;
     if (next < 0 || (field[next] as number) >= bestCost) continue;
-    if (checkStep(ctx, unit, next) !== null) continue;
+    if (stepKnown(ctx, unit, next) !== null) continue;
     best = next;
     bestCost = field[next] as number;
   }
@@ -1425,11 +1445,11 @@ function sidestep(ctx: Ctx, unit: Unit, field: Int16Array): number {
   const here = field[unit.hex] as number;
   for (let d = 0; d < 6; d++) {
     const next = ctx.topo.neighbors[unit.hex * 6 + d] as number;
-    if (next < 0 || (field[next] as number) !== here || checkStep(ctx, unit, next) !== null) continue;
+    if (next < 0 || (field[next] as number) !== here || stepKnown(ctx, unit, next) !== null) continue;
     for (let e = 0; e < 6; e++) {
       const beyond = ctx.topo.neighbors[next * 6 + e] as number;
       if (beyond < 0 || (field[beyond] as number) >= here) continue;
-      if (!ctx.unitAt.has(beyond)) return next;
+      if (!seesUnitOn(ctx, unit.owner, beyond)) return next;
     }
   }
   return -1;
