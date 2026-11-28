@@ -98,7 +98,7 @@ Conventions that keep this working:
 | `npm run build` | Production build into `dist/` |
 | `npm run preview` | Serve the production build |
 | `npm test` | Run the tests once |
-| `npm run typecheck` | Type-check the core without the DOM, then the app, then the tools |
+| `npm run typecheck` | Type-check the core without the DOM, then the app, the tools and the e2e project |
 | `npm run lint` | ESLint, including the layer rules |
 | `npm run check:assets` | Fail if a model, texture, image, audio, video or font file is tracked outside `docs/images/` |
 | `npm run sim -- --map <fixture\|synthetic\|path> --turns 150 --seed N` | Play an AI-only game headless and print a summary; `--seeds 1-30` runs a batch with a victory tally, `--report` adds per-nation, per-era diagnostics |
