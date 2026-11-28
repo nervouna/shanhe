@@ -5,11 +5,11 @@
  * state that comes back.
  */
 
-import { BUILDINGS, FOCUSES, IMPROVEMENTS, PROJECT, SETTLER, unitDef } from '../core/data.ts';
-import type { Yields } from '../core/data.ts';
+import { BUILDINGS, DEFAULT_DIFFICULTY, DIFFICULTY_LEVELS, FOCUSES, IMPROVEMENTS, PROJECT, SETTLER, unitDef } from '../core/data.ts';
+import type { DifficultyLevel, Yields } from '../core/data.ts';
 import { NO_POLITY, currentEra, hexOwner, nextPolicyCost } from '../core/game.ts';
 import type { Action, GameEvent, GameState, Unit } from '../core/game.ts';
-import { airStrikeTargets, buyCostOf, hexDistance } from '../core/query.ts';
+import { buyCostOf, hexDistance } from '../core/query.ts';
 import type { HexHighlight, Renderer, SelectionAids } from '../render/scene.ts';
 import { indexToOffset } from '../shared/hex.ts';
 import { getLanguage, setLanguage, t } from '../shared/i18n.ts';
@@ -17,9 +17,11 @@ import type { TranslationKey } from '../shared/i18n.ts';
 import type { MapData } from '../shared/mapData.ts';
 import { orderAids } from './aids.ts';
 import { playSpeed, visualEvents } from './animation.ts';
-import { pieceOf, sceneOf, wholeMapView } from './board.ts';
+import { pieceOf, remember, sceneOf, wholeMapView } from './board.ts';
+import type { BoardMemory, BoardView } from './board.ts';
 import { createTradeSection } from './cityTrade.ts';
-import { standingWith } from './diplomacy.ts';
+import { levelEffect, levelName } from './difficulty.ts';
+import { standingWith, vassalRoomText } from './diplomacy.ts';
 import { button, el, fill, fillWhen, iconButton, iconOnly, stat } from './dom.ts';
 import { createHost } from './host.ts';
 import type { Host, HostChange, RunReport } from './host.ts';
@@ -42,19 +44,20 @@ import {
   polityName,
   regionName,
   rejectText,
-  resourceName,
   saveErrorText,
   techName,
   unitName,
   yieldName,
 } from './names.ts';
+import { canPoint, noteDrafts } from './notes.ts';
+import type { NoteOffer } from './notes.ts';
 import { policyOverlay, politiesOverlay, standingName, techOverlay, victoryOverlay } from './overlays.ts';
 import type { OverlayKind, PolicyOverlayState, PolitiesOverlayState } from './overlays.ts';
 import { attackReach, findPath, previewAttack, reachableHexes } from './path.ts';
 import type { Path } from './path.ts';
 import { mainButton } from './pending.ts';
 import type { PendingItem, PendingKind } from './pending.ts';
-import { offerText, polityPanel as polityPanelNodes } from './polityPanel.ts';
+import { polityPanel as polityPanelNodes } from './polityPanel.ts';
 import {
   check,
   cityView,
@@ -75,7 +78,8 @@ import type { ScaleSetting } from './scale.ts';
 import { ANIMATION_SPEEDS, QUALITY_OPTIONS, VOLUME_STEP, browserStorage, createSettingsStore } from './settings.ts';
 import type { Settings } from './settings.ts';
 import { browserAudio, createSoundEngine, cuesFor, gameSound } from './sound.ts';
-import { clearAutosave, readAutosave, writeAutosave } from './storage.ts';
+import { inSight, knownState, sightOf, strikeTargets } from './sight.ts';
+import { clearAutosave, readAutosave, readMemory, writeAutosave, writeMemory } from './storage.ts';
 import type { MapSource } from './storage.ts';
 import { createWorkerRunner } from './turnRunner.ts';
 import { cssColor, signed } from './view.ts';
@@ -121,6 +125,8 @@ export interface StartOptions {
   readonly seed?: number;
   /** The map to play on. Default: the one that is loaded. */
   readonly map?: 'real' | 'fixture';
+  /** The difficulty level. Default: the one chosen on the start screen, which starts at the middle one. */
+  readonly difficulty?: DifficultyLevel;
 }
 
 export type MainButtonKind = 'none' | 'busy' | 'observer' | 'nextTurn' | PendingKind;
@@ -164,12 +170,17 @@ export interface UiSnapshot {
    * view, or in the panel of another nation. Null if none is shown.
    */
   readonly kit: { readonly nation: string; readonly where: 'start' | 'own' | 'polity' } | null;
-  /** Nation select: the region filter, the order and the nations listed. Null away from the start screen. */
+  /**
+   * Nation select: the region filter, the order, the nations listed, the
+   * highlighted one and the difficulty level a game would start at. Null
+   * away from the start screen.
+   */
   readonly start: {
     readonly region: Region | 'all';
     readonly sort: NationSort;
     readonly nations: readonly string[];
     readonly chosen: string | null;
+    readonly difficulty: DifficultyLevel;
   } | null;
   /** The settings in force. */
   readonly settings: Settings;
@@ -186,6 +197,13 @@ export interface UiSnapshot {
     readonly turnEnds: number;
     readonly attackTarget: number | null;
   } | null;
+  /**
+   * Fog of war on the board as the renderer has it: whether the scene has
+   * fog (a player's game; never the observer's), how many units of the
+   * state it leaves out because the player does not see them, and how many
+   * units of other polities are on it.
+   */
+  readonly fog: { readonly on: boolean; readonly hiddenUnits: number; readonly foreignUnits: number };
 }
 
 export interface App {
@@ -232,9 +250,6 @@ interface Placing {
   readonly hexes: readonly number[];
 }
 
-/** A proposal the note stands for: one of `state.offers` by id, or the peace offer of a polity. */
-type NoteOffer = { readonly kind: 'offer'; readonly id: number } | { readonly kind: 'peace'; readonly from: number };
-
 /** How much faster animations run while Space is held. */
 const HURRY = 4;
 /** The view is sampled at this many points a side to find the hexes in it. */
@@ -263,6 +278,8 @@ export function createApp(options: AppOptions): App {
   let chosenNation: string | null = null;
   let startRegion: Region | 'all' = 'all';
   let startSort: NationSort = 'region';
+  /** The difficulty level picked on the start screen. */
+  let startLevel: DifficultyLevel = DEFAULT_DIFFICULTY;
   /** The player's own kit view. */
   let kitOpen = false;
   /** True while the player moves through the controls with the keyboard: Enter and Space then press the control in focus. */
@@ -282,6 +299,10 @@ export function createApp(options: AppOptions): App {
   /** The state the board shows, or will show once the animations that are running have ended. */
   let boardState: GameState | null = null;
   let boardLanguage = getLanguage();
+  /** What the player remembers of the board out of their sight; null until they have looked, and for the observer. */
+  let memory: BoardMemory | null = null;
+  /** The scene the renderer was last given: whether it had fog, and how many units of its state it left out. */
+  let shown = { fog: false, hidden: 0, foreign: 0 };
   /** The state as of the last change the host reported: what the next change's events start from. */
   let lastState: GameState | null = null;
   let animating = false;
@@ -393,6 +414,15 @@ export function createApp(options: AppOptions): App {
     board.renderer.focusHex(hex);
   };
 
+  /**
+   * Moves the camera by itself, to show the player something: under fog
+   * never to a hex they have not seen. Where the player looks of their own
+   * accord (the minimap, a drag) is theirs to choose.
+   */
+  const pointAt = (hex: number): void => {
+    if (canPoint(state(), sightOf(state()), hex)) flyTo(hex);
+  };
+
   /** The whole map in view, from a distance worked out from the map itself. */
   const showWholeMap = (): void => {
     board.renderer.setCamera(wholeMapView(map()), true);
@@ -451,222 +481,19 @@ export function createApp(options: AppOptions): App {
     if (notes.length > MAX_NOTES) notes = notes.slice(notes.length - MAX_NOTES);
   };
 
-  const resourceLabel = (id: string): string => resourceName(map(), id);
-
   const capitalHex = (polity: number): number => {
     const zone = state().polities[polity]?.capital ?? -1;
     return siteOf(zone >= 0 ? zone : (map().polities[polity]?.capitalZone ?? -1));
   };
 
-  /** Turns the events that matter to whoever is watching into notifications. */
+  /** Turns the events that matter to whoever is watching, and that they can know of, into notifications. */
   const collect = (events: readonly GameEvent[]): void => {
-    const me = player();
-    const all = me === NO_POLITY;
-    const m = map();
-    for (const event of events) {
-      switch (event.type) {
-        case 'warDeclared':
-          if (all || event.by === me || event.on === me) {
-            addNote(() => t('note.war', { a: polityName(m, event.by), b: polityName(m, event.on) }), capitalHex(event.on));
-          }
-          break;
-        case 'peaceMade':
-          if (all || event.a === me || event.b === me) {
-            notes = notes.filter(
-              (note) => note.offer?.kind !== 'peace' || (note.offer.from !== event.a && note.offer.from !== event.b),
-            );
-            addNote(() => t('note.peace', { a: polityName(m, event.a), b: polityName(m, event.b) }), capitalHex(event.a === me ? event.b : event.a));
-          }
-          break;
-        case 'peaceOffered':
-          if (event.to === me) {
-            notes = notes.filter((note) => note.offer?.kind !== 'peace' || note.offer.from !== event.from);
-            addNote(() => t('note.offer', { a: polityName(m, event.from) }), capitalHex(event.from), {
-              kind: 'peace',
-              from: event.from,
-            });
-          }
-          break;
-        case 'cityCaptured':
-          if (all || event.from === me || event.to === me) {
-            addNote(() => t('note.captured', { a: polityName(m, event.to), city: cityName(m, event.city) }), siteOf(event.city));
-          }
-          break;
-        case 'polityAnnexed':
-          if (all || event.by === me || event.polity === me) {
-            addNote(() => t('note.annexed', { a: polityName(m, event.by), b: polityName(m, event.polity) }), capitalHex(event.by));
-          }
-          break;
-        case 'cityFounded':
-          if (event.owner === me) addNote(() => t('note.founded', { city: cityName(m, event.city) }), siteOf(event.city));
-          break;
-        case 'cityPopulation':
-          if (state().cities[event.city]?.owner === me) {
-            addNote(() => t('note.grew', { city: cityName(m, event.city), pop: event.pop }), siteOf(event.city));
-          }
-          break;
-        case 'cityBuilt':
-          if (state().cities[event.city]?.owner === me) {
-            addNote(() => t('note.built', { city: cityName(m, event.city), item: itemName(m, event.item, me) }), siteOf(event.city));
-          }
-          break;
-        case 'unitKilled':
-          if (event.owner === me) addNote(() => t('note.lost', { unit: unitName(event.unitType) }), event.hex);
-          break;
-        case 'researchFinished':
-          if (event.polity === me) addNote(() => t('note.research', { tech: techName(event.tech) }), -1);
-          break;
-        case 'projectStageFinished':
-          if (all || event.polity === me) {
-            addNote(
-              () => t('note.stage', { a: polityName(m, event.polity), name: t('project.tiangong'), stage: event.stage }),
-              siteOf(event.city),
-            );
-          }
-          break;
-        case 'warJoined':
-          if (all || event.polity === me || event.against === me) {
-            addNote(
-              () =>
-                t('event.warJoined', {
-                  polity: polityName(m, event.polity),
-                  with: polityName(m, event.with),
-                  against: polityName(m, event.against),
-                }),
-              capitalHex(event.polity === me ? event.against : event.polity),
-            );
-          }
-          break;
-        case 'vassalized':
-          if (all || event.vassal === me || event.overlord === me) {
-            addNote(
-              () => t('event.vassalized', { vassal: polityName(m, event.vassal), overlord: polityName(m, event.overlord) }),
-              capitalHex(event.vassal),
-            );
-          }
-          break;
-        case 'agreementSigned':
-          if (event.agreement !== 'vassalage' && (event.a === me || event.b === me)) {
-            addNote(
-              () =>
-                t('event.agreementSigned', {
-                  a: polityName(m, event.a),
-                  b: polityName(m, event.b),
-                  agreement: t(`agreement.${event.agreement}`),
-                }),
-              capitalHex(event.a === me ? event.b : event.a),
-            );
-          }
-          break;
-        case 'agreementEnded':
-          if (event.a === me || event.b === me) {
-            addNote(
-              () =>
-                t('event.agreementEnded', {
-                  a: polityName(m, event.a),
-                  b: polityName(m, event.b),
-                  agreement: t(`agreement.${event.agreement}`),
-                  reason: t(`endReason.${event.reason}`),
-                }),
-              capitalHex(event.a === me ? event.b : event.a),
-            );
-          }
-          break;
-        case 'eraStarted':
-          addNote(() => t('note.era', { era: eraName(event.era) }), -1);
-          break;
-        case 'offerMade': {
-          const { offer } = event;
-          if (offer.to !== me) break;
-          addNote(
-            () => t('event.offerMade', { from: polityName(m, offer.from), what: offerText(m, offer) }),
-            capitalHex(offer.from),
-            { kind: 'offer', id: offer.id },
-          );
-          break;
-        }
-        case 'vassalReleased':
-          if (event.vassal === me || event.overlord === me) {
-            addNote(
-              () =>
-                t('event.vassalReleased', {
-                  vassal: polityName(m, event.vassal),
-                  overlord: polityName(m, event.overlord),
-                  reason: t(`endReason.${event.reason}`),
-                }),
-              capitalHex(event.vassal === me ? event.overlord : event.vassal),
-            );
-          }
-          break;
-        case 'dealSigned': {
-          const { deal } = event;
-          if (deal.seller !== me && deal.buyer !== me) break;
-          addNote(
-            () =>
-              t('event.dealSigned', {
-                seller: polityName(m, deal.seller),
-                buyer: polityName(m, deal.buyer),
-                resource: resourceLabel(deal.resource),
-                gold: deal.goldPerTurn,
-              }),
-            capitalHex(deal.seller === me ? deal.buyer : deal.seller),
-          );
-          break;
-        }
-        case 'dealEnded':
-          if (event.seller === me || event.buyer === me) {
-            addNote(
-              () =>
-                t('event.dealEnded', {
-                  seller: polityName(m, event.seller),
-                  buyer: polityName(m, event.buyer),
-                  resource: resourceLabel(event.resource),
-                  reason: t(`endReason.${event.reason}`),
-                }),
-              capitalHex(event.seller === me ? event.buyer : event.seller),
-            );
-          }
-          break;
-        case 'routeEnded':
-          if (event.owner === me && event.reason !== 'cancelled') {
-            addNote(
-              () => t('event.routeEnded', { owner: polityName(m, event.owner), reason: t(`endReason.${event.reason}`) }),
-              -1,
-            );
-          }
-          break;
-        case 'routePillaged':
-          if (event.owner === me || event.by === me) {
-            addNote(
-              () => t('event.routePillaged', { by: polityName(m, event.by), owner: polityName(m, event.owner), gold: event.gold }),
-              event.hex,
-            );
-          }
-          break;
-        case 'improvementPillaged':
-          if (event.owner === me || event.by === me) {
-            addNote(
-              () =>
-                t('event.improvementPillaged', {
-                  by: polityName(m, event.by),
-                  owner: polityName(m, event.owner),
-                  gold: event.gold,
-                }),
-              event.hex,
-            );
-          }
-          break;
-        case 'suzerainChanged':
-          if (all || event.from === me || event.to === me) {
-            addNote(
-              () => t('event.suzerainChanged', { cityState: polityName(m, event.cityState), to: polityName(m, event.to) }),
-              capitalHex(event.cityState),
-            );
-          }
-          break;
-        default:
-          break;
+    for (const draft of noteDrafts(state(), events, sightOf(state()), state)) {
+      const { settles } = draft;
+      if (settles.length > 0) {
+        notes = notes.filter((note) => note.offer?.kind !== 'peace' || !settles.includes(note.offer.from));
       }
+      addNote(draft.text, draft.hex, draft.offer);
     }
   };
 
@@ -720,13 +547,39 @@ export function createApp(options: AppOptions): App {
     board.renderer.setSelectionAids(aids);
   };
 
+  /** The player's sight of a state with what they remember, or null for the observer, who sees everything. */
+  const viewOf = (s: GameState): BoardView | null => {
+    const sight = sightOf(s);
+    if (sight === null) return null;
+    memory ??= remember(null, s, sight);
+    return { sight, memory };
+  };
+
+  /** The player looks at the current state: what is in sight joins what they remember. */
+  const look = (): void => {
+    const sight = sightOf(state());
+    memory = sight === null ? null : remember(memory, state(), sight);
+  };
+
+  /** Hands the renderer the board of a state as the player knows it. */
+  const drawBoard = (s: GameState): void => {
+    boardState = s;
+    boardLanguage = getLanguage();
+    const scene = sceneOf(s, boardLanguage, viewOf(s));
+    shown = {
+      fog: scene.fog !== null,
+      hidden: s.units.length - scene.units.length,
+      // to the observer every unit is somebody else's, the tribes included
+      foreign: scene.units.filter((unit) => s.player === NO_POLITY || unit.polity !== s.player).length,
+    };
+    board.renderer.setScene(scene);
+  };
+
   /** Puts the current state on the board, ending whatever was playing. */
   const showBoard = (): void => {
     playToken++;
     animating = false;
-    boardState = state();
-    boardLanguage = getLanguage();
-    board.renderer.setScene(sceneOf(boardState, boardLanguage));
+    drawBoard(state());
   };
 
   /**
@@ -780,13 +633,17 @@ export function createApp(options: AppOptions): App {
     if (animating || boardState !== before) {
       playToken++;
       animating = false;
-      boardState = before;
-      boardLanguage = getLanguage();
-      renderer.setScene(sceneOf(before, boardLanguage));
+      drawBoard(before);
     }
     const seen = viewTest();
-    const visual = visualEvents(before, events, (hex) =>
-      seen(hex) || (around >= 0 && hexDistance(before, hex, around) <= FOLLOW_RADIUS),
+    // under fog only what the player's nation saw happen is played, by the pieces that were on its board
+    const was = sightOf(before);
+    const now = sightOf(state());
+    const visual = visualEvents(
+      knownState(before),
+      events,
+      (hex) => seen(hex) || (around >= 0 && hexDistance(before, hex, around) <= FOLLOW_RADIUS),
+      was === null ? undefined : (hex) => was.visible[hex] === 1 || now?.visible[hex] === 1,
     );
     if (visual.length === 0) {
       showBoard();
@@ -822,7 +679,7 @@ export function createApp(options: AppOptions): App {
     const key = unit === undefined || host.busy ? '' : `${unit.id}:${unit.hex}:${unit.moves}:${state().turn}:${state().units.length}`;
     if (key !== reachKey) {
       reachKey = key;
-      reach = unit === undefined || host.busy ? [] : reachableHexes(state(), unit.id);
+      reach = unit === undefined || host.busy ? [] : reachableHexes(knownState(state()), unit.id);
     }
     drawHighlights();
   };
@@ -881,20 +738,26 @@ export function createApp(options: AppOptions): App {
       hex !== unit.hex && unit.owner === player()
     ) {
       let text = '';
-      const attack = previewAttack(state(), unit.id, hex);
+      // planned on what the player knows: a unit the fog hides is no target and stands in nobody's way
+      const known = knownState(state());
+      const attack = previewAttack(known, unit.id, hex);
       if (attack !== null) {
-        const path = findPath(state(), unit.id, hex, attackReach(state(), unit.id));
-        if (path !== null) {
+        const path = findPath(known, unit.id, hex, attackReach(known, unit.id));
+        if (path !== null && inSight(sightOf(state()), hex)) {
           hoverPlan = { path, attack: hex };
           const from = path.hexes.at(-1) ?? unit.hex;
-          const exact = previewAttack(state(), unit.id, hex, from) ?? attack;
+          const exact = previewAttack(known, unit.id, hex, from) ?? attack;
           text = exact.capture
             ? t('preview.capture')
             : t('preview.attack', { theirs: exact.toDefender, ours: exact.toAttacker });
           if (path.total > 1) text += ` · ${t('count.turns', { turns: path.total })}`;
+        } else if (path !== null) {
+          // a city out of sight: the way up to it, and nothing about a fight nobody can foresee
+          hoverPlan = { path, attack: null };
+          text = path.total > 0 ? t('count.turns', { turns: path.total }) : rejectText('unseen');
         }
       } else {
-        const path = findPath(state(), unit.id, hex);
+        const path = findPath(known, unit.id, hex);
         if (path !== null && path.total > 0) {
           hoverPlan = { path, attack: null };
           text = t('count.turns', { turns: path.total });
@@ -930,7 +793,8 @@ export function createApp(options: AppOptions): App {
       return;
     }
     const me = player();
-    const unit = state().units.find((candidate) => candidate.hex === hex);
+    // a unit the fog hides is not there to be clicked
+    const unit = knownState(state()).units.find((candidate) => candidate.hex === hex);
     const zone = cityZoneAt(state(), hex);
     const ownUnit = unit !== undefined && me !== NO_POLITY && unit.owner === me;
     const ownCity = zone >= 0 && me !== NO_POLITY && state().cities[zone]?.owner === me;
@@ -1206,7 +1070,8 @@ export function createApp(options: AppOptions): App {
     const pillage = pillageAction(state(), unit.id);
     if (pillage !== null) add('pillage', t('action.pillage'), pillage, 'pillage');
     const gates = demandAction(state(), unit.id);
-    if (gates !== null) add('demandVassalage', t('action.demandVassalage'), gates, 'leader');
+    // a vassal takes one of the places the era allows: the button says how many are taken
+    if (gates !== null) add('demandVassalage', `${t('action.demandVassalage')} · ${vassalRoomText(state(), me)}`, gates, 'leader');
     fill(selectionBox, piece, facts, actions);
   };
 
@@ -1252,7 +1117,8 @@ export function createApp(options: AppOptions): App {
       );
     };
     const strikes = city.buildings.some((id) => BUILDINGS[id].airStrike);
-    const strikeHexes = strikes ? airStrikeTargets(state(), zone) : [];
+    const strike = strikes ? strikeTargets(state(), zone) : { hexes: [], unseen: false };
+    const strikeHexes = strike.hexes;
     const aiming = striking !== null && striking.city === zone;
 
     const header = el(
@@ -1329,9 +1195,13 @@ export function createApp(options: AppOptions): App {
         }, {
           id: 'city-airstrike',
           class: aiming ? 'active' : '',
-          data: { targets: strikeHexes.length },
+          data: { targets: strikeHexes.length, unseen: Number(strike.unseen) },
           disabled: host.busy || strikeHexes.length === 0,
-          ...(city.airStruck ? { title: rejectText('alreadyStruck') } : strikeHexes.length === 0 ? { title: rejectText('noTarget') } : {}),
+          ...(city.airStruck
+            ? { title: rejectText('alreadyStruck') }
+            : strikeHexes.length === 0
+              ? { title: rejectText(strike.unseen ? 'unseen' : 'noTarget') }
+              : {}),
         }),
       el('h3', { text: t('city.focus') }),
       focusRow,
@@ -1545,7 +1415,7 @@ export function createApp(options: AppOptions): App {
             select(null);
             cityPanel = null;
             polityPanel = item.from;
-            flyTo(capitalHex(item.from));
+            pointAt(capitalHex(item.from));
             break;
         }
       }
@@ -1573,6 +1443,12 @@ export function createApp(options: AppOptions): App {
 
   // -------------------------------------------------------- saves and menu
 
+  /** Stores the game, and with it what the player remembers of the board. */
+  const save = (): void => {
+    writeAutosave(board.source, state());
+    if (memory !== null) writeMemory(board.source, state(), memory);
+  };
+
   const enterGame = (): void => {
     screen = state().result === null ? 'game' : 'end';
     select(null);
@@ -1590,7 +1466,10 @@ export function createApp(options: AppOptions): App {
     paused = false;
     enterQueued = false;
     lastState = state();
-    if (state().result === null) writeAutosave(board.source, state());
+    // a game that is continued brings back what the player remembered of the board
+    memory = sightOf(state()) === null ? null : readMemory(board.source, state());
+    look();
+    if (state().result === null) save();
     // the game opens on the player's capital with its zone in view; an observer sees the whole map
     const home = observing() ? -1 : capitalHex(player());
     if (home >= 0) board.renderer.focusHex(home, { frame: 'zone', immediate: true });
@@ -1683,11 +1562,13 @@ export function createApp(options: AppOptions): App {
     const now = settings.current;
     // rebuilt only when what it shows changed: an observer's clock redraws the page while the menu is open,
     // and the volume slider must stay under the pointer
-    const signature = [now.quality, now.scale, now.language, now.animationSpeed, now.muted, scale, board.renderer.backend].join('|');
+    const signature = [
+      now.quality, now.scale, now.language, now.animationSpeed, now.muted, scale, board.renderer.backend, state().difficulty, observing(),
+    ].join('|');
     fillWhen(menuBox, signature, () => menuNodes());
   };
 
-  const menuNodes = (): HTMLElement[] => {
+  const menuNodes = (): (HTMLElement | false)[] => {
     const now = settings.current;
     const volume = el('input', { id: 'menu-volume', label: t('menu.volume'), data: { value: now.volume } });
     volume.type = 'range';
@@ -1718,6 +1599,15 @@ export function createApp(options: AppOptions): App {
         }, { id: 'menu-import' }),
         iconButton('play', t('menu.newGame'), leaveGame, { id: 'menu-new-game' }),
       ),
+      // the level the game was started at; an observer's game has none to speak of
+      !observing() && el('h3', { text: t('menu.difficulty') }),
+      !observing() &&
+        el(
+          'div',
+          { id: 'menu-level', data: { level: state().difficulty } },
+          el('div', { text: levelName(state().difficulty) }),
+          el('div', { class: 'footnote', text: levelEffect(state().difficulty) }),
+        ),
       el('h3', { text: t('menu.quality') }),
       choice('menu-quality', 'quality', QUALITY_OPTIONS, now.quality, (value) => {
         const key: TranslationKey = `quality.${value}`;
@@ -1898,6 +1788,15 @@ export function createApp(options: AppOptions): App {
           ),
         kit !== null && el('div', { class: 'scroll' }, kitRows(kit, false)),
         el(
+          'div',
+          { id: 'levels' },
+          choice('level-picker', 'level', DIFFICULTY_LEVELS, startLevel, levelName, (value) => {
+            startLevel = value;
+            refresh();
+          }),
+          el('div', { class: 'footnote', id: 'level-effect', text: levelEffect(startLevel) }),
+        ),
+        el(
           'footer',
           {},
           iconButton('play', t('start.play'), () => {
@@ -2020,7 +1919,7 @@ export function createApp(options: AppOptions): App {
       drawAction();
       drawOverlay();
       drawLenses();
-      minimap?.draw(state(), lens, player());
+      minimap?.draw(state(), lens, player(), sightOf(state())?.fog ?? null);
     }
     if (focused !== null && !root.contains(document.activeElement)) {
       (root.querySelector<HTMLElement>(focused) ?? firstControl())?.focus({ preventScroll: true });
@@ -2073,7 +1972,7 @@ export function createApp(options: AppOptions): App {
       striking = null;
       trade.clear(appView);
       polityPanel = polity;
-      flyTo(capitalHex(polity));
+      pointAt(capitalHex(polity));
       refresh();
     },
     closeOverlay() {
@@ -2119,8 +2018,10 @@ export function createApp(options: AppOptions): App {
       case 'started':
         playToken++;
         animating = false;
+        memory = null;
         return;
       case 'action':
+        look();
         collect(change.events);
         settle();
         present(before, change.events);
@@ -2128,6 +2029,7 @@ export function createApp(options: AppOptions): App {
       case 'turn':
         focus = null;
         clearHover();
+        look();
         collect(change.events);
         settle();
         if (!change.burst && !observing() && screen === 'game') {
@@ -2148,7 +2050,7 @@ export function createApp(options: AppOptions): App {
         return;
       case 'busy':
         if (!host.busy && host.playing) {
-          if (state().result === null) writeAutosave(board.source, state());
+          if (state().result === null) save();
           settle();
         }
         refresh();
@@ -2262,7 +2164,9 @@ export function createApp(options: AppOptions): App {
     }
     const observe = start.observe === true || start.nation === undefined || start.nation === null;
     const seed = start.seed ?? Math.floor(Math.random() * 0x7fffffff);
-    host.start({ seed, player: observe ? null : (start.nation ?? null) });
+    // the levels help the player or hold them back: with nobody playing, the middle one
+    const difficulty = start.difficulty ?? (observe ? DEFAULT_DIFFICULTY : startLevel);
+    host.start({ seed, player: observe ? null : (start.nation ?? null), difficulty });
     enterGame();
   }
 
@@ -2430,6 +2334,7 @@ export function createApp(options: AppOptions): App {
                 sort: startSort,
                 nations: listNations(nationEntries(map(), state().majors), startRegion, startSort).map((entry) => entry.id),
                 chosen: chosenNation,
+                difficulty: startLevel,
               },
         settings: settings.current,
         sound: (() => {
@@ -2437,6 +2342,7 @@ export function createApp(options: AppOptions): App {
           return { silent, unlocked, volume, muted, era };
         })(),
         aids: screen === 'game' ? aidsShown : null,
+        fog: { on: shown.fog, hiddenUnits: shown.hidden, foreignUnits: shown.foreign },
       };
     },
     startGame,

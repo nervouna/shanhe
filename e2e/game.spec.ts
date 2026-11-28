@@ -51,6 +51,15 @@ test('an observer game on the fixture map runs to its end', async ({ page }) => 
   await capture(page, 'start');
 
   await page.evaluate(() => window.__shanhe?.startGame({ observe: true, seed: 1, map: 'fixture' }));
+  // the observer sees everything: no fog, and every unit of the state is on the board
+  const watched = await page.evaluate(() => {
+    const handle = window.__shanhe;
+    if (handle === undefined) throw new Error('window.__shanhe is not set');
+    return { fog: handle.ui.fog, units: handle.state.units.length, level: handle.state.difficulty };
+  });
+  expect(watched.units).toBeGreaterThan(0);
+  expect(watched.fog).toEqual({ on: false, hiddenUnits: 0, foreignUnits: watched.units });
+  expect(watched.level).toBe('standard');
   const started = await page.evaluate(() => {
     const shanhe = window.__shanhe;
     if (shanhe === undefined) throw new Error('window.__shanhe is not set');
@@ -151,6 +160,19 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
   await expect(page.locator('#minimap canvas')).toBeVisible();
   await expect(page.locator('#majors .major')).toHaveCount(4);
   await expect(page.locator('#majors .major[data-standing="self"]')).toHaveCount(1);
+
+  // fog of war: the board has fewer foreign units than the state, and the difference is what the fog hides
+  const sight = await page.evaluate(() => {
+    const handle = window.__shanhe;
+    if (handle === undefined) throw new Error('window.__shanhe is not set');
+    const { state } = handle;
+    return { fog: handle.ui.fog, foreign: state.units.filter((unit) => unit.owner !== state.player).length, level: state.difficulty };
+  });
+  expect(sight.fog.on).toBe(true);
+  expect(sight.fog.foreignUnits).toBeLessThan(sight.foreign);
+  expect(sight.fog.hiddenUnits).toBe(sight.foreign - sight.fog.foreignUnits);
+  // a game started without a word about difficulty is at the middle level
+  expect(sight.level).toBe('standard');
 
   const turnOf = (): Promise<number> => page.evaluate(() => window.__shanhe?.state.turn ?? 0);
   const ui = (): Promise<NonNullable<Window['__shanhe']>['ui']> =>
@@ -467,11 +489,28 @@ test('nation select shows a kit, a unique unit is in the build menu, and the set
   await expect(card.locator('[data-kit="unit"] .kit-name')).toContainText('Jiji infantry');
   await page.click('#language');
 
+  // the difficulty picker: five levels, the middle one chosen, each described by what it changes
+  await expect(page.locator('#level-picker button')).toHaveCount(5);
+  await expect(page.locator('#level-picker')).toHaveAttribute('data-value', 'standard');
+  await expect(page.locator('#level-picker [data-level="standard"]')).toHaveAttribute('aria-pressed', 'true');
+  expect((await ui()).start?.difficulty).toBe('standard');
+  await expect(page.locator('#level-effect')).not.toHaveText(/\d/);
+  await page.click('#level-picker [data-level="severe"]');
+  expect((await ui()).start?.difficulty).toBe('severe');
+  await expect(page.locator('#level-picker [data-level="severe"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#level-effect')).toHaveText(/AI.*\+30%.*\+20%/);
+  await capture(page, 'difficulty');
+
   // play 齐, whose unique unit is of the Ancient era: it is the garrison, and the build menu names it
   await page.click('#play');
   await expect(page.locator('#player-nation')).toHaveText('齐');
+  // a game started at the hardest level carries it in its state
+  expect(await page.evaluate(() => window.__shanhe?.state.difficulty)).toBe('severe');
   await page.evaluate(() => window.__shanhe?.startGame({ nation: 'qi', seed: 1 }));
   await expect(page.locator('#turn-counter')).toHaveAttribute('data-turn', '1');
+  expect(await page.evaluate(() => window.__shanhe?.state.difficulty)).toBe('severe');
+  expect((await ui()).fog).toMatchObject({ on: true });
+  expect((await ui()).fog.hiddenUnits).toBeGreaterThan(0);
   expect((await ui()).kit).toBeNull();
   const garrison = await page.evaluate(() => {
     const state = window.__shanhe?.state;
@@ -529,6 +568,9 @@ test('nation select shows a kit, a unique unit is in the build menu, and the set
   await page.click(`#majors .major[data-polity="${yan}"]`);
   expect(await ui()).toMatchObject({ panel: 'polity', polity: yan, kit: { nation: 'yan', where: 'polity' } });
   await expect(page.locator('#polity-personality')).toHaveAttribute('data-personality', /^[a-z]+$/);
+  // what its leader is out for is hidden from a nation that is neither its ally nor its overlord
+  await expect(page.locator('#polity-ambition')).toHaveCount(0);
+  await expect(page.locator('#polity-controls [data-control="propose:vassalage"] #vassal-room')).toHaveText('藩属 0/1');
   await expect(page.locator('#polity-kit')).toHaveAttribute('data-nation', 'yan');
   await expect(page.locator('#polity-kit [data-kit="unit"] .kit-name')).toContainText('幽州突骑');
   await page.click('#polity-close');
@@ -537,6 +579,8 @@ test('nation select shows a kit, a unique unit is in the build menu, and the set
   expect((await ui()).settings).toEqual({ quality: 'auto', scale: 'auto', language: 'zh', animationSpeed: 1, volume: 0.6, muted: false });
   await page.click('#menu-button');
   expect((await ui()).panel).toBe('menu');
+  await expect(page.locator('#menu-level')).toHaveAttribute('data-level', 'severe');
+  await expect(page.locator('#menu-level')).toContainText('严酷');
   await page.click('#menu-quality [data-quality="low"]');
   expect(await page.evaluate(() => window.__shanhe?.render.renderer.quality)).toBe('low');
   await page.click('#menu-speed [data-speed="2"]');
@@ -549,7 +593,7 @@ test('nation select shows a kit, a unique unit is in the build menu, and the set
   const changed = { quality: 'low', scale: 'large', language: 'en', animationSpeed: 2, volume: 0.25, muted: true };
   expect((await ui()).settings).toEqual(changed);
   expect((await ui()).sound).toMatchObject({ silent: true, unlocked: false, volume: 0.25, muted: true });
-  await expect(page.locator('#menu h3').first()).toHaveText('Quality');
+  await expect(page.locator('#menu h3').first()).toHaveText('Difficulty');
 
   await open(page, url);
   const after = await ui();
