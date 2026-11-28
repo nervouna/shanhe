@@ -921,6 +921,33 @@ test('touch: a long press shows the details, a tap previews an order and a secon
   expect(ordered.moves).toBeLessThan(previewed.moves);
   await expect(page.locator('#tooltip')).toBeHidden();
   await capture(page, 'touch-ordered');
+
+  // on a touch device every control is at least 36 pixels of the screen, whatever the interface is scaled to
+  expect(await page.evaluate(() => window.matchMedia('(pointer: coarse)').matches)).toBe(true);
+  const tooSmall = (): Promise<string[]> =>
+    page.evaluate(() => {
+      const found: string[] = [];
+      for (const node of document.querySelectorAll<HTMLElement>('#ui button, #ui input[type="range"]')) {
+        const box = node.getBoundingClientRect();
+        if (box.width === 0 || box.height === 0 || node.closest('[inert]') !== null) continue;
+        if (box.width < 35.9 || box.height < 35.9) found.push(`${node.id}|${node.className}|${Math.round(box.width)}x${Math.round(box.height)}`);
+      }
+      return found;
+    });
+  expect(await page.evaluate(() => window.__shanhe?.ui.scale.factor)).toBeLessThan(1);
+  expect(await tooSmall()).toEqual([]);
+  await page.locator('#menu-button').tap();
+  expect(await page.evaluate(() => window.__shanhe?.ui.panel)).toBe('menu');
+  expect(await tooSmall()).toEqual([]);
+  await page.locator('#menu-close').tap();
+  await page.locator('#polities-button').tap();
+  expect(await page.evaluate(() => window.__shanhe?.ui.overlay)).toBe('polities');
+  expect(await tooSmall()).toEqual([]);
+  await page.locator('#overlay-close').tap();
+  await page.locator('#slot-policy').tap();
+  expect(await page.evaluate(() => window.__shanhe?.ui.overlay)).toBe('policy');
+  expect(await tooSmall()).toEqual([]);
+  await page.locator('#overlay-close').tap();
   expect(errors).toEqual([]);
   await context.close();
 });

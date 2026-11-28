@@ -122,6 +122,8 @@ The menu has the settings, stored locally and in force again at the next visit:
 | Volume | A master volume, and mute |
 | Language | Chinese or English |
 
+On a touch device (a coarse pointer) every control is at least 36 pixels of the screen in both directions, whatever the interface is scaled to: the size is divided by the scale, and the top bar and the rows under it grow with it.
+
 ## Sound
 
 All sound is synthesised in the browser; there are no audio files. Each sound is a few layers of an oscillator or of filtered noise under a short envelope:

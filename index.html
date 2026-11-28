@@ -36,6 +36,35 @@
         --radius: 2px;
         --bar: 40px;
         --side: 312px;
+        /* the height of a row of the majors strip, and the room the two buttons under the top bar take */
+        --major: 28px;
+        --under-slots: 44px;
+      }
+      /*
+       * On a touch device every control is at least 36 pixels of the screen
+       * in both directions. The interface is scaled as a whole, so the size
+       * is divided by the scale (`--ui-scale`, set with the zoom).
+       */
+      @media (pointer: coarse) {
+        :root {
+          --touch: calc(36px / var(--ui-scale, 1));
+          --bar: calc(var(--touch) + 8px);
+          --major: calc(var(--touch) + 2px);
+          --under-slots: calc(var(--touch) + 14px);
+        }
+        /* stronger than every size a control sets for itself further down */
+        #ui button,
+        #ui input[type='range'] {
+          min-width: var(--touch) !important;
+          min-height: var(--touch) !important;
+        }
+        #ui #policy-slots button.policy-slot {
+          padding-right: calc(var(--touch) + 4px);
+        }
+        #ui #policy-slots button.slot-clear {
+          top: 0;
+          right: 0;
+        }
       }
       html,
       body {
@@ -635,7 +664,7 @@
       }
       #notifications {
         position: fixed;
-        top: calc(var(--bar) + 20px + 28px * var(--majors-rows, 1));
+        top: calc(var(--bar) + 20px + var(--major) * var(--majors-rows, 1));
         right: var(--s3);
         display: flex;
         flex-direction: column;
@@ -836,10 +865,10 @@
         max-height: calc(100% - 116px);
       }
       #kit-panel {
-        top: calc(var(--bar) + 44px);
+        top: calc(var(--bar) + var(--under-slots));
         left: var(--s3);
         /* down to the minimap, which is at most 190 high under its lenses */
-        max-height: calc(100% - var(--bar) - 44px - 252px);
+        max-height: calc(100% - var(--bar) - var(--under-slots) - 252px);
         animation: drop 0.14s ease-out;
         z-index: 2;
       }

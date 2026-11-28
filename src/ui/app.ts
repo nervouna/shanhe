@@ -513,6 +513,8 @@ export function createApp(options: AppOptions): App {
     scale = uiScale(settings.current.scale, window.innerWidth, window.innerHeight);
     root.style.setProperty('zoom', String(scale));
     root.dataset.scale = String(scale);
+    // the styles size touch targets in pixels of the screen: they divide by the scale
+    document.documentElement.style.setProperty('--ui-scale', String(scale));
   };
 
   /** Puts the settings in force: on the renderer of the current board, on the sound and on the interface. */
