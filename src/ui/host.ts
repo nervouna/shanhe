@@ -111,6 +111,8 @@ export interface Host {
   order(unit: number, target: number): OrderResult;
   /** Leaves a unit alone for the rest of the turn. */
   skip(unit: number): void;
+  /** Turns down the peace offer of `polity` for this turn: it stops waiting for an answer. */
+  declinePeace(polity: number): void;
   /** What is waiting for the player. */
   pending(): PendingItem[];
   /** Ends the turn. Resolves to false if that was not possible (busy, no game, game over). */
@@ -128,6 +130,7 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
   let generation = 0;
   const orders = new Map<number, MoveOrder>();
   const skipped = new Set<number>();
+  const declined = new Set<number>();
   const listeners = new Set<(change: HostChange) => void>();
 
   const emit = (change: HostChange): void => {
@@ -141,6 +144,7 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
     busy = false;
     orders.clear();
     skipped.clear();
+    declined.clear();
     emit({ kind: 'started' });
   };
 
@@ -172,6 +176,7 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
   const afterTurn = (report: TurnReport, burst: boolean): void => {
     state = report.state;
     skipped.clear();
+    declined.clear();
     const events = [...report.events];
     if (state.result === null) for (const id of [...orders.keys()]) advance(id, events);
     else orders.clear();
@@ -305,8 +310,12 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
       orders.delete(id);
       emit({ kind: 'attention' });
     },
+    declinePeace(polity) {
+      declined.add(polity);
+      emit({ kind: 'attention' });
+    },
     pending() {
-      return playing && !busy ? pendingItems(state, { orders, skipped }) : [];
+      return playing && !busy ? pendingItems(state, { orders, skipped, declined }) : [];
     },
     async endTurn() {
       return (await run(1, false)).turns === 1;
