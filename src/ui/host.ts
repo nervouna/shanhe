@@ -131,8 +131,8 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
   const orders = new Map<number, MoveOrder>();
   const skipped = new Set<number>();
   const declined = new Set<number>();
-  /** Policy slots the player emptied: they wait for no card until one is put in. */
-  const emptied = new Set<number>();
+  /** Policy cards the player took out of a slot: they wait for no slot until the player puts them back. */
+  const shelved = new Set<string>();
   const listeners = new Set<(change: HostChange) => void>();
 
   const emit = (change: HostChange): void => {
@@ -147,7 +147,7 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
     orders.clear();
     skipped.clear();
     declined.clear();
-    emptied.clear();
+    shelved.clear();
     emit({ kind: 'started' });
   };
 
@@ -255,14 +255,15 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
       if (busy || !playing) return { ok: false, reason: 'badAction', state, events: [] };
       const result = applyAction(state, action);
       if (!result.ok) return result;
+      if (action.type === 'slotPolicy') {
+        const out = state.polities[action.polity]?.slots[action.slot] ?? null;
+        if (action.policy === null && out !== null) shelved.add(out);
+        else if (action.policy !== null) shelved.delete(action.policy);
+      }
       state = result.state;
       if ('unit' in action) {
         orders.delete(action.unit);
         skipped.delete(action.unit);
-      }
-      if (action.type === 'slotPolicy') {
-        if (action.policy === null) emptied.add(action.slot);
-        else emptied.delete(action.slot);
       }
       emit({ kind: 'action', events: result.events });
       return result;
@@ -322,7 +323,7 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
       emit({ kind: 'attention' });
     },
     pending() {
-      return playing && !busy ? pendingItems(state, { orders, skipped, declined, emptied }) : [];
+      return playing && !busy ? pendingItems(state, { orders, skipped, declined, shelved }) : [];
     },
     async endTurn() {
       return (await run(1, false)).turns === 1;

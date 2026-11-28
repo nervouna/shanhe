@@ -28,8 +28,8 @@ export interface Attention {
   readonly skipped: { has(unit: number): boolean };
   /** Polities whose peace offer the player turned down this turn. */
   readonly declined?: { has(polity: number): boolean };
-  /** Policy slots the player emptied and has not filled since: they are empty on purpose. */
-  readonly emptied?: { has(slot: number): boolean };
+  /** Policy cards the player took out of a slot and has not put back: they are out on purpose. */
+  readonly shelved?: { has(policy: string): boolean };
 }
 
 /** The polities that offered the player peace during the last turn and are still at war with them. */
@@ -50,14 +50,15 @@ export function peaceOffers(state: GameState): number[] {
 
 /**
  * True if the player has a card to unlock, or an empty slot and an unlocked
- * card that is in no slot. A slot the player emptied does not count.
+ * card that is in no slot. A card the player took out of a slot does not
+ * count: it is out on purpose.
  */
-export function policyPending(state: GameState, emptied?: { has(slot: number): boolean }): boolean {
+export function policyPending(state: GameState, shelved?: { has(policy: string): boolean }): boolean {
   const self = state.polities[state.player];
   if (self === undefined) return false;
   if (unlockOptions(state, state.player).length > 0) return true;
-  const waiting = self.slots.some((card, slot) => card === null && emptied?.has(slot) !== true);
-  return waiting && self.policies.some((policy) => !self.slots.includes(policy));
+  if (!self.slots.includes(null)) return false;
+  return self.policies.some((policy) => !self.slots.includes(policy) && shelved?.has(policy) !== true);
 }
 
 /**
@@ -81,7 +82,7 @@ export function pendingItems(state: GameState, attention: Attention): PendingIte
     if (zone !== undefined) items.push({ kind: 'city', city: city.zone, hex: zone.siteHex });
   }
   if (self.research === null && researchOptions(state, player).length > 0) items.push({ kind: 'research' });
-  if (policyPending(state, attention.emptied)) items.push({ kind: 'policy' });
+  if (policyPending(state, attention.shelved)) items.push({ kind: 'policy' });
   for (const offer of state.offers) {
     if (offer.to === player) items.push({ kind: 'offer', offer: offer.id, from: offer.from });
   }

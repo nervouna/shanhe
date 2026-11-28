@@ -119,7 +119,7 @@ describe('pendingItems: research, policies and offers', () => {
     expect(pendingItems(slotted, none)).toEqual([]);
   });
 
-  it('leaves a slot alone that the player emptied', () => {
+  it('leaves a card alone that the player took out of its slot', () => {
     const rich = edit(settled(), (draft) => {
       draft.polities[player]!.cultureProgress = 6;
     });
@@ -127,11 +127,17 @@ describe('pendingItems: research, policies and offers', () => {
     const slotted = apply(unlocked, { type: 'slotPolicy', polity: player, policy: 'wellField', slot: 0 });
     const emptiedSlot = apply(slotted, { type: 'slotPolicy', polity: player, policy: null, slot: 0 });
     expect(emptiedSlot.polities[player]!.slots).toEqual([null, null]);
-    // the other slot is empty too, and was never emptied by the player: the card still waits for it
-    expect(policyPending(emptiedSlot, new Set([0]))).toBe(true);
-    expect(policyPending(emptiedSlot, new Set([0, 1]))).toBe(false);
-    expect(pendingItems(emptiedSlot, { ...none, emptied: new Set([0, 1]) })).toEqual([]);
+    // both slots are empty and the card is in neither: it would wait for one, had the player not taken it out
+    expect(policyPending(emptiedSlot)).toBe(true);
+    expect(policyPending(emptiedSlot, new Set(['wellField']))).toBe(false);
+    expect(policyPending(emptiedSlot, new Set(['clanLaw']))).toBe(true);
+    expect(pendingItems(emptiedSlot, { ...none, shelved: new Set(['wellField']) })).toEqual([]);
     expect(pendingItems(emptiedSlot, none)).toEqual([{ kind: 'policy' }]);
+    // a card that can be unlocked still asks
+    const rich2 = edit(emptiedSlot, (draft) => {
+      draft.polities[player]!.cultureProgress = 1000;
+    });
+    expect(policyPending(rich2, new Set(['wellField']))).toBe(true);
   });
 
   it('lists the proposals waiting for an answer, and drops one once answered', () => {

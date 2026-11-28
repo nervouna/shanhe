@@ -174,22 +174,25 @@ describe('createHost', () => {
     expect(await host.endTurn()).toBe(false);
   });
 
-  it('stops asking about a policy slot the player emptied, until a card goes into it', () => {
+  it('stops asking about a policy card the player took out of its slot', () => {
     const host = createHost(map, createInlineRunner());
     host.resume(edit(createGame(map, { player: 'jia', seed: 2 }), (draft) => {
       const self = draft.polities[JIA]!;
-      self.policies = ['wellField', 'citizenLevy'];
-      self.slots = ['wellField', 'citizenLevy'];
+      self.policies = ['wellField'];
+      self.slots = ['wellField', null];
       self.research = 'farming';
       for (const city of draft.cities) if (city !== null && city.owner === JIA) city.queue = [{ kind: 'unit', unit: 'warrior' }];
       draft.units = draft.units.filter((unit) => unit.owner !== JIA);
     }));
     expect(host.pending()).toEqual([]);
-    expect(host.act({ type: 'slotPolicy', polity: JIA, policy: null, slot: 1 }).ok).toBe(true);
-    expect(host.state.polities[JIA]!.slots).toEqual(['wellField', null]);
-    expect(host.pending()).toEqual([]);
-    expect(host.act({ type: 'slotPolicy', polity: JIA, policy: 'citizenLevy', slot: 1 }).ok).toBe(true);
+    // both slots are empty afterwards, and the card waits for neither
     expect(host.act({ type: 'slotPolicy', polity: JIA, policy: null, slot: 0 }).ok).toBe(true);
+    expect(host.state.polities[JIA]!.slots).toEqual([null, null]);
+    expect(host.pending()).toEqual([]);
+    // put back and taken out again, it still does not ask
+    expect(host.act({ type: 'slotPolicy', polity: JIA, policy: 'wellField', slot: 1 }).ok).toBe(true);
+    expect(host.pending()).toEqual([]);
+    expect(host.act({ type: 'slotPolicy', polity: JIA, policy: null, slot: 1 }).ok).toBe(true);
     expect(host.pending()).toEqual([]);
     // another game starts with nothing emptied
     host.resume(host.state);
