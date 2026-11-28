@@ -245,7 +245,7 @@ In an observer game every major nation is the AI's.
 
 - During AI turns only battles inside the player's vision are animated. Everything else resolves instantly. Holding Space speeds animations up.
 - After a unit acts, selection jumps to the next unit that needs orders. Fortified and sleeping units stop asking.
-- A city asks for a project only when its queue is empty. "Repeat last item" is a switch of the city: while it is on, a city that finishes an item with nothing else queued queues the same item again, if it may still build it (a unit, but not a building it now has). A city project needs no such switch: it runs until something else is queued. A built-out city is therefore never a reason to queue an unwanted unit.
+- A city asks for a project only when its queue is empty. "Repeat last item" is a switch of the city: while it is on, a city that finishes an item with nothing else queued queues the same item again, if it may still build it (a unit, but not a building it now has). A city project needs no such switch: it runs until something else is queued. A built-out city is therefore never a reason to queue an unwanted unit. A city with the switch on never asks for a project, also when its last item was one it cannot build again (a building): the player has said what the city does, and switching it off makes the city ask again. A city with nothing left to build but city projects asks like any other city with an empty queue, and its panel offers the projects.
 
 ## Observer mode
 

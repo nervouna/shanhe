@@ -223,9 +223,18 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
 
   // Enter is the main button. It ends the turn only when nothing is pending:
   // every kind of pending item is answered the way a player would.
-  const done = { research: 0, unlocked: 0, slotted: 0, routes: 0, offers: 0, enterKept: 0, aids: 0 };
-  for (let step = 0; (await turnOf()) < 13; step++) {
-    expect(step, 'the main button never offered the next turn').toBeLessThan(300);
+  // The game goes on for twelve turns, and then until the capital, with Ritual learned, has taken up a city project.
+  const done = { research: 0, unlocked: 0, slotted: 0, routes: 0, offers: 0, enterKept: 0, aids: 0, projects: 0 };
+  const capitalOf = (): Promise<{ queue: unknown[]; repeat: boolean }> =>
+    page.evaluate(() => {
+      const state = window.__shanhe?.state;
+      const city = state?.cities[state.polities[state.player]?.capital ?? -1];
+      if (city === undefined || city === null) throw new Error('no capital');
+      return { queue: [...city.queue], repeat: city.repeat };
+    });
+  for (let step = 0; (await turnOf()) < 13 || done.projects === 0; step++) {
+    expect(step, 'the main button never offered the next turn').toBeLessThan(900);
+    expect(await turnOf(), 'the capital never took up a city project').toBeLessThan(60);
     const kind = await main();
     if (kind === 'city') {
       await page.keyboard.press('Enter');
@@ -255,11 +264,41 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
         await expect(page.locator('#trade-routes li')).toHaveCount(1);
         done.routes++;
       }
-      await page.click('#city-panel [data-build="unit:warrior"]');
-      await page.click('#city-panel [data-build="unit:warrior"]');
-      await expect(page.locator('#city-queue li')).toHaveCount(2);
-      await expect(page.locator('#city-panel [data-buy="unit:warrior"]')).toBeVisible();
+      const festival = page.locator('#build-conversions [data-build="building:festival"]');
+      if ((await festival.count()) === 0) {
+        await page.click('#city-panel [data-build="unit:warrior"]');
+        await page.click('#city-panel [data-build="unit:warrior"]');
+        await expect(page.locator('#city-queue li')).toHaveCount(2);
+        await expect(page.locator('#city-panel [data-buy="unit:warrior"]')).toBeVisible();
+      } else {
+        // Ritual is known. The city projects are a group of their own: what production becomes and at what rate,
+        // no cost, nothing to buy
+        await expect(festival).toHaveAttribute('data-converts', 'culture');
+        await expect(festival).toHaveAttribute('data-percent', '25');
+        await expect(festival.locator('.option-cost')).toHaveText('每 4 工 → 1 文');
+        await expect(page.locator('#build-buildings [data-build="building:festival"]')).toHaveCount(0);
+        await expect(page.locator('#city-panel [data-buy="building:festival"]')).toHaveCount(0);
+        // a warrior first, the project behind it: it goes on once the warrior is built
+        await page.click('#city-panel [data-build="unit:warrior"]');
+        await festival.click();
+        const withProject = await capitalOf();
+        expect(withProject.queue).toEqual([{ kind: 'unit', unit: 'warrior' }, { kind: 'building', building: 'festival' }]);
+        await expect(page.locator('#city-queue li[data-converts="culture"]')).toHaveCount(1);
+        await expect(page.locator('#city-queue li[data-converts="culture"] .option-turns')).toHaveCount(0);
+        await expect(festival).toBeDisabled();
+        // the switch sends setRepeat and shows the city's state
+        const repeat = page.locator('#city-repeat');
+        await expect(repeat).toHaveAttribute('aria-checked', 'false');
+        expect(withProject.repeat).toBe(false);
+        await repeat.click();
+        expect((await capitalOf()).repeat).toBe(true);
+        await expect(repeat).toHaveAttribute('aria-checked', 'true');
+        await expect(repeat).toHaveAttribute('data-on', '1');
+        await capture(page, 'city-project');
+        done.projects++;
+      }
       await page.click('#city-close');
+      expect(await main()).not.toBe('city');
     } else if (kind === 'unit') {
       await page.keyboard.press('Enter');
       await expect(page.locator('#selection')).toBeVisible();
@@ -276,7 +315,9 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
       await expect(page.locator('#tech-overlay')).toBeVisible();
       await expect(page.locator('#tech-tree .tech')).toHaveCount(40);
       if (done.research === 0) await capture(page, 'tech');
-      const open = page.locator('#tech-tree .tech[data-status="open"]').first();
+      // Ritual first, for the city project it opens; after it whatever is open
+      const ritual = page.locator('#tech-tree .tech[data-tech="ritual"][data-status="open"]');
+      const open = (await ritual.count()) > 0 ? ritual : page.locator('#tech-tree .tech[data-status="open"]').first();
       const tech = await open.getAttribute('data-tech');
       await open.click();
       expect((await self()).research).toBe(tech);
@@ -360,8 +401,16 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
       expect(await turnOf()).toBeGreaterThan(before);
     }
   }
-  await expect(page.locator('#turn-counter')).toHaveAttribute('data-turn', '13');
-  console.log(`player flow: ${JSON.stringify(done)}`);
+  const reached = await turnOf();
+  expect(reached).toBeGreaterThanOrEqual(13);
+  await expect(page.locator('#turn-counter')).toHaveAttribute('data-turn', String(reached));
+  console.log(`player flow: ${JSON.stringify(done)}, turn ${reached}`);
+  // the project and the switch are in the state, and the capital asks for nothing any more
+  expect(done.projects).toBe(1);
+  const capital = await capitalOf();
+  expect(capital.repeat).toBe(true);
+  expect(capital.queue.at(-1)).toEqual({ kind: 'building', building: 'festival' });
+  expect(await main()).not.toBe('city');
   expect(done.research).toBeGreaterThan(0);
   expect(done.routes).toBe(1);
   expect(done.unlocked).toBeGreaterThan(0);
@@ -494,7 +543,7 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
   await page.click('#menu-scale [data-scale="small"]');
   expect((await ui()).scale.factor).toBe(0.85);
   await page.click('#menu-language');
-  await expect(page.locator('#turn-counter')).toHaveText('Turn 13 / 150');
+  await expect(page.locator('#turn-counter')).toHaveText(`Turn ${reached} / 150`);
   expect(await page.evaluate(() => document.documentElement.lang)).toBe('en');
   await expect(page.locator('#polities-button')).toHaveText('Nations');
   await page.click('#menu-close');
@@ -503,7 +552,7 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
   await open(page, url);
   await expect(page.locator('#continue')).toBeVisible();
   await page.click('#continue');
-  await expect(page.locator('#turn-counter')).toHaveAttribute('data-turn', '13');
+  await expect(page.locator('#turn-counter')).toHaveAttribute('data-turn', String(reached));
   expect(await page.evaluate(() => window.__shanhe?.state.player)).toBe(0);
   expect((await ui()).scale.setting).toBe('small');
   expect(await page.evaluate(() => window.__shanhe?.state.routes.length)).toBeGreaterThan(0);
@@ -581,6 +630,8 @@ test('nation select shows a kit, a unique unit is in the build menu, and the set
   expect((await ui()).start?.difficulty).toBe('severe');
   await expect(page.locator('#level-picker [data-level="severe"]')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('#level-effect')).toHaveText(/AI.*\+30%.*\+20%/);
+  // the AI's bonus leaves science out and its techs cost more: the numbers are the table's
+  await expect(page.locator('#level-effect')).toHaveText('AI 主要国家的城市产出 +30%，单位与城市战力 +20%，科研产出不加成，科技花费 +60%');
   await capture(page, 'difficulty');
 
   // play 齐, whose unique unit is of the Ancient era: it is the garrison, and the build menu names it

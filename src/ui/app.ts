@@ -88,7 +88,7 @@ import type { Settings } from './settings.ts';
 import { browserAudio, createSoundEngine, cuesFor, gameSound } from './sound.ts';
 import { inSight, knownState, sightOf, strikeTargets } from './sight.ts';
 import { clearAutosave, readAutosave, readMemory, writeAutosave, writeMemory } from './storage.ts';
-import { counted, gainText, majorRows, turnsText } from './text.ts';
+import { conversionText, counted, gainText, majorRows, perTurnText, turnsText } from './text.ts';
 import type { MapSource } from './storage.ts';
 import { LONG_PRESS_MS, isTap, tapTarget } from './touchOrder.ts';
 import type { Press } from './touchOrder.ts';
@@ -1341,9 +1341,15 @@ export function createApp(options: AppOptions): App {
           'li',
           {},
           el('span', { class: 'option-name', text: itemName(map(), entry.item, me) }),
+          // a city project has neither a cost nor an end: the row says what it turns production into
           el('span', {
             class: 'option-cost',
-            text: index === 0 ? `${Math.floor(city.progress)}/${entry.cost}` : String(entry.cost),
+            text:
+              entry.converts !== null
+                ? conversionText(entry.converts)
+                : index === 0
+                  ? `${Math.floor(city.progress)}/${entry.cost}`
+                  : String(entry.cost),
           }),
           entry.turns !== null && el('span', { class: 'option-turns', text: turnsText(entry.turns) }),
           iconOnly('close', t('queue.remove'), () => {
@@ -1354,6 +1360,27 @@ export function createApp(options: AppOptions): App {
       ),
     );
     if (view.queue.length === 0) queueList.append(el('li', { class: 'empty', text: '—' }));
+    for (const [index, entry] of view.queue.entries()) {
+      const row = queueList.children[index];
+      if (entry.converts !== null && row instanceof HTMLElement) row.dataset.converts = entry.converts.to;
+    }
+    const repeatSwitch = el(
+      'button',
+      {
+        id: 'city-repeat',
+        class: city.repeat ? 'switch active' : 'switch',
+        data: { on: Number(city.repeat) },
+        disabled: host.busy,
+        onClick: () => {
+          act({ type: 'setRepeat', polity: me, city: zone, repeat: !city.repeat });
+          refresh();
+        },
+      },
+      el('span', { class: 'switch-mark' }),
+      el('span', { text: t('city.repeat') }),
+    );
+    repeatSwitch.setAttribute('role', 'switch');
+    repeatSwitch.setAttribute('aria-checked', String(city.repeat));
 
     const group = (title: string, id: string, nodes: (HTMLElement | null)[]): HTMLElement | null =>
       nodes.length === 0 ? null : el('section', { id }, el('h3', { text: title }), ...nodes);
@@ -1398,6 +1425,7 @@ export function createApp(options: AppOptions): App {
       focusRow,
       el('h3', { text: t('city.queue') }),
       queueList,
+      repeatSwitch,
       group(t('city.units'), 'build-units', [
         // one more fighting unit would stand beyond the supply limit: what that costs
         warning !== null && fighting > 0
@@ -1417,6 +1445,21 @@ export function createApp(options: AppOptions): App {
         const name = option.item.kind === 'building' ? buildingName(option.item.building) : '';
         return buyable(option, key, optionButton(name, option, key, queue(option.item)));
       })),
+      // the city projects: no cost, no end and nothing to buy, only what production becomes and how much a turn
+      group(t('city.conversions'), 'build-conversions', view.conversions.map((entry) =>
+        el(
+          'button',
+          {
+            class: entry.queued ? 'option active' : 'option',
+            data: { build: `building:${entry.building}`, converts: entry.to, percent: entry.percent, perTurn: entry.perTurn },
+            onClick: queue(entry.item),
+            disabled: host.busy || entry.queued,
+          },
+          el('span', { class: 'option-name', text: buildingName(entry.building) }),
+          el('span', { class: 'option-cost', text: conversionText(entry) }),
+          el('span', { class: 'option-turns', text: perTurnText(entry.to, entry.perTurn) }),
+        ),
+      )),
       group(t('city.improvements'), 'build-improvements', view.improvements.map((option) => {
         const gains = IMPROVEMENTS[option.improvement].yields;
         const gain = (['food', 'production', 'gold'] as const)

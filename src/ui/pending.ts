@@ -2,12 +2,12 @@
 
 import { NO_POLITY } from '../core/game.ts';
 import type { GameState } from '../core/game.ts';
-import { researchOptions, unlockOptions } from '../core/query.ts';
+import { checkAction, researchOptions, unlockOptions } from '../core/query.ts';
 
 export type PendingItem =
   /** A unit that can still act and has been told nothing. */
   | { readonly kind: 'unit'; readonly unit: number; readonly hex: number }
-  /** A city (its zone) with nothing to build. */
+  /** A city (its zone) with nothing to build that is not on "repeat last item". */
   | { readonly kind: 'city'; readonly city: number; readonly hex: number }
   /** Nothing is being researched although something could be. */
   | { readonly kind: 'research' }
@@ -51,20 +51,30 @@ export function peaceOffers(state: GameState): number[] {
 /**
  * True if the player has a card to unlock, or an empty slot and an unlocked
  * card that is in no slot. A card the player took out of a slot does not
- * count: it is out on purpose.
+ * count: it is out on purpose. Nor does a slot the rules will not fill now
+ * (emptied during the swap cooldown): asking for it would keep the turn from
+ * ending until the cooldown is over.
  */
 export function policyPending(state: GameState, shelved?: { has(policy: string): boolean }): boolean {
   const self = state.polities[state.player];
   if (self === undefined) return false;
   if (unlockOptions(state, state.player).length > 0) return true;
-  if (!self.slots.includes(null)) return false;
-  return self.policies.some((policy) => !self.slots.includes(policy) && shelved?.has(policy) !== true);
+  const spare = self.policies.find((policy) => !self.slots.includes(policy) && shelved?.has(policy) !== true);
+  if (spare === undefined) return false;
+  // whether a slot takes a card does not depend on the card
+  return self.slots.some(
+    (card, slot) => card === null && checkAction(state, { type: 'slotPolicy', polity: state.player, policy: spare, slot }) === null,
+  );
 }
 
 /**
  * Everything waiting for the player: idle units in order of creation, cities
  * without a project, a research to choose, policies, then the offers of
  * other polities.
+ *
+ * A city on "repeat last item" never asks: the player has said what it does.
+ * A city whose buildings are all built still asks, since the city projects
+ * are always there to take up; once it has one, its queue is never empty.
  */
 export function pendingItems(state: GameState, attention: Attention): PendingItem[] {
   const { player, map } = state;
@@ -77,7 +87,7 @@ export function pendingItems(state: GameState, attention: Attention): PendingIte
     items.push({ kind: 'unit', unit: unit.id, hex: unit.hex });
   }
   for (const city of state.cities) {
-    if (city === null || city.owner !== player || city.queue.length > 0) continue;
+    if (city === null || city.owner !== player || city.queue.length > 0 || city.repeat) continue;
     const zone = map.zones[city.zone];
     if (zone !== undefined) items.push({ kind: 'city', city: city.zone, hex: zone.siteHex });
   }

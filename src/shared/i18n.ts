@@ -1044,6 +1044,11 @@ const zh = {
   'building.minting': '铸钱',
   'building.compilation': '修书',
   'city.repeat': '重复上一项',
+  'city.conversions': '城市项目',
+  'city.convertsEvery': '每 {every} {from} → 1 {to}',
+  'city.convertsPercent': '{from}的 {percent}% → {to}',
+  'city.perTurn': '{gain}/回合',
+  'policy.slotCooldown': '冷却中，第 {turn} 回合起可放入',
   'reject.alreadySet': '已经是这样了',
 };
 
@@ -2088,6 +2093,11 @@ const en: Record<TranslationKey, string> = {
   'building.minting': 'Minting',
   'building.compilation': 'Compilation',
   'city.repeat': 'Repeat last item',
+  'city.conversions': 'City projects',
+  'city.convertsEvery': '{every} {from} → 1 {to}',
+  'city.convertsPercent': '{percent}% of {from} → {to}',
+  'city.perTurn': '{gain} a turn',
+  'policy.slotCooldown': 'Cooling down: takes a card from turn {turn}',
   'reject.alreadySet': 'It is already set that way',
 };
 
