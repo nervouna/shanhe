@@ -55,19 +55,27 @@ describe('a full treasury', () => {
     expect(state.polities[JIA]!.gold).toBeLessThan(5000);
   });
 
-  it('does not go to a human player', () => {
+  it('goes to a human player as to any other neighbour', () => {
     // The same game with Yi, one of Jia's neighbours, played by a human.
     const watched = endTurn(rich(5000));
     const got = (events: GameEvent[], to: number): number => of(events, 'goldGifted').filter((event) => event.from === JIA && event.to === to).length;
     expect(got(watched.events, YI)).toBeGreaterThan(0);
-    const played = endTurn(
-      edit(createGame(map, { seed: 3, majors: ['jia'], player: 'yi' }), (draft) => {
-        draft.turn = AI.diplomacyInterval * 3 - JIA;
-        draft.polities[JIA]!.gold = 5000;
+    const before = edit(createGame(map, { seed: 3, majors: ['jia'], player: 'yi' }), (draft) => {
+      draft.turn = AI.diplomacyInterval * 3 - JIA;
+      draft.polities[JIA]!.gold = 5000;
+    });
+    const played = endTurn(before);
+    expect(got(played.events, YI)).toBe(got(watched.events, YI));
+    const given = of(played.events, 'goldGifted')
+      .filter((event) => event.from === JIA && event.to === YI)
+      .reduce((sum, event) => sum + event.amount, 0);
+    // The player holds the gifts on top of what the turn brought anyway.
+    const without = endTurn(
+      edit(before, (draft) => {
+        draft.polities[JIA]!.gold = 0;
       }),
     );
-    expect(got(played.events, YI)).toBe(0);
-    expect(of(played.events, 'goldGifted').some((event) => event.from === JIA)).toBe(true);
+    expect(played.state.polities[YI]!.gold - without.state.polities[YI]!.gold).toBe(given);
   });
 
   it('is left alone below that', () => {

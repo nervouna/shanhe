@@ -101,7 +101,7 @@ Conventions that keep this working:
 | `npm run typecheck` | Type-check the core without the DOM, then the app, the tools and the e2e project |
 | `npm run lint` | ESLint, including the layer rules |
 | `npm run check:assets` | Fail if a model, texture, image, audio, video or font file is tracked outside `docs/images/` |
-| `npm run sim -- --map <fixture\|synthetic\|path> --turns 150 --seed N` | Play an AI-only game headless and print a summary; `--seeds 1-30` runs a batch with a victory tally, `--report` adds per-nation, per-era diagnostics |
+| `npm run sim -- --map <fixture\|synthetic\|path> --turns 150 --seed N` | Play an AI-only game headless and print a summary; `--seeds 1-30` runs a batch with a victory tally, `--difficulty relaxed\|easy\|standard\|hard\|severe` sets the level (`standard` by default; with nobody playing, only Hard and Severe change anything: they are the AI's bonus), `--report` adds per-nation, per-era diagnostics |
 | `npm run pipeline` | Rebuild `public/data` from public datasets (downloads into `data/raw/`; `-- --offline` uses the cache) |
 | `npm run pipeline:check` | Validate the committed map data |
 | `npm run e2e` | Build, serve and test the page in headless Chromium (Playwright, one worker): the renderer, an observer game to its end and a player game on the fixture map. `SHANHE_REAL_MAP=1` adds a 150-turn observer game on the real map |

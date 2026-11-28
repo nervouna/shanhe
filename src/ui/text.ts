@@ -32,6 +32,26 @@ export function gainText(name: keyof Yields, value: number): string {
 }
 
 /**
+ * What a city project does, from its entry in the rules' table: "4 production → 1 culture"
+ * where the rate is a whole number of production for a point, the
+ * percentage otherwise.
+ */
+export function conversionText(converts: { readonly to: keyof Yields; readonly percent: number }): string {
+  const lower = (word: string): string => (getLanguage() === 'en' ? word.toLowerCase() : word);
+  const from = lower(yieldName('production'));
+  const to = lower(yieldName(converts.to));
+  const every = 100 / converts.percent;
+  return Number.isInteger(every)
+    ? t('city.convertsEvery', { every, from, to })
+    : t('city.convertsPercent', { percent: converts.percent, from, to });
+}
+
+/** What something gives every turn: "+3 culture a turn", "+3文/回合". */
+export function perTurnText(name: keyof Yields, value: number): string {
+  return t('city.perTurn', { gain: gainText(name, value) });
+}
+
+/**
  * The rows of the strip of major nations in the top right. Every name is
  * shown whole: Chinese names are short and stand in one row; English ones
  * run to ten letters, so more than six of them stand in two rows.

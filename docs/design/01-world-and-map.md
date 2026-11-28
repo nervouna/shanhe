@@ -87,7 +87,7 @@ Four regions are wasteland. They are not nations and cannot be played.
 
 Wasteland is settled with a settler unit on preset city sites, first come first served. Settlers can be built from the Classical era, and each one costs more than the last. The luxury resources give a reason to expand there.
 
-Tribes are neutral. Each defends its own hex and never raids.
+Tribes are neutral. Each defends its own hex and never raids. A wasteland zone starts with one tribe for every 80 of its land hexes that a unit can enter, rounded, and at least one; they stand on hexes drawn at random, never on the city site.
 
 ## Off-map land
 

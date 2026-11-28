@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BUILDINGS, UNITS } from '../core/data.ts';
+import { BUILDINGS, CITY_PROJECT_IDS, UNITS } from '../core/data.ts';
 import { createGame, endTurn } from '../core/game.ts';
 import { HOME_ZONE, LAND, SELF, labGame } from '../core/kitLab.ts';
 import { apply, edit, put } from '../core/testUtil.ts';
@@ -109,6 +109,46 @@ describe('cityView', () => {
       }
     }
     expect(cityView(state, map.zones.findIndex((zone) => zone.id === 'jia-2'))).toBeNull();
+  });
+
+  it('lists the city projects apart from the buildings, with what each turns production into', () => {
+    const state = edit(createGame(map, { player: 'jia' }), (draft) => {
+      draft.polities[JIA]!.techs.push('farming', 'ritual', 'writing', 'currency');
+    });
+    const view = cityView(state, capital)!;
+    const built = view.buildings.map((option) => (option.item.kind === 'building' ? option.item.building : ''));
+    expect(built).toContain('granary');
+    for (const id of CITY_PROJECT_IDS) expect(built).not.toContain(id);
+    expect(view.conversions.map((entry) => entry.building)).toEqual(CITY_PROJECT_IDS);
+    const production = view.city.yields.production;
+    for (const entry of view.conversions) {
+      const { converts } = BUILDINGS[entry.building];
+      expect(entry.item).toEqual({ kind: 'building', building: entry.building });
+      expect({ to: entry.to, percent: entry.percent }).toEqual(converts);
+      expect(entry.perTurn).toBe(Math.floor((production * entry.percent) / 100));
+      expect(entry.queued).toBe(false);
+      expect(check(state, { type: 'queueBuild', polity: JIA, city: capital, item: entry.item })).toBeNull();
+    }
+    // each waits for its tech: a nation that knows none is offered none
+    expect(cityView(createGame(map, { player: 'jia' }), capital)!.conversions).toEqual([]);
+    const ritual = edit(createGame(map, { player: 'jia' }), (draft) => {
+      draft.polities[JIA]!.techs.push(BUILDINGS.festival.tech);
+    });
+    expect(cityView(ritual, capital)!.conversions.map((entry) => entry.building)).toEqual(['festival']);
+  });
+
+  it('marks a city project in the queue: no cost, no end, the rate instead', () => {
+    let state = edit(createGame(map, { player: 'jia' }), (draft) => {
+      draft.polities[JIA]!.techs.push('ritual');
+    });
+    state = apply(state, { type: 'queueBuild', polity: JIA, city: capital, item: { kind: 'unit', unit: 'warrior' } });
+    state = apply(state, { type: 'queueBuild', polity: JIA, city: capital, item: { kind: 'building', building: 'festival' } });
+    const view = cityView(state, capital)!;
+    expect(view.queue.map((entry) => entry.converts)).toEqual([null, { to: 'culture', percent: 25 }]);
+    expect(view.queue[1]!.turns).toBeNull();
+    // while it waits it stays in the list, marked: queueing it again is refused
+    expect(view.conversions.map((entry) => [entry.building, entry.queued])).toEqual([['festival', true]]);
+    expect(check(state, { type: 'queueBuild', polity: JIA, city: capital, item: view.conversions[0]!.item })).toBe('alreadyQueued');
   });
 
   it('counts stored production towards the first queue entry only', () => {

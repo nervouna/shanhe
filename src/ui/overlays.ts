@@ -3,6 +3,7 @@
 import { ERAS, POLICIES, POLICY_IDS } from '../core/data.ts';
 import type { PolicyId, PolicyKind, TechId } from '../core/data.ts';
 import { NO_POLITY, nextPolicyCost } from '../core/game.ts';
+import { slotOpensOn } from '../core/query.ts';
 import { dictionaries, getLanguage, t } from '../shared/i18n.ts';
 import type { TranslationKey } from '../shared/i18n.ts';
 import { standingWith } from './diplomacy.ts';
@@ -216,11 +217,14 @@ export function policyOverlay(view: View, local: PolicyOverlayState): HTMLElemen
     { id: 'policy-slots' },
     ...self.slots.map((card, slot) => {
       const reason = picked === null ? null : check(state, { type: 'slotPolicy', polity: player, policy: picked, slot });
+      // a slot emptied during the cooldown takes no card yet: it says so, and from which turn it does, before a card is tried
+      const opens = slotOpensOn(state, player, slot);
+      const cooling = opens > state.turn && (card === null || reason === 'swapCooldown');
       const place = el(
         'button',
         {
           class: `policy-slot${card === null ? ' empty' : ''}`,
-          data: { slot, card: card ?? '' },
+          data: { slot, card: card ?? '', ...(cooling ? { refused: 'swapCooldown', opens } : {}) },
           disabled: picked === null || reason !== null || view.busy,
           onClick: () => {
             if (picked === null) return;
@@ -230,7 +234,9 @@ export function policyOverlay(view: View, local: PolicyOverlayState): HTMLElemen
         },
         el('span', { class: 'card-name', text: card === null ? t('policy.empty') : policyName(card) }),
         card !== null && el('span', { class: 'card-effect', text: policyEffect(card) }),
-        picked !== null && reason !== null && el('span', { class: 'reason', text: rejectText(reason) }),
+        cooling
+          ? el('span', { class: 'reason', text: t('policy.slotCooldown', { turn: opens }) })
+          : picked !== null && reason !== null && el('span', { class: 'reason', text: rejectText(reason) }),
       );
       // a card can be taken out again: the slot then stays empty until the player fills it
       const empty = { type: 'slotPolicy', polity: player, policy: null, slot } as const;
@@ -263,7 +269,10 @@ export function policyOverlay(view: View, local: PolicyOverlayState): HTMLElemen
       const unlocked = self.policies.includes(card);
       const reason = unlocked ? null : check(state, { type: 'unlockPolicy', polity: player, policy: card });
       const status = slotted ? 'slotted' : unlocked ? 'unlocked' : reason === null ? 'open' : 'locked';
-      const empty = self.slots.indexOf(null);
+      // the first empty slot the rules fill now: one emptied during the cooldown is passed over
+      const empty = unlocked
+        ? self.slots.findIndex((other, slot) => other === null && check(state, { type: 'slotPolicy', polity: player, policy: card, slot }) === null)
+        : -1;
       grid.append(
         el(
           'button',

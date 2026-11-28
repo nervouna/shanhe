@@ -461,7 +461,11 @@ export function offerPending(ctx: Ctx, from: number, to: number, what: Agreement
 
 /**
  * The player's answer to an offer. An accepted offer takes effect if it is
- * still possible: the state has moved on since it was made.
+ * still possible: the state has moved on since it was made. A deal whose
+ * buyer cannot pay the price is refused instead: nothing is signed, the
+ * offer goes on waiting (it can be accepted once the gold is there, declined,
+ * or left to run out) and an `offerRefused` event carries the reason. An
+ * offer anything else stands in the way of is dropped.
  */
 export function answerOffer(ctx: Ctx, offer: Offer, accept: boolean): void {
   let done = false;
@@ -472,9 +476,16 @@ export function answerOffer(ctx: Ctx, offer: Offer, accept: boolean): void {
         else signAgreement(ctx, offer.agreement, offer.from, offer.to);
         done = true;
       }
-    } else if (checkDeal(ctx, offer.from, offer.to, offer.seller, offer.resource, offer.goldPerTurn) === null) {
-      signDeal(ctx, offer.seller, offer.seller === offer.from ? offer.to : offer.from, offer.resource, offer.goldPerTurn);
-      done = true;
+    } else {
+      const reason = checkDeal(ctx, offer.from, offer.to, offer.seller, offer.resource, offer.goldPerTurn);
+      if (reason === 'notEnoughGold') {
+        ctx.events.push({ type: 'offerRefused', offer: offer.id, from: offer.from, to: offer.to, reason });
+        return;
+      }
+      if (reason === null) {
+        signDeal(ctx, offer.seller, offer.seller === offer.from ? offer.to : offer.from, offer.resource, offer.goldPerTurn);
+        done = true;
+      }
     }
   }
   dropOffer(ctx, offer, done);

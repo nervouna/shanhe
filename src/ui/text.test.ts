@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { IMPROVEMENTS } from '../core/data.ts';
+import { BUILDINGS, CITY_PROJECT_IDS, IMPROVEMENTS } from '../core/data.ts';
 import { dictionaries, setLanguage } from '../shared/i18n.ts';
-import { counted, gainText, majorRows, turnsText } from './text.ts';
+import { conversionText, counted, gainText, majorRows, perTurnText, turnsText } from './text.ts';
 
 afterEach(() => {
   setLanguage('zh');
@@ -71,5 +71,28 @@ describe('majorRows', () => {
     expect(majorRows(4)).toBe(1);
     setLanguage('zh');
     expect(majorRows(12)).toBe(1);
+  });
+});
+
+describe('city projects', () => {
+  it('says what a project turns production into, at the rate of the rules’ table', () => {
+    setLanguage('zh');
+    expect(CITY_PROJECT_IDS.map((id) => conversionText(BUILDINGS[id].converts!))).toEqual(['每 4 工 → 1 文', '每 2 工 → 1 金', '每 4 工 → 1 科']);
+    expect(perTurnText('culture', 3)).toBe('+3文/回合');
+    setLanguage('en');
+    expect(CITY_PROJECT_IDS.map((id) => conversionText(BUILDINGS[id].converts!))).toEqual([
+      '4 production → 1 culture',
+      '2 production → 1 gold',
+      '4 production → 1 science',
+    ]);
+    expect(perTurnText('gold', 0)).toBe('+0 gold a turn');
+  });
+
+  it('follows the table: a rate that is no whole number of production is given as a percentage', () => {
+    setLanguage('zh');
+    expect(conversionText({ to: 'gold', percent: 100 })).toBe('每 1 工 → 1 金');
+    expect(conversionText({ to: 'gold', percent: 30 })).toBe('工的 30% → 金');
+    setLanguage('en');
+    expect(conversionText({ to: 'science', percent: 30 })).toBe('30% of production → science');
   });
 });

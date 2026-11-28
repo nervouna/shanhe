@@ -514,6 +514,18 @@ export type GameEvent =
       readonly to: number;
       readonly accepted: boolean;
     }
+  /**
+   * `to` accepted a pending offer and the rules refused: the offer still
+   * waits. Only a deal its buyer cannot pay for is refused this way
+   * (`reason: 'notEnoughGold'`); an offer anything else has overtaken is dropped.
+   */
+  | {
+      readonly type: 'offerRefused';
+      readonly offer: number;
+      readonly from: number;
+      readonly to: number;
+      readonly reason: RejectReason;
+    }
   | { readonly type: 'agreementSigned'; readonly agreement: AgreementKind; readonly a: number; readonly b: number }
   | {
       readonly type: 'agreementEnded';

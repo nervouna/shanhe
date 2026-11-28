@@ -1,8 +1,8 @@
 /** Read-only questions the interface asks the rules. Nothing here changes a state. */
 
 import { maxCityHp } from '../core/cities.ts';
-import { BUILDING_IDS, IMPROVEMENT_IDS, PROJECT, UNIT_IDS, WAR, noYields } from '../core/data.ts';
-import type { ImprovementId, TechId, Yields } from '../core/data.ts';
+import { BUILDINGS, BUILDING_IDS, CITY_PROJECT_IDS, IMPROVEMENT_IDS, PROJECT, UNIT_IDS, WAR, isCityProject, noYields } from '../core/data.ts';
+import type { BuildingDef, CityProjectId, ImprovementId, TechId, Yields } from '../core/data.ts';
 import { NO_POLITY, researchCost } from '../core/game.ts';
 import type { Action, BuildItem, City, GameState, RejectReason } from '../core/game.ts';
 import {
@@ -37,13 +37,37 @@ function turnsFor(cost: number, production: number): number | null {
   return production <= 0 ? null : Math.max(1, Math.ceil(cost / production));
 }
 
+/** What a city project turns the city's production into, and how much of it. */
+export type Conversion = NonNullable<BuildingDef['converts']>;
+
+/** A city project a city can take up: it costs nothing and is never finished. */
+export interface ConversionOption extends Conversion {
+  readonly building: CityProjectId;
+  readonly item: BuildItem;
+  /** What a turn of the city's production as it is now would give. */
+  readonly perTurn: number;
+  /** True if it is in the queue already. */
+  readonly queued: boolean;
+}
+
+/** What `item` turns production into if it is a city project, or null. */
+export function conversionOf(item: BuildItem): Conversion | null {
+  return item.kind === 'building' ? (BUILDINGS[item.building].converts ?? null) : null;
+}
+
 export interface CityView {
   readonly city: City;
   readonly maxHp: number;
-  /** The queue; the first entry already has the city's stored production counted in. */
-  readonly queue: readonly BuildOption[];
+  /**
+   * The queue; the first entry already has the city's stored production
+   * counted in. A city project has no end: its `turns` is null and `converts` says what it does.
+   */
+  readonly queue: readonly (BuildOption & { readonly converts: Conversion | null })[];
   readonly units: readonly BuildOption[];
+  /** The buildings the city can build; the city projects are in `conversions`. */
   readonly buildings: readonly BuildOption[];
+  /** The city projects the nation knows, those in the queue included. */
+  readonly conversions: readonly ConversionOption[];
   /** Improvements that have at least one hex to stand on, with those hexes. */
   readonly improvements: readonly (BuildOption & { readonly improvement: ImprovementId; readonly hexes: readonly number[] })[];
   /** The nation's own empty city sites. */
@@ -66,7 +90,17 @@ export function cityView(state: GameState, zone: number): CityView | null {
     checkAction(state, { type: 'queueBuild', polity, city: zone, item }) === null;
 
   const units = UNIT_IDS.map((unit): BuildItem => ({ kind: 'unit', unit })).filter(legal).map(option);
-  const buildings = BUILDING_IDS.map((building): BuildItem => ({ kind: 'building', building })).filter(legal).map(option);
+  const buildings = BUILDING_IDS.filter((building) => !isCityProject(building))
+    .map((building): BuildItem => ({ kind: 'building', building }))
+    .filter(legal)
+    .map(option);
+  const conversions = CITY_PROJECT_IDS.flatMap((building): ConversionOption[] => {
+    const item: BuildItem = { kind: 'building', building };
+    const reason = checkAction(state, { type: 'queueBuild', polity, city: zone, item });
+    const converts = conversionOf(item);
+    if (converts === null || (reason !== null && reason !== 'alreadyQueued')) return [];
+    return [{ ...converts, building, item, perTurn: Math.floor((production * converts.percent) / 100), queued: reason !== null }];
+  });
   // every hex the rules let the city improve, the mountains a trait opens included
   const reach = improvementSites(state, zone);
   const improvements = IMPROVEMENT_IDS.flatMap((improvement) => {
@@ -81,11 +115,13 @@ export function cityView(state: GameState, zone: number): CityView | null {
   });
   const project: BuildItem = { kind: 'project', project: PROJECT.id };
   const projects = legal(project) ? [option(project)] : [];
-  const queue = city.queue.map((item, index): BuildOption => {
+  const queue = city.queue.map((item, index) => {
     const cost = buildCost(state, zone, item);
-    return { item, cost, turns: turnsFor(index === 0 ? Math.max(1, cost - city.progress) : cost, production) };
+    const converts = conversionOf(item);
+    const turns = converts !== null ? null : turnsFor(index === 0 ? Math.max(1, cost - city.progress) : cost, production);
+    return { item, cost, turns, converts };
   });
-  return { city, maxHp: maxCityHp(city), queue, units, buildings, improvements, sites, projects };
+  return { city, maxHp: maxCityHp(city), queue, units, buildings, conversions, improvements, sites, projects };
 }
 
 export interface PolitySummary {

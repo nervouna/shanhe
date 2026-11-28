@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createGame, endTurn } from '../core/game.ts';
 import type { GameState } from '../core/game.ts';
 import { apply, edit, learn, put } from '../core/testUtil.ts';
-import { researchOptions } from '../core/query.ts';
+import { checkAction, researchOptions } from '../core/query.ts';
 import { topologyOf } from '../core/topology.ts';
 import { createFixtureMap } from '../shared/fixtureMap.ts';
 import { mainButton, peaceOffers, pendingItems, policyPending } from './pending.ts';
@@ -138,6 +138,70 @@ describe('pendingItems: research, policies and offers', () => {
       draft.polities[player]!.cultureProgress = 1000;
     });
     expect(policyPending(rich2, new Set(['wellField']))).toBe(true);
+  });
+
+  it('does not ask for a slot the rules will not fill during the cooldown, and asks again when it is over', () => {
+    // two cards in two slots, a third unlocked and not in use, and the free swaps spent
+    const full = edit(settled(), (draft) => {
+      const self = draft.polities[player]!;
+      self.policies.push('wellField', 'citizenLevy', 'clanLaw');
+      self.slots = ['wellField', 'citizenLevy'];
+      self.freeSwaps = 0;
+    });
+    expect(policyPending(full)).toBe(false);
+    // a paid swap starts the cooldown; the card it replaced is spare and was not shelved
+    const swapped = apply(full, { type: 'slotPolicy', polity: player, policy: 'clanLaw', slot: 0 });
+    const ready = swapped.polities[player]!.swapReadyOn;
+    expect(ready).toBeGreaterThan(swapped.turn);
+    // the player empties the other slot: nothing can go into it before the cooldown ends
+    const emptied = apply(swapped, { type: 'slotPolicy', polity: player, policy: null, slot: 1 });
+    expect(checkAction(emptied, { type: 'slotPolicy', polity: player, policy: 'wellField', slot: 1 })).toBe('swapCooldown');
+    expect(policyPending(emptied, new Set(['citizenLevy']))).toBe(false);
+    expect(pendingItems(emptied, { ...none, shelved: new Set(['citizenLevy']) })).toEqual([]);
+    expect(mainButton(pendingItems(emptied, { ...none, shelved: new Set(['citizenLevy']) }), null)).toEqual({ kind: 'nextTurn' });
+    const later = edit(emptied, (draft) => {
+      draft.turn = ready;
+    });
+    expect(checkAction(later, { type: 'slotPolicy', polity: player, policy: 'wellField', slot: 1 })).toBeNull();
+    expect(policyPending(later, new Set(['citizenLevy']))).toBe(true);
+  });
+
+  it('never asks a city on repeat for a project, asks again once repeat is off, and stops asking a city that has taken up a city project', () => {
+    const state = settled();
+    const idle = edit(state, (draft) => {
+      draft.cities[capital]!.queue = [];
+    });
+    expect(pendingItems(idle, none)).toEqual([{ kind: 'city', city: capital, hex: site }]);
+    const repeating = apply(idle, { type: 'setRepeat', polity: player, city: capital, repeat: true });
+    expect(repeating.cities[capital]!.repeat).toBe(true);
+    expect(pendingItems(repeating, none)).toEqual([]);
+    // with repeat on, a unit comes again and again and the queue never runs dry
+    let run = apply(repeating, { type: 'queueBuild', polity: player, city: capital, item: { kind: 'unit', unit: 'warrior' } });
+    let built = 0;
+    for (let turn = 0; turn < 12; turn++) {
+      const step = endTurn(run);
+      built += step.events.filter((event) => event.type === 'cityBuilt' && event.city === capital).length;
+      run = step.state;
+      expect(run.cities[capital]!.queue).toEqual([{ kind: 'unit', unit: 'warrior' }]);
+      expect(pendingItems(run, none).filter((item) => item.kind === 'city')).toEqual([]);
+    }
+    expect(built).toBeGreaterThan(1);
+    // switched off, the city asks again once the queue is empty
+    const off = edit(apply(run, { type: 'setRepeat', polity: player, city: capital, repeat: false }), (draft) => {
+      draft.cities[capital]!.queue = [];
+    });
+    expect(pendingItems(off, none).filter((item) => item.kind === 'city')).toEqual([{ kind: 'city', city: capital, hex: site }]);
+    // a city project fills the queue for good: the city stops asking
+    const festive = apply(
+      edit(off, (draft) => {
+        if (!draft.polities[player]!.techs.includes('ritual')) draft.polities[player]!.techs.push('ritual');
+      }),
+      { type: 'queueBuild', polity: player, city: capital, item: { kind: 'building', building: 'festival' } },
+    );
+    let on = festive;
+    for (let turn = 0; turn < 3; turn++) on = endTurn(on).state;
+    expect(on.cities[capital]!.queue).toEqual([{ kind: 'building', building: 'festival' }]);
+    expect(pendingItems(on, none).filter((item) => item.kind === 'city')).toEqual([]);
   });
 
   it('lists the proposals waiting for an answer, and drops one once answered', () => {
