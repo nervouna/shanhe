@@ -21,7 +21,7 @@ export const MIN_PIECE_PIXELS = 34;
  * On the political map, where a piece is a marker among the names of the
  * polities, the least size is this: the lower bound at any zoom.
  */
-export const MIN_MARKER_PIXELS = 26;
+export const MIN_MARKER_PIXELS = 24;
 
 /** World units per CSS pixel at the point the camera looks at. */
 export function worldPerPixel(distance: number, viewportHeight: number): number {

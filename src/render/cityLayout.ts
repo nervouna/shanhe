@@ -62,7 +62,7 @@ export function layOutCity(parts: readonly Part[], scale: number): Part[] {
 /** A city's marker is never smaller than this across on screen, in CSS pixels; a capital's is larger. */
 export const MIN_CITY_MARKER_PIXELS = 18;
 /** On the political map, where the names of the polities need the room, it is this small. */
-export const MIN_CITY_MARKER_PIXELS_POLITICAL = 13;
+export const MIN_CITY_MARKER_PIXELS_POLITICAL = 12;
 export const CAPITAL_MARKER_FACTOR = 1.25;
 /** The marker fades in while the city is between these sizes across on screen, in CSS pixels. */
 const MARKER_FROM_PIXELS = 34;

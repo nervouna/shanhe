@@ -263,9 +263,9 @@ function buildPieceGeometry(): BufferGeometry {
 type Float = Node<'float'>;
 
 /** Where the count of a stack sits on the top face, and how large it is, as fractions of the piece's radius. */
-const BADGE_X = 0.5;
-const BADGE_Z = -0.5;
-const BADGE_RADIUS = 0.33;
+const BADGE_X = 0.52;
+const BADGE_Z = -0.52;
+const BADGE_RADIUS = 0.39;
 
 function createMaterial(atlas: GlyphAtlas, environment: Texture, marker: UniformNode<'float'>): MeshStandardNodeMaterial {
   // per piece: glyph cell, era, unique flag, hit points
