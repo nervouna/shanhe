@@ -29,7 +29,7 @@ export function buildTreeShape(family: TreeFamilyId, detailed: boolean): ShapeBu
     case TreeFamily.Conifer: {
       if (!detailed) {
         // from the middle distances: a broad cone that closes ranks with its neighbours
-        shape.frustum(0, 0, 0.04, 1, 0.3, 0, 5, under, top);
+        shape.frustum(0, 0, 0.06, 1, 0.25, 0, 5, under, top);
         break;
       }
       shape.frustum(0, 0, 0, 0.3, 0.035, 0.03, 4, BARK);
@@ -43,7 +43,7 @@ export function buildTreeShape(family: TreeFamilyId, detailed: boolean): ShapeBu
       if (!detailed) {
         // from the middle distances: a wide, low crown without a trunk, which
         // runs into the crowns around it, so that a forest is a canopy and not a field of balls
-        shape.blob(0, 0.46, 0, 0.52, 0.4, 5, 2, under, top);
+        shape.blob(0, 0.48, 0, 0.42, 0.4, 5, 2, under, top);
         break;
       }
       // a short trunk under a crown of three lumps of different size: broad, uneven, never a ball on a stick
@@ -96,7 +96,7 @@ export function buildTreeShape(family: TreeFamilyId, detailed: boolean): ShapeBu
     case TreeFamily.Rainforest: {
       if (!detailed) {
         // from the middle distances: the closed roof of the rainforest
-        shape.blob(0, 0.6, 0, 0.6, 0.3, 6, 2, under, top);
+        shape.blob(0, 0.64, 0, 0.5, 0.28, 6, 2, under, top);
         break;
       }
       shape.frustum(0, 0, 0, 0.6, 0.05, 0.03, 3, BARK);
