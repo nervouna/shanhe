@@ -79,7 +79,7 @@ export interface TechDef {
 }
 
 /** Science cost of a tech of each era. */
-export const TECH_ERA_COST: readonly number[] = [9, 37, 110, 270, 640, 1150];
+export const TECH_ERA_COST: readonly number[] = [18, 46, 132, 280, 600, 1400];
 
 export const RESEARCH = {
   /** A tech known by any other living polity costs this much less. */
@@ -720,8 +720,8 @@ function buildUnits(): Record<string, UnitDef> {
     strength: 0,
     rangedStrength: 0,
     range: 0,
-    moves: 2,
-    cost: 70,
+    moves: 4,
+    cost: 50,
     upkeep: UNIT_UPKEEP,
     domain: 'land',
     cityAttackPercent: 0,
@@ -1098,7 +1098,7 @@ export const DIPLOMACY = {
   /** Share of its income (city gold and trade routes) a vassal pays its overlord, in percent. */
   vassalTributePercent: 20,
   /** Vassals a nation can hold, by its era: a wider realm needs the means of a later age. */
-  vassalsByEra: [1, 2, 2, 3, 5, 5],
+  vassalsByEra: [1, 2, 2, 3, 4, 5],
 } as const;
 
 /** Favour between two nations runs from `-max` to `max` and starts at 0. */
@@ -1309,21 +1309,47 @@ export const DEFAULT_DIFFICULTY: DifficultyLevel = 'standard';
 
 /** What a level gives one side: a percentage on every city yield, and on the strength of its units and cities. */
 export interface DifficultyBonus {
+  /** On the food, production, gold and culture of every city. */
   readonly yieldPercent: number;
+  /**
+   * On the science of every city; left out, science gets `yieldPercent` like
+   * the other yields. The player's bonus is on all five; the AI's sets 0: a
+   * harder AI is richer and stronger, but it does not learn faster, so that
+   * a higher level does not bring the Science victory forward.
+   */
+  readonly sciencePercent?: number;
   readonly strengthPercent: number;
+  /**
+   * On the cost of its techs; left out, nothing. A richer AI has more people, more buildings
+   * and more production to turn into science; what it learns costs it that
+   * much more, so that it keeps to the pace of the calendar.
+   */
+  readonly techCostPercent?: number;
+}
+
+/** The percentage a difficulty bonus puts on the science of a city: its own figure, or that of the other yields. */
+export function scienceBonus(bonus: DifficultyBonus): number {
+  return bonus.sciencePercent ?? bonus.yieldPercent;
+}
+
+/** The percentage a difficulty bonus puts on the cost of techs: nothing unless it says so. */
+export function techCostBonus(bonus: DifficultyBonus): number {
+  return bonus.techCostPercent ?? 0;
 }
 
 /**
  * What each level gives the player and what it gives the AI's major nations.
  * Below the middle level the player is helped, above it the AI majors are;
- * nobody else is ever touched.
+ * nobody else is ever touched. The AI's bonus leaves science out.
  */
+const NO_BONUS: DifficultyBonus = { yieldPercent: 0, strengthPercent: 0 };
+
 export const DIFFICULTY: Readonly<Record<DifficultyLevel, { readonly player: DifficultyBonus; readonly ai: DifficultyBonus }>> = {
-  relaxed: { player: { yieldPercent: 30, strengthPercent: 20 }, ai: { yieldPercent: 0, strengthPercent: 0 } },
-  easy: { player: { yieldPercent: 15, strengthPercent: 10 }, ai: { yieldPercent: 0, strengthPercent: 0 } },
-  standard: { player: { yieldPercent: 0, strengthPercent: 0 }, ai: { yieldPercent: 0, strengthPercent: 0 } },
-  hard: { player: { yieldPercent: 0, strengthPercent: 0 }, ai: { yieldPercent: 15, strengthPercent: 10 } },
-  severe: { player: { yieldPercent: 0, strengthPercent: 0 }, ai: { yieldPercent: 30, strengthPercent: 20 } },
+  relaxed: { player: { yieldPercent: 30, strengthPercent: 20 }, ai: NO_BONUS },
+  easy: { player: { yieldPercent: 15, strengthPercent: 10 }, ai: NO_BONUS },
+  standard: { player: NO_BONUS, ai: NO_BONUS },
+  hard: { player: NO_BONUS, ai: { yieldPercent: 15, sciencePercent: 0, strengthPercent: 10, techCostPercent: 25 } },
+  severe: { player: NO_BONUS, ai: { yieldPercent: 30, sciencePercent: 0, strengthPercent: 20, techCostPercent: 60 } },
 };
 
 export function isDifficultyLevel(value: unknown): value is DifficultyLevel {
@@ -1333,7 +1359,7 @@ export function isDifficultyLevel(value: unknown): value is DifficultyLevel {
 // ----------------------------------------------------------------- tribes
 
 /** One tribe per this many hexes of a wasteland zone, at least one per zone. */
-export const HEXES_PER_TRIBE = 60;
+export const HEXES_PER_TRIBE = 80;
 
 // --------------------------------------------------------------------- AI
 
@@ -1368,6 +1394,8 @@ export const AI = {
   peaceWeariness: 35,
   /** Gives up a war after this many turns in which the enemy has lost no city. */
   stalemateTurns: 24,
+  /** A leader out for conquest gives it up later: a siege takes its time. */
+  conquestStalemateTurns: 36,
   /** It declares a war only on a nation one of whose cities lies within this path cost of one of its own by land, ... */
   warReachLand: 36,
   /** ...or within this path cost with a crossing (a water hex counts 3), ... */
@@ -1384,6 +1412,8 @@ export const AI = {
   upgradeReserve: 20,
   /** A wasteland site this close to one of its cities is worth a settler. */
   settleRange: 24,
+  /** Settlers a nation has on the way or in the making at most. */
+  settlersAtOnce: 2,
   /** At peace a city sends a settler once it has this many buildings. */
   settleAfterBuildings: 1,
   /** Smallest city that builds a settler or founds a city. */
@@ -1438,7 +1468,7 @@ export const AI = {
   /** A leader out for conquest mints in its idle cities until its treasury holds this many turns of its income. */
   mintTreasuryTurns: 4,
   /** A major gives away what it holds beyond this many turns of its income (and its reserve): see `spendSurplus` in `ai.ts`. */
-  treasuryTurns: 4,
+  treasuryTurns: 1.5,
   /** Its surplus goes to a neighbour for favour until favour with it has reached this, ... */
   giftFavour: 60,
   /** ...in at most this many rounds of gifts a look. */

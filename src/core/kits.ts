@@ -562,7 +562,7 @@ const KIT_TABLE = {
     // 竹外交: cannot be made a vassal, and the capital gains for every friendly nation.
     trait: [
       { type: 'noVassal' },
-      { type: 'cityYield', yields: { gold: 2, culture: 1 }, city: { capital: true }, per: 'friends' },
+      { type: 'cityYield', yields: { gold: 1, culture: 1 }, city: { capital: true }, per: 'friends' },
     ],
     unit: 'royalBarge', building: 'floatingMarket', buildingKind: 'building', specialty: 'jasmine-rice',
     leader: [{ type: 'techCost', percent: -5, knownByOther: true }],

@@ -261,7 +261,7 @@ export function acceptsPeace(ctx: Ctx, polity: number, proposer: number): boolea
   const conquering = ambitionOf(ctx.state.seed, polity, nationOf(ctx, polity)) === 'conquest';
   if (self.warWeariness >= (conquering ? AI.conquestPeaceWeariness : AI.peaceWeariness)) return true;
   const progress = Math.max(relation.since, polityOf(ctx, proposer).cityLostOn);
-  if (ctx.state.turn - progress >= AI.stalemateTurns) return true;
+  if (ctx.state.turn - progress >= (conquering ? AI.conquestStalemateTurns : AI.stalemateTurns)) return true;
   return militaryStrength(ctx, polity) < militaryStrength(ctx, proposer) * AI.warStrengthRatio;
 }
 

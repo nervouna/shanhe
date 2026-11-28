@@ -82,8 +82,22 @@ describe('empty land', () => {
     let sent = 0;
     for (const nation of nations) {
       const zone = map.polities[nation]!.capitalZone;
+      // In reach: near enough, and a chain of zones leads there that are its own or nobody's (nobody has open borders yet).
+      const way = (to: number): boolean => {
+        const seen = new Set([to]);
+        const frontier = [to];
+        while (frontier.length > 0) {
+          for (const next of topo.zoneNeighbors[frontier.pop()!]!) {
+            if (seen.has(next) || (base.zoneOwner[next] !== nation && base.zoneOwner[next] !== NO_POLITY)) continue;
+            if (next === zone) return true;
+            seen.add(next);
+            frontier.push(next);
+          }
+        }
+        return false;
+      };
       const near = wasteland.some(
-        (other) => apart(site(other), site(zone)) <= AI.settleRange && topo.landmass[site(other)] === topo.landmass[site(zone)],
+        (other) => apart(site(other), site(zone)) <= AI.settleRange && topo.landmass[site(other)] === topo.landmass[site(zone)] && way(other),
       );
       const state = edit(base, (draft) => {
         draft.cities[zone]!.pop = 3;

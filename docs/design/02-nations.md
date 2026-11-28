@@ -85,7 +85,7 @@ In the tables below, "farms" means farms and irrigation canals unless it says ot
 | 占城 Champa | Central and southern Vietnam | 占城稻: plain farms crop twice a year, for +1 food and +1 gold | 占婆战船 Cham warship | 占婆塔 Cham tower | 沉香 agarwood |
 | 澜沧 Lan Xang | Laos | 万象之国: rainforest hexes give +1 production; war elephants have no upkeep | 战象 war elephant | 佛寺 wat | 安息香 benzoin |
 | 真腊 Chenla | Cambodia | 水利帝国: population growth needs 10% less food | 象弩 ballista elephant | 巴莱水库 baray | 豆蔻 cardamom |
-| 暹罗 Siam | Thailand | 竹外交: cannot be vassalised; the capital gains +2 gold and +1 culture for each nation at favour 15 or more, up to four | 皇家驳船 royal barge | 水上市场 floating market | 香米 jasmine rice |
+| 暹罗 Siam | Thailand | 竹外交: cannot be vassalised; the capital gains +1 gold and +1 culture for each nation at favour 15 or more, up to four | 皇家驳船 royal barge | 水上市场 floating market | 香米 jasmine rice |
 | 蒲甘 Pagan | Myanmar | 万塔之邦: every temple gives +2 culture | 缅刀武士 dha swordsman | 佛塔 pagoda | 翡翠 jadeite |
 | 满剌加 Malacca | Malay Peninsula | 海峡咽喉: takes 25% of the income of every other polity's sea route that passes within 3 hexes of one of its cities | 克里斯武士 kris warrior | 港务司 harbourmaster's office | 锡 tin |
 | 三佛齐 Srivijaya | Sumatra | 海上霸权: ships fight +10% and see 1 hex farther | 海峡水军 strait fleet | 佛学院 Buddhist college | 胡椒 pepper |
@@ -120,7 +120,7 @@ Each unique unit replaces the generic unit of its class and era (see [04-tech-an
 
 The spread follows when each unit existed historically, so the late eras are thin and no nation peaks in the modern era through its unit.
 
-The profile is given against the generic unit it replaces; where nothing is said, it is the same. A nation whose unique unit is of the Ancient era starts the game with it as its garrison.
+The profile is given against the generic unit it replaces; where nothing is said, it is the same. A nation whose unique unit is of the Ancient era starts the game with it as its garrison, whatever its class: of the seven such units four are infantry and three (琼崖, 虾夷, 渤泥) are ranged.
 
 | Nation | Unit | Era | Class | Piece | Profile | Ability |
 |---|---|---|---|---|---|---|
@@ -264,9 +264,9 @@ A personality stays the same from game to game. On top of it every leader with a
 
 | Ambition | What it changes in the AI |
 |---|---|
-| 征服 Conquest | Declares war at 80% of the usual strength ratio and sets a 40% larger share of its income aside for the army; keeps its whole supply limit under arms at peace, recruits before its cities' first buildings, and at war pays for units beyond the limit; builds the workshop first; military techs and cards first. It goes for the nations that hold capitals of major nations, the nearest first, marches on their cities, takes a major nation as a vassal wherever it can, starts its next war while still weary of the last (up to weariness 40), sues for peace only at weariness 55, and lets go of enemies that hold no such capital. It does not build the Tiangong project |
-| 治学 Learning | Starts no wars. Builds the academy and the university first; science techs and civil cards first. Builds the Tiangong project as soon as a stage is open, and researches what the project needs first once it is in the Modern era |
-| 殖货 Wealth | Starts no wars. Builds the market and the bank first; economy techs and cards first; its cities turn to gold instead of production once they feed themselves. It does not build the Tiangong project |
+| 征服 Conquest | Declares war at 80% of the usual strength ratio and sets a 40% larger share of its income aside for the army; keeps its whole supply limit under arms at peace, recruits before its cities' first buildings, and at war pays for units beyond the limit; builds the workshop first; military techs and cards first. It goes for the nations that hold capitals of major nations, the nearest first, marches on their cities, takes a major nation as a vassal wherever it can, starts its next war while still weary of the last (up to weariness 40), sues for peace only at weariness 55, gives up a war in which the enemy loses no city only after 36 turns (the others after 24), and lets go of enemies that hold no such capital. Its idle cities mint until the treasury holds four turns of income, then compile. It does not build the Tiangong project |
+| 治学 Learning | Starts no wars. Builds the academy and the university first; science techs and civil cards first. Builds the Tiangong project as soon as a stage is open, and researches what the project needs first once it is in the Modern era. Its idle cities compile |
+| 殖货 Wealth | Starts no wars. Builds the market and the bank first; economy techs and cards first; its cities turn to gold instead of production once they feed themselves, and its idle cities mint. It does not build the Tiangong project |
 
 A leader that starts no wars still fights when it is attacked or when an ally is, and it joins a war of containment against a leader the world fears (the balance of power in [03-gameplay.md](03-gameplay.md)). At peace it keeps 60% of its supply limit under arms.
 
@@ -358,7 +358,7 @@ A polity without a kit has no ambition: it is the all-rounder that goes to war w
 
 Some archetypes are obscure (唃厮啰, 德尔苏), because few figures are available for parts of Siberia and Southeast Asia. All are real people tied to the place.
 
-Notes on the buffs: morale runs from 0 to 100, so "+1 morale" in the first draft became +5, which still shows only in a city below 100. The game has no fog yet, so the two vision bonuses (三佛齐's ships, 率宾's leader) set a number that nothing reads until fog of war is built.
+Notes on the buffs: morale runs from 0 to 100, so "+1 morale" in the first draft became +5, which still shows only in a city below 100. The two vision bonuses (三佛齐's ships, 率宾's leader) add to what their owner sees through the fog of war ([03-gameplay.md](03-gameplay.md)).
 
 ## Difficulty and architecture
 
@@ -394,4 +394,4 @@ The kits needed a few rules the game did not have. They apply to everybody.
 - **Mountains.** A mountain hex that carries an improvement is worked by its city (夜郎). Nobody can stand on it.
 - **Vision.** A unit sees 2 hexes and a city 3, plus what modifiers add. What a polity does not see is hidden by the fog of war ([03-gameplay.md](03-gameplay.md)).
 - **Islands.** The landmasses of the map are known to the rules: an island is any but the largest.
-- **AI at sea.** A nation with a coast keeps warships: one for every two coastal cities, one more for each enemy warship afloat, two more while its army marches on a city it can only reach by sea, and at most 40% of the units it can pay for (one ship is always allowed beside the garrisons). At war the fleet goes with the embarked army or to the waters of the city the army marches on and fights what it meets; a battered ship sails home. A major nation counts a coastal city within 12 hexes by water of one of its own coastal cities as a neighbour when it looks for a war, once it knows Boats (and across ocean once it knows Compass).
+- **AI at sea.** A nation with a coast keeps warships: one for every two coastal cities, one more for each enemy warship afloat, two more while its army marches on a city it can only reach by sea, and at most 40% of the units it can pay for (one ship is always allowed beside the garrisons). At war the fleet goes with the embarked army or to the waters of the city the army marches on and fights what it meets; a battered ship sails home. A major nation counts a coastal city within 12 hexes by water of one of its own coastal cities as a neighbour when it looks for a war, once it knows Boats (and across ocean once it knows Compass). It declares such a war only with two warships to carry and escort the army and with twice the strength a war by land would take, and a major nation that starts wars and has nobody else on its own shores keeps two more warships at peace for that (see "Wars" under the AI tiers in [03-gameplay.md](03-gameplay.md)).

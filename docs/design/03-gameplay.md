@@ -4,7 +4,7 @@ A game is 150 turns over about two hours, so a turn averages under 50 seconds. T
 
 ## Eras
 
-Six eras of about 25 turns each: Ancient (上古), Classical (古典), Medieval (中古), Early Modern (近世), Industrial (工业), Modern (现代).
+Six eras of about 25 turns each: Ancient (上古), Classical (古典), Medieval (中古), Early Modern (近世), Industrial (工业), Modern (现代). The first is the shortest: in AI games at the middle difficulty level the leading major nation leaves the Ancient era on turn 20 or 21, and each later era lasts 19 to 34 turns for the first nation to enter it (20 to 32 in 98% of the eras played), so that the Modern era begins on turns 110–128.
 
 ## Yields
 
@@ -14,7 +14,7 @@ Morale (民心) is a per-city satisfaction value. War weariness lowers it: the l
 
 **The capital.** A nation's capital yields 50% more gold and science than the same city would elsewhere. It is the seat of government, and it counts for more the smaller the realm is: a nation of one city gets it on everything it has, a nation of six on a sixth.
 
-War weariness rises by 1 for every turn a polity is at war, however many enemies it has, and by 5 when it loses a city. It falls by 5 when the polity takes a city, by 10 when it forces a nation to become its vassal, and by 2 for every turn at peace. It never goes above 60.
+War weariness rises by 1 for every turn a polity is at war, however many enemies it has, and by 5 when it loses a city. It falls by 5 when the polity takes a city, by 10 when a war makes a nation its vassal (demanded at the gates of the fallen capital, or by a peace in which the beaten nation submits), and by 2 for every turn at peace. It never goes above 60.
 
 ## Cities
 
@@ -23,6 +23,7 @@ War weariness rises by 1 for every turn a polity is at war, however many enemies
 - **Citizens are assigned to hexes automatically.** The player only sets a city focus: balanced, food, production or gold.
 - One build project at a time, with a queue. Options: buildings, units, improvements.
 - **There are no worker units.** An improvement is chosen in the city's build queue and then placed on a hex on the map.
+- **City projects.** A city with nothing else to do can turn its production into something else. There are three: 庆典 Festival (Ritual) gives 1 culture for every 4 production, 铸钱 Minting (Currency) 1 gold for every 2, and 修书 Compilation (Writing) 1 science for every 4. A city project is queued like a building, costs nothing and is never finished: every turn in which it is the city's current item the turn's production is converted, in whole points (what is left over stays stored), until something else is queued behind it. Minted gold is income and counts for the Economic victory; the science goes to the research at hand, the culture towards the next policy card. A city project cannot be bought, and nothing that speeds up buildings speeds it up.
 - A captured city goes through a period of unrest.
 - **City defence.** A city has 130 HP, and 50 more with walls. Once it has walls it makes one ranged counter-strike per turn. When its HP reaches zero, a melee unit entering the hex captures it. A city regains 10 HP in a turn in which nobody attacks it.
 - **Mustering.** A new unit appears on its city's hex or, when that is taken, on the nearest free hex it may stand on within 3 hexes of the city. With no such hex the unit waits.
@@ -38,9 +39,9 @@ Roads are never built by hand. They form automatically between a nation's own ci
 
 ## Gold
 
-Gold pays building and unit upkeep. A unit costs 1 gold a turn, and two units per city are kept for nothing.
+Gold pays building and unit upkeep. A unit costs 1 gold a turn, and two units per city are kept for nothing. A treasury never goes below zero: a polity that cannot pay stays at 0 gold and disbands its newest unit, one every turn until it can pay again.
 
-**The supply limit.** A polity's cities and people supply a certain number of fighting units, on land and at sea: 2, plus 1.5 for every city, plus 1 for every 6 citizens, rounded down. A nation of four cities and 24 citizens supplies 12. Units beyond the limit can be kept, but each costs more than the one before: the first 1 gold a turn on top of its upkeep, the second 2, the third 3, so five units too many cost 15 gold a turn and ten cost 55. No policy card or trait lowers that. Settlers and tribes are not counted. This is what keeps the map of the middle game from being carpeted with pieces: an army is as large as the realm behind it, and a rich nation pays dearly for more. For the same reason wasteland holds one tribe for every 60 hexes of a zone, and at least one in each.
+**The supply limit.** A polity's cities and people supply a certain number of fighting units, on land and at sea: 2, plus 1.5 for every city, plus 1 for every 6 citizens, rounded down. A nation of four cities and 24 citizens supplies 12. Units beyond the limit can be kept, but each costs more than the one before: the first 1 gold a turn on top of its upkeep, the second 2, the third 3, so five units too many cost 15 gold a turn and ten cost 55. No policy card or trait lowers that. Settlers and tribes are not counted. This is what keeps the map of the middle game from being carpeted with pieces: an army is as large as the realm behind it, and a rich nation pays dearly for more. For the same reason wasteland holds one tribe for every 80 hexes of a zone, and at least one in each.
 
 Beyond upkeep, gold can:
 
@@ -83,7 +84,7 @@ The rules of a route:
 - Units have 100 HP. Damage is computed from the strength difference of the two sides, with a small random factor.
 - Five classes: infantry, ranged, cavalry, siege, naval.
 - **Air power is simplified.** In the modern era it is a ranged strike launched from a city with an airfield. There are no air units.
-- Strength curve: about 20 in the ancient era and about 100 in the modern era, rising by roughly a third per era.
+- Strength curve: 20 in the ancient era and 84 in the modern era, rising by a third per era (20, 27, 36, 47, 63, 84).
 - **Experience.** Units gain experience in combat and have three levels; each level adds 10% strength. There are no promotion trees.
 - **Upgrades.** Inside its own borders a unit can be upgraded with gold to the nearest later unit of the same class that its owner can build.
 - **Crossing water.** Land units embark automatically when they step off the coast: onto coastal water after Boats, onto ocean after Compass. An embarked unit fights at greatly reduced strength.
@@ -154,6 +155,8 @@ Events change it at once: declaring war −30 (−15 more when it breaks an agre
 
 An agreement is proposed with an action. An AI answers at once; a human player gets a pending offer that stays open for 10 turns, the same way a peace offer does. Only nations make agreements.
 
+**War and peace.** A war cannot end before it is 10 turns old: until then neither side can make peace. An AI that wants peace with a human player leaves an offer, which the player can take up for 10 turns; then it lapses like any other offer, and the AI waits another 10 turns before it offers again. While no offer stands, the player's own proposal is answered on its merits.
+
 | Agreement | Effect | Term |
 |---|---|---|
 | Trade pact | Trade routes between the two earn 50% more | 30 turns |
@@ -174,7 +177,7 @@ An agreement is proposed with an action. An AI answers at once; a human player g
 - At the gates of an enemy nation's fallen capital (0 HP), a melee land unit can demand vassalage instead of taking the city. The city stays with its owner, the war between the two ends, and the owner becomes a vassal. City-states cannot be made vassals.
 - A nation can also be asked to become a vassal without a war.
 - **Submission.** An AI nation that has lost a city in a war and asks an enemy at least 1.5 times as strong as itself for peace pays for the peace with its freedom: if the enemy accepts, it becomes the enemy's vassal. A human player who asks for peace never submits this way, and a player who accepts such an offer gets the vassal.
-- **How many vassals.** A nation can hold 1 vassal in the Ancient era, 2 in the Classical and Medieval eras, 3 in the Early Modern era and 5 from the Industrial era on. At that number a demand, a proposal or a submission is refused; the vassals it has stay.
+- **How many vassals.** A nation can hold 1 vassal in the Ancient era, 2 in the Classical and Medieval eras, 3 in the Early Modern era, 4 in the Industrial era and 5 in the Modern era. At that number a demand, a proposal or a submission is refused; the vassals it has stay.
 - A new vassal lets its own vassals and allies go. Its wars end, except those its overlord is also fighting, and it joins the rest of its overlord's wars.
 - A vassal pays 20% of its income (city gold and trade routes) to its overlord each turn. It joins every war its overlord enters and leaves it when its overlord makes peace. It cannot declare war or make peace itself, and war is declared on its overlord, not on it. Overlord and vassal have open borders.
 - An overlord can release a vassal at any time. A vassal is also freed when its overlord loses its own capital or is annexed, or itself becomes a vassal. A vassal that has come to dislike an overlord too weak to hold it leaves by itself (see the balance of power under [Favour](#favour)).
@@ -198,7 +201,7 @@ An agreement is proposed with an action. An AI answers at once; a human player g
 | Victory | Condition |
 |---|---|
 | Conquest | Hold 6 of the 12 major nations' original capitals at the same time |
-| Science | Complete the endgame project 天宫工程 (Tiangong Project): three stages built in the capital, requiring Rocketry, Electronics and Information Networks. Earliest around turn 135; in AI games it is finished on turns 147–150 |
+| Science | Complete the endgame project 天宫工程 (Tiangong Project): three stages built in the capital, requiring Rocketry, Electronics and Information Networks. In AI games at the middle difficulty level it is finished on turns 140–150 |
 | Economic | Highest cumulative gross income when turn 150 ends |
 
 The 12 major nations are the full-AI list fixed at game setup. A player who picks one of them already holds one of the six capitals; a player who picks any other nation must capture all six. That difference is an accepted difficulty choice.
@@ -207,15 +210,15 @@ Economic victory counts cumulative income, not gold held, so that spending is ne
 
 ## Difficulty
 
-A game is set up at one of five levels. At the middle level the AI plays by the same rules as the player. Below it the player's nation gets a bonus, above it the AI's major nations do; nobody else is ever touched. The bonus is a percentage on every yield of every city (food, production, gold, science, culture) and a percentage on the strength of units and cities.
+A game is set up at one of five levels. At the middle level the AI plays by the same rules as the player. Below it the player's nation gets a bonus, above it the AI's major nations do; nobody else is ever touched. The bonus is a percentage on the yields of every city and a percentage on the strength of units and cities. The player's bonus is on all five yields (food, production, gold, science, culture). The AI's is on four: it leaves science out, and what an AI major learns costs it more besides. A harder AI is richer and stronger, but it does not learn faster: its larger cities, earlier buildings and greater production would otherwise bring the Science victory forward and leave the other two no time.
 
-| Level | Player: yields | Player: strength | AI majors: yields | AI majors: strength |
-|---|---|---|---|---|
-| 从容 Relaxed | +30% | +20% | — | — |
-| 简单 Easy | +15% | +10% | — | — |
-| 标准 Standard | — | — | — | — |
-| 困难 Hard | — | — | +15% | +10% |
-| 严酷 Severe | — | — | +30% | +20% |
+| Level | Player: yields | Player: strength | AI majors: yields (not science) | AI majors: strength | AI majors: cost of techs |
+|---|---|---|---|---|---|
+| 从容 Relaxed | +30% | +20% | — | — | — |
+| 简单 Easy | +15% | +10% | — | — | — |
+| 标准 Standard | — | — | — | — | — |
+| 困难 Hard | — | — | +15% | +10% | +25% |
+| 严酷 Severe | — | — | +30% | +20% | +60% |
 
 In an observer game every major nation is the AI's.
 
@@ -227,18 +230,21 @@ In an observer game every major nation is the AI's.
 - City-states have their own minimal behaviour.
 - **What the full AI does with diplomacy and trade.** It picks policy cards for its situation (economy and civil cards at peace, military cards at war, a diplomacy card only when it has what the card works on). It fills its trade route slots with the destinations that pay best. Every few turns it offers its neighbours a trade pact, open borders and an alliance where favour allows, sells a resource a neighbour lacks, and sends a gift to the nearest city-state. It does not attack a nation it is on good terms with, and counts a target's allies and vassals before it declares war. At a fallen capital it takes a much weaker nation as a vassal when it is weary of war or has another war to fight, and takes the city otherwise. A city with an enemy at its gates and no garrison buys one.
 - **Ambitions.** In every game each leader of a major nation sets out for one of the three victories; which one is drawn from the game's seed and weighted by its personality (see [02-nations.md](02-nations.md)). A leader out for learning or wealth starts no wars; a leader out for conquest goes from one war to the next, after the nations that hold the capitals it needs.
-- **Gold.** A major nation keeps a reserve (80 gold and four turns of its upkeep) and spends the rest: up to four times a turn it buys what one of its cities is building, or the next building the city would build, the slowest item first. A full treasury makes its gifts to city-states four times as large.
+- **Gold.** A major nation keeps a reserve (80 gold and four turns of its upkeep) and spends the rest: up to four times a turn it buys what one of its cities is building, or the next building the city would build, the slowest item first; at war the airfields of its cities near the enemy are bought before anything else. It upgrades its units as soon as it can pay. What it still holds beyond one and a half turns of its income (and 80 gold) it gives away for standing every few turns, in gifts of 120 gold: first to the city-states within 28 hexes of its capital, the nearest first, as long as its influence there can still grow; then to the nations it borders or whose capital lies within 28 hexes, the one it stands worst with first, until favour with each has reached 60.
+- **Idle cities.** A city with nothing left to build takes up a city project and drops it again as soon as there is something to build. Which one follows from the leader's ambition ([02-nations.md](02-nations.md)): learning compiles, wealth mints, conquest mints until the treasury holds four turns of income and then compiles; a leader without an ambition compiles. A project that would do nothing is passed over (science with every tech known, culture with every card unlocked). A nation on the simplified AI, which does not research, holds festivals while it has cards to unlock and mints after that; a city-state mints.
+- **Wars.** A major declares a war of its own, or a war of containment, only on a nation it can carry the war to: one of the three cities of the target nearest to its own that it knows of must lie within a path cost of 36 of one of its cities without crossing water, or within 60 with a crossing once its units can embark (a water hex counts 3). The target's land and its vassals' count as open for this, other closed borders do not. A war it can only carry over the sea it declares with at least two warships and twice the strength a war by land would take. A war it cannot reach only costs it units, so it does not start one.
+- **Settling.** A wasteland site within 24 hexes of a city (30 for an expansionist leader) is worth a settler if a chain of zones that are the nation's own, nobody's or open to it leads there, or if the site lies over the water and the nation can embark. At peace a city sends the settler once it has its first building, before it founds the cities of the nation's own sites, which nobody can take from it. A nation has at most two settlers on the way or in the making. A settler goes round other units and never plans its way over the hex of a tribe.
 - **The size of armies.** No AI plans an army beyond its supply limit. At peace a leader out for conquest keeps the whole limit under arms and recruits before its cities' first buildings; the others keep 60% of it (80% for a nation without an ambition) and recruit half of that first. At war every leader fills the limit, and a leader out for conquest pays for units beyond it as long as the surcharge stays under 70% of its spare income. At a fallen capital it takes the owner as a vassal when it is 1.5 times as strong. A nation on the simplified AI keeps one garrison per city and one unit in the field.
 - **Fog.** The AI plans its steps with what its polity sees: a unit in the fog does not stand in its way. If the rules then refuse the step, the unit stays where it is for the turn and looks for no other way, so a refusal tells it nothing.
-- **Armies.** An army goes round units of other polities that stand in its way, and a column that is held up spreads out. A unit with no orders does not stay at the gates of its city, where new units muster. At war, a city within 10 hexes of an enemy city builds its airfield before anything else, and a nation at war or out for conquest researches Aviation before the other techs of its kind.
-- **Peace.** A major sues for peace at war weariness 35 (a leader out for conquest at 55), after 30 turns in which the enemy has lost no city, or when its army is less than 60% of the enemy's. It accepts a peace that makes the other its vassal while it has room for one.
+- **Armies.** An army goes round units of other polities that stand in its way, and a column that is held up spreads out. A unit with no orders does not stay at the gates of its city, where new units muster. At war, a city within 10 hexes of an enemy city builds its airfield before anything else (and a major buys it), and a nation at war or out for conquest researches Aviation before the other techs of its kind. Every city with an airfield strikes each turn at the enemy unit it sees in reach that it hurts most, or failing that at an enemy city that still stands.
+- **Peace.** A major sues for peace at war weariness 35 (a leader out for conquest at 55), after 24 turns in which the enemy has lost no city (a leader out for conquest after 36: a siege takes its time), or when its army is less than 60% of the enemy's. It accepts a peace that makes the other its vassal while it has room for one.
 - The simplified AI uses policy cards and accepts agreements, but proposes none and opens no trade routes.
 
 ## Turn pacing
 
 - During AI turns only battles inside the player's vision are animated. Everything else resolves instantly. Holding Space speeds animations up.
 - After a unit acts, selection jumps to the next unit that needs orders. Fortified and sleeping units stop asking.
-- A city asks for a project only when its queue is empty. "Repeat last item" is available.
+- A city asks for a project only when its queue is empty. "Repeat last item" is a switch of the city: while it is on, a city that finishes an item with nothing else queued queues the same item again, if it may still build it (a unit, but not a building it now has). A city project needs no such switch: it runs until something else is queued. A built-out city is therefore never a reason to queue an unwanted unit.
 
 ## Observer mode
 

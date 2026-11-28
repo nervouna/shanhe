@@ -93,6 +93,10 @@ export type Act = (action: Action) => boolean;
 const UNREACHABLE = 32767;
 /** Path costs beyond this are not explored. */
 const PATH_LIMIT = 60;
+/** In a `blocked` mask of `pathField`: no path goes over the hex at all. */
+const IMPASSABLE = 2;
+/** A settler has farther to go than an army: over rough land a site 24 hexes away costs more than `PATH_LIMIT`. */
+const SETTLER_PATH_LIMIT = 120;
 /** Cost of a water hex on a land unit's path: crossing is possible but not preferred. */
 const WATER_PATH_COST = 3;
 /** Added to a hex on an army's path where somebody else's unit stands in the way: the army goes round. */
@@ -358,7 +362,7 @@ function diplomacy(ctx: Ctx, polity: number, major: boolean, cities: City[], act
     const progress = Math.max(relation.since, polityOf(ctx, enemy).cityLostOn);
     const losing =
       self.warWeariness >= (conquering ? AI.conquestPeaceWeariness : AI.peaceWeariness) ||
-      state.turn - progress >= AI.stalemateTurns ||
+      state.turn - progress >= (conquering ? AI.conquestStalemateTurns : AI.stalemateTurns) ||
       strength < militaryStrength(ctx, enemy) * AI.peaceStrengthRatio;
     // A leader out for conquest lets go of an enemy that holds no capital of a major nation and is not the one it marches on.
     const sideshow = conquering && enemy !== marchingOn && capitalsHeld(ctx, enemy) === 0;
@@ -625,7 +629,16 @@ function statecraft(ctx: Ctx, polity: number, cities: City[], act: Act): void {
     return null;
   });
 
-  if (self.capital >= 0) spendSurplus(ctx, polity, neighbours, act);
+  if (self.capital >= 0) {
+    // Those it borders, and every other nation whose capital lies within twice the courting range of its own.
+    const home = at(map.zones, self.capital).siteHex;
+    const near = new Set(neighbours);
+    state.polities.forEach((other, index) => {
+      if (index === polity || !other.alive || other.capital < 0 || !isNation(ctx, index)) return;
+      if (hexesApart(ctx, home, at(map.zones, other.capital).siteHex) <= AI.courtRange * 2) near.add(index);
+    });
+    spendSurplus(ctx, polity, [...near].sort((a, b) => a - b), act);
+  }
 
   // The nearest city-state at peace, until it is safely won.
   if (self.gold < AI.goldReserve + AI.giftGold || self.capital < 0) return;
@@ -871,7 +884,8 @@ interface Plans {
   wanted: number;
   /** Units per class, alive or queued. */
   byClass: Record<string, number>;
-  settler: boolean;
+  /** Settlers, alive or queued. */
+  settlers: number;
   atWar: boolean;
   /** One per city. */
   garrisons: number;
@@ -942,7 +956,7 @@ function manageCities(ctx: Ctx, polity: number, major: boolean, cities: City[], 
     military: 0,
     wanted: budget - navyWanted,
     byClass: {},
-    settler: false,
+    settlers: 0,
     atWar: enemiesOf(ctx, polity).length > 0,
     garrisons: cities.length,
     barracks: 0,
@@ -953,7 +967,7 @@ function manageCities(ctx: Ctx, polity: number, major: boolean, cities: City[], 
   };
   const count = (type: string): void => {
     const def = unitDef(type);
-    if (def.id === SETTLER) plans.settler = true;
+    if (def.id === SETTLER) plans.settlers++;
     if (def.strength > 0 && def.domain === 'sea') plans.navy++;
     if (def.strength <= 0 || def.domain !== 'land') return;
     plans.military++;
@@ -1075,22 +1089,57 @@ function chooseImprovement(ctx: Ctx, city: City, hexes: readonly number[]): Buil
   return best !== null && checkItem(ctx, city, best) === null ? best : null;
 }
 
+/**
+ * True if a unit of `polity` can walk from the hex `from` to the site of
+ * `zone` as far as borders go: a chain of neighbouring zones leads there
+ * whose land is its own, nobody's or open to it. Zones are few, so this is
+ * cheap; the hexes in between are left to the unit's path.
+ */
+function landWay(ctx: Ctx, polity: number, from: number, zone: number): boolean {
+  const { topo, map } = ctx;
+  const start = map.zone[from] as number;
+  if (start < 0 || start === zone) return true;
+  const open = (other: number): boolean => bordersOpen(ctx, polity, at(map.zones, other).siteHex);
+  const seen = new Set<number>([zone]);
+  let frontier = [zone];
+  while (frontier.length > 0) {
+    const next: number[] = [];
+    for (const here of frontier) {
+      for (const other of at(topo.zoneNeighbors, here)) {
+        if (seen.has(other) || !open(other)) continue;
+        if (other === start) return true;
+        seen.add(other);
+        next.push(other);
+      }
+    }
+    frontier = next;
+  }
+  return false;
+}
+
+/**
+ * The wasteland site a settler of `polity` standing on `from` (or built in
+ * the city there) should go for: the nearest free one within reach that it
+ * has a way to, or -1.
+ */
 function settleTargetNear(ctx: Ctx, from: number, polity: number): number {
   const { state, map } = ctx;
+  const reach = AI.settleRange + styleOf(ctx, polity).settleRange;
+  const sails = (ctx.seaLevel[polity] as number) >= 1;
   let best = -1;
-  let bestDistance = AI.settleRange + styleOf(ctx, polity).settleRange + 1;
+  let bestDistance = reach + 1;
   for (let zone = 0; zone < state.cities.length; zone++) {
     if (state.zoneOwner[zone] !== NO_POLITY || state.cities[zone] !== null) continue;
     const site = at(map.zones, zone).siteHex;
     // A tribe on the site keeps settlers away, where it has been seen.
     if (ctx.unitAt.get(site)?.owner === NO_POLITY && canSee(ctx, polity, site)) continue;
-    // A settler walks there, or crosses the water once its nation can embark.
-    if (ctx.topo.landmass[site] !== ctx.topo.landmass[from] && (ctx.seaLevel[polity] as number) < 1) continue;
     const distance = hexesApart(ctx, from, site);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      best = zone;
-    }
+    if (distance >= bestDistance) continue;
+    // A settler walks there over land that is open to it, or crosses the water once its nation can embark.
+    const sameLand = ctx.topo.landmass[site] === ctx.topo.landmass[from];
+    if (sameLand ? !landWay(ctx, polity, from, zone) : !sails) continue;
+    bestDistance = distance;
+    best = zone;
   }
   return best;
 }
@@ -1107,6 +1156,19 @@ function chooseBuild(ctx: Ctx, polity: number, city: City, cities: City[], plans
   // The leader in science builds the project in its capital as soon as a stage is open.
   const project: BuildItem = { kind: 'project', project: PROJECT.id };
   if (polityOf(ctx, polity).capital === city.zone && can(project) && pursuesScience(ctx, polity)) return project;
+  const settler = (): BuildItem | null => {
+    if (!nation || plans.settlers >= AI.settlersAtOnce || city.pop < AI.expandPop || !can({ kind: 'unit', unit: SETTLER })) return null;
+    if (settleTargetNear(ctx, at(map.zones, city.zone).siteHex, polity) < 0) return null;
+    plans.settlers++;
+    return { kind: 'unit', unit: SETTLER };
+  };
+  // Empty land in reach is settled early: at peace a city sends a settler once it has its first building
+  // (an expansionist leader's before that), and before it founds the cities of the nation's own sites,
+  // which nobody can take from it.
+  if (!plans.atWar && (plans.style.settleFirst || city.buildings.length >= AI.settleAfterBuildings)) {
+    const item = settler();
+    if (item !== null) return item;
+  }
   if (nation && city.pop >= AI.expandPop) {
     for (let zone = 0; zone < state.cities.length; zone++) {
       const item: BuildItem = { kind: 'city', zone };
@@ -1128,18 +1190,6 @@ function chooseBuild(ctx: Ctx, polity: number, city: City, cities: City[], plans
   const recruiting = room && plans.military < plans.wanted && plans.barracks < plans.maxBarracks;
   if (recruiting && (plans.atWar || plans.military < plans.wanted * AMBITION_STYLES[ambition(ctx, polity)].armyFirst)) {
     return fieldUnit(ctx, polity, plans);
-  }
-  const settler = (): BuildItem | null => {
-    if (!nation || plans.settler || city.pop < AI.expandPop || !can({ kind: 'unit', unit: SETTLER })) return null;
-    if (settleTargetNear(ctx, at(map.zones, city.zone).siteHex, polity) < 0) return null;
-    plans.settler = true;
-    return { kind: 'unit', unit: SETTLER };
-  };
-  // Empty land in reach is settled early: at peace a city sends a settler once it has its first building
-  // (an expansionist leader's before that).
-  if (!plans.atWar && (plans.style.settleFirst || city.buildings.length >= AI.settleAfterBuildings)) {
-    const item = settler();
-    if (item !== null) return item;
   }
   const worked = chooseImprovement(ctx, city, city.worked);
   if (worked !== null) return worked;
@@ -1256,6 +1306,7 @@ function pathField(
         const next = topo.neighbors[hex * 6 + d] as number;
         if (next < 0 || total >= (cost[next] as number)) continue;
         if (landOnly && topo.water[next] === 1) continue;
+        if (blocked !== null && blocked[next] === IMPASSABLE) continue;
         if (!terrainAllows(ctx, walker, next, polity)) continue;
         // Land that would be enemy land in the war being weighed counts as open.
         if (!bordersOpen(ctx, polity, next) && (through === null || !through.has(ownerOf(ctx, next)))) continue;
@@ -1679,7 +1730,10 @@ function commandSettler(ctx: Ctx, unit: Unit, act: Act): void {
     if (unit.status === 'ready') act({ type: 'sleep', polity, unit: unit.id });
     return;
   }
-  const field = pathField(ctx, polity, at(ctx.map.zones, zone).siteHex);
+  // It goes round the units that stand in its way, and never plans a way over a tribe's hex: tribes do not move.
+  const blocked = standingInTheWay(ctx, polity);
+  for (const other of ctx.state.units) if (other.owner === NO_POLITY && blocked[other.hex] === 1) blocked[other.hex] = IMPASSABLE;
+  const field = pathField(ctx, polity, at(ctx.map.zones, zone).siteHex, SETTLER_PATH_LIMIT, blocked);
   advanceAlong(ctx, unit, field, act, 0);
   if (ctx.unitById.has(unit.id) && isSettleSite(ctx, unit.hex)) act({ type: 'settle', polity, unit: unit.id });
 }
