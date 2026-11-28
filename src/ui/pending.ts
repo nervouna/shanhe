@@ -49,6 +49,15 @@ export function peaceOffers(state: GameState): number[] {
 }
 
 /**
+ * The peace offers that wait for the player's answer: those that stand
+ * ({@link peaceOffers}) and were not turned down this turn. The main button,
+ * the polity panel and the notifications all go by this list.
+ */
+export function peaceWaiting(state: GameState, declined?: { has(polity: number): boolean }): number[] {
+  return peaceOffers(state).filter((from) => declined?.has(from) !== true);
+}
+
+/**
  * True if the player has a card to unlock, or an empty slot and an unlocked
  * card that is in no slot. A card the player took out of a slot does not
  * count: it is out on purpose. Nor does a slot the rules will not fill now
@@ -96,9 +105,7 @@ export function pendingItems(state: GameState, attention: Attention): PendingIte
   for (const offer of state.offers) {
     if (offer.to === player) items.push({ kind: 'offer', offer: offer.id, from: offer.from });
   }
-  for (const from of peaceOffers(state)) {
-    if (attention.declined?.has(from) !== true) items.push({ kind: 'peace', from });
-  }
+  for (const from of peaceWaiting(state, attention.declined)) items.push({ kind: 'peace', from });
   return items;
 }
 

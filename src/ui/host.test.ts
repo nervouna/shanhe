@@ -239,4 +239,30 @@ describe('createHost', () => {
     expect(host.state.turn).toBe(1);
     expect(host.busy).toBe(false);
   });
+
+  it('remembers a declined peace offer for the turn, and forgets it when the turn ends or another game is loaded', async () => {
+    const offered = edit(createGame(map, { player: 'jia', seed: 2 }), (draft) => {
+      draft.turn = 14;
+      draft.relations[`${JIA}:${YI}`] = { a: JIA, b: YI, atWar: true, since: 2, offerA: 0, offerB: 13 };
+    });
+    const host = createHost(map, createInlineRunner());
+    host.resume(offered);
+    const asks = (): boolean => host.pending().some((item) => item.kind === 'peace' && item.from === YI);
+    expect(asks()).toBe(true);
+    expect(host.declined.has(YI)).toBe(false);
+    const changes: HostChange[] = [];
+    host.subscribe((change) => changes.push(change));
+    host.declinePeace(YI);
+    expect(changes).toEqual([{ kind: 'attention' }]);
+    expect(host.declined.has(YI)).toBe(true);
+    expect(asks()).toBe(false);
+    // the state did not change: peace can still be made
+    expect(host.state).toBe(offered);
+    host.resume(offered);
+    expect(host.declined.has(YI)).toBe(false);
+    expect(asks()).toBe(true);
+    host.declinePeace(YI);
+    await host.endTurn();
+    expect(host.declined.size).toBe(0);
+  });
 });

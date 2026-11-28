@@ -60,7 +60,7 @@ import { policyOverlay, politiesOverlay, standingName, techOverlay, victoryOverl
 import type { OverlayKind, PolicyOverlayState, PolitiesOverlayState } from './overlays.ts';
 import { attackReach, findPath, previewAttack, reachableHexes } from './path.ts';
 import type { Path } from './path.ts';
-import { mainButton } from './pending.ts';
+import { mainButton, peaceWaiting } from './pending.ts';
 import type { PendingItem, PendingKind } from './pending.ts';
 import { polityPanel as polityPanelNodes } from './polityPanel.ts';
 import {
@@ -71,7 +71,6 @@ import {
   pillageAction,
   politySummary,
   ranking,
-  relationView,
   researchView,
   upgradeView,
 } from './rules.ts';
@@ -631,6 +630,12 @@ export function createApp(options: AppOptions): App {
 
   // -------------------------------------------------------- notifications
 
+  /** Turns the peace offer of a polity down for this turn: it leaves the main button, the panel and the notifications. */
+  const declinePeace = (polity: number): void => {
+    notes = notes.filter((note) => note.offer?.kind !== 'peace' || note.offer.from !== polity);
+    host.declinePeace(polity);
+  };
+
   const addNote = (text: () => string, hex: number, offer: NoteOffer | null = null): void => {
     notes.push({ id: nextNoteId++, turn: state().turn, text, hex, offer });
     notes = keepNotes(notes, MAX_NOTES);
@@ -1152,7 +1157,7 @@ export function createApp(options: AppOptions): App {
           const answer = (accept: boolean): void => {
             if (offer.kind === 'offer') act({ type: 'respond', polity: player(), offer: offer.id, accept });
             else if (accept) act({ type: 'makePeace', polity: player(), target: offer.from });
-            else host.declinePeace(offer.from);
+            else declinePeace(offer.from);
             // a deal the rules refused for want of gold still waits, and so does its notification
             const waits = offer.kind === 'offer' && state().offers.some((entry) => entry.id === offer.id);
             if (!waits) notes = notes.filter((other) => other.id !== note.id);
@@ -2241,8 +2246,11 @@ export function createApp(options: AppOptions): App {
       return host.busy;
     },
     act,
+    get declined() {
+      return host.declined;
+    },
     declinePeace(polity) {
-      host.declinePeace(polity);
+      declinePeace(polity);
     },
     refresh,
     flyTo,
@@ -2279,12 +2287,14 @@ export function createApp(options: AppOptions): App {
     if (striking !== null && cityPanel !== striking.city) striking = null;
     if (cityPanel === null) trade.clear(appView);
     if (polityPanel !== null && s.polities[polityPanel]?.alive !== true) polityPanel = null;
+    // a peace offer has its notification for as long as the main button and the panel ask about it
+    const waiting = peaceWaiting(s, host.declined);
     notes = notes.filter((note) => {
       const { offer } = note;
       if (offer === null) return s.turn - note.turn < NOTE_TURNS;
       // a note with an answer stays for as long as the offer stands
       if (offer.kind === 'offer') return s.offers.some((entry) => entry.id === offer.id);
-      return relationView(s, me, offer.from).kind === 'war' && s.turn - note.turn < NOTE_TURNS;
+      return waiting.includes(offer.from);
     });
     if (s.result !== null && screen === 'game') {
       screen = 'end';

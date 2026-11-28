@@ -98,6 +98,8 @@ export interface Host {
   /** True while turns are being played. */
   readonly busy: boolean;
   readonly orders: ReadonlyMap<number, MoveOrder>;
+  /** The polities whose peace offer the player turned down this turn. */
+  readonly declined: ReadonlySet<number>;
   start(setup: GameSetup): void;
   /** Continues a saved game. The state must be on this host's map. */
   resume(state: GameState): void;
@@ -249,6 +251,7 @@ export function createHost(map: MapData, runner: TurnRunner): Host {
       return busy;
     },
     orders,
+    declined,
     start(setup) {
       replace(createGame(map, setup), true);
     },

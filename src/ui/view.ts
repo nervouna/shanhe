@@ -12,6 +12,8 @@ export interface View {
   readonly busy: boolean;
   /** Sends an action of the player and says why if the rules refuse it. Does not redraw. */
   act(action: Action): boolean;
+  /** The polities whose peace offer the player turned down this turn. */
+  readonly declined: { has(polity: number): boolean };
   /** Turns down a peace offer for this turn. */
   declinePeace(polity: number): void;
   /** Redraws the whole interface. */

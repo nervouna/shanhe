@@ -14,6 +14,8 @@ import {
   diplomaticControls,
   favourRows,
   offersFrom,
+  panelControls,
+  peaceRow,
   standingWith,
 } from './diplomacy.ts';
 import type { DiplomaticControl } from './diplomacy.ts';
@@ -253,5 +255,43 @@ describe('the causes of favour', () => {
     const standing = favourStanding(level, YI, JIA)!;
     expect(favourRows(standing).map((row) => row.cause)).toEqual(standing.terms.map((term) => term.cause));
     expect(sum(level, YI, JIA)).toBe(standing.target);
+  });
+});
+
+describe('the peace offer in the panel', () => {
+  /** Yi has been at war with the player for twelve turns and offered peace during the last one. */
+  const offered = edit(base, (draft) => {
+    draft.turn = 14;
+    draft.relations[`${JIA}:${YI}`] = { a: JIA, b: YI, atWar: true, since: 2, offerA: 0, offerB: 13 };
+  });
+  const shown = (state: GameState, declined?: Set<number>): string[] => panelControls(state, JIA, YI, declined).map((entry) => entry.id);
+
+  it('is one row with the action the rules take, and no second peace button while it waits', () => {
+    const row = peaceRow(offered, JIA, YI);
+    expect(row).toMatchObject({ action: { type: 'makePeace', polity: JIA, target: YI }, reason: null, vassal: false });
+    expect(applyAction(offered, row!.action).ok).toBe(true);
+    // the controls are those of a war without the peace button: the row is the one place that makes peace
+    expect(ids(offered, YI)).toEqual(['makePeace']);
+    expect(shown(offered)).toEqual([]);
+  });
+
+  it('leaves the panel once it is declined, and the peace button is back', () => {
+    const declined = new Set([YI]);
+    expect(peaceRow(offered, JIA, YI, declined)).toBeNull();
+    expect(shown(offered, declined)).toEqual(['makePeace']);
+    // declining one polity's offer leaves another's alone
+    expect(peaceRow(offered, JIA, YI, new Set([DING]))).not.toBeNull();
+  });
+
+  it('is not there without an offer, for an offer that has lapsed, or towards somebody who offered nothing', () => {
+    expect(peaceRow(base, JIA, YI)).toBeNull();
+    expect(shown(base)).toEqual(ids(base, YI));
+    const stale = edit(offered, (draft) => {
+      draft.turn = 16;
+    });
+    expect(peaceRow(stale, JIA, YI)).toBeNull();
+    expect(shown(stale)).toEqual(['makePeace']);
+    expect(peaceRow(offered, JIA, DING)).toBeNull();
+    expect(panelControls(offered, JIA, DING).map((entry) => entry.id)).toEqual(ids(offered, DING));
   });
 });

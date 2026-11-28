@@ -14,6 +14,7 @@ import { t } from '../shared/i18n.ts';
 import type { TranslationKey } from '../shared/i18n.ts';
 import type { MapData } from '../shared/mapData.ts';
 import { agreementName, polityName, rejectText, resourceName } from './names.ts';
+import { peaceWaiting } from './pending.ts';
 
 /** The agreements a polity can propose and cancel, in the order the panel lists them. */
 export const PROPOSABLE: readonly Exclude<AgreementKind, 'truce'>[] = ['tradePact', 'openBorders', 'alliance', 'vassalage'];
@@ -114,6 +115,37 @@ export function diplomaticControls(state: GameState, me: number, other: number):
     }
   }
   return controls;
+}
+
+/** The peace offer of another polity as the panel lists it among the proposals. */
+export interface PeaceRow {
+  /** What "accept" sends. */
+  readonly action: Action;
+  /** Why the rules would refuse it now, or null. */
+  readonly reason: RejectReason | null;
+  /** True if accepting makes the other the player's vassal (doc 03, "Submission"). */
+  readonly vassal: boolean;
+}
+
+/**
+ * The peace offer of `other` that waits for the player's answer, or null:
+ * without one, and once the player has turned it down this turn.
+ */
+export function peaceRow(state: GameState, me: number, other: number, declined?: { has(polity: number): boolean }): PeaceRow | null {
+  if (me === NO_POLITY || me !== state.player || !peaceWaiting(state, declined).includes(other)) return null;
+  const action: Action = { type: 'makePeace', polity: me, target: other };
+  return { action, reason: checkAction(state, action), vassal: peaceMakesVassal(state, me, other) };
+}
+
+/**
+ * The controls the panel shows: {@link diplomaticControls}, without the
+ * peace control while the offer of `other` waits among the proposals. That
+ * row is the same answer with a way to say no; once it is declined the
+ * control is back, since peace can still be made.
+ */
+export function panelControls(state: GameState, me: number, other: number, declined?: { has(polity: number): boolean }): DiplomaticControl[] {
+  const controls = diplomaticControls(state, me, other);
+  return peaceRow(state, me, other, declined) === null ? controls : controls.filter((control) => control.kind !== 'makePeace');
 }
 
 /**

@@ -354,7 +354,9 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
       expect((await ui()).panel).toBe('polity');
       const from = (await ui()).polity;
       await expect(page.locator('#polity-offers .offer').first()).toBeVisible();
-      await expect(page.locator('#polity-controls .control').first()).toBeVisible();
+      // a peace offer is answered in its row: a war has no other control, and no second peace button while the offer waits
+      if (kind === 'peace') await expect(page.locator('#polity-controls .control')).toHaveCount(0);
+      else await expect(page.locator('#polity-controls .control').first()).toBeVisible();
       if (done.offers === 0) await capture(page, 'diplomacy');
       const offer = await page.evaluate(
         (polity) => window.__shanhe?.state.offers.find((entry) => entry.from === polity) ?? null,
@@ -895,6 +897,59 @@ test('a game that is imported or continued has a notification for every proposal
   await page.click('#notifications .note[data-offer-kind="offer"] [data-offer="accept"]');
   expect(await page.evaluate(() => window.__shanhe?.state.agreements.filter((entry) => entry.kind === 'openBorders').length)).toBe(1);
   expect((await waiting()).kinds).not.toContain('offer');
+  expect(errors).toEqual([]);
+});
+
+test('a peace offer is one row of the panel, and a declined one leaves the panel, the notifications and the main button', async ({ page }) => {
+  const errors = collectErrors(page);
+  await open(page, '/?map=fixture&render=off');
+  await page.evaluate(() => window.__shanhe?.startGame({ nation: 'jia', seed: 1, map: 'fixture' }));
+  await reimport(page, withOffers);
+  const atWar = (): Promise<boolean | undefined> => page.evaluate((key) => window.__shanhe?.state.relations[key]?.atWar, `0:${DING}`);
+  const kinds = (): Promise<string[]> =>
+    page.evaluate(() => [...document.querySelectorAll<HTMLElement>('#notifications .note')].map((note) => note.dataset.offerKind ?? ''));
+  await page.click(`#majors .major[data-polity="${DING}"]`);
+  expect(await page.evaluate(() => window.__shanhe?.ui.polity)).toBe(DING);
+  const row = page.locator('#polity-offers .offer[data-offer="peace"]');
+  const peaceButton = page.locator('#polity-controls [data-control="makePeace"]');
+  // the offer is answered in its row; nothing else in the panel says "make peace"
+  await expect(row).toHaveCount(1);
+  await expect(row.locator('[data-answer="accept"]')).toBeEnabled();
+  await expect(peaceButton).toHaveCount(0);
+  await expect(page.locator('#polity-panel').getByText('议和', { exact: true })).toHaveCount(1);
+  expect(await kinds()).toEqual(['offer', 'peace']);
+
+  await row.locator('[data-answer="decline"]').click();
+  // declined: no row with live buttons, no notification; the war goes on and peace can still be made by its button
+  await expect(row).toHaveCount(0);
+  await expect(page.locator('#polity-offers')).toHaveCount(0);
+  expect(await kinds()).toEqual(['offer']);
+  expect(await atWar()).toBe(true);
+  await expect(peaceButton).toHaveCount(1);
+  await expect(page.locator('#polity-panel').getByText('议和', { exact: true })).toHaveCount(1);
+  // the main button goes round everything that waits: the other nation's proposal is among it, the declined offer is not
+  await page.click('#polity-close');
+  const asked: string[] = [];
+  for (let press = 0; press < 12; press++) {
+    asked.push(await page.evaluate(() => window.__shanhe?.ui.mainButton.kind ?? ''));
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Escape');
+  }
+  expect(asked).toContain('offer');
+  expect(asked).not.toContain('peace');
+  expect(asked).not.toContain('nextTurn');
+
+  // the same from the notification: the row leaves the panel with it
+  await reimport(page, () => undefined);
+  await page.click(`#majors .major[data-polity="${DING}"]`);
+  await expect(row).toHaveCount(1);
+  await page.click('#notifications .note[data-offer-kind="peace"] [data-offer="decline"]');
+  await expect(row).toHaveCount(0);
+  expect(await kinds()).toEqual(['offer']);
+  // and the one button that is left makes the peace
+  await expect(peaceButton).toBeEnabled();
+  await peaceButton.click();
+  expect(await atWar()).toBe(false);
   expect(errors).toEqual([]);
 });
 

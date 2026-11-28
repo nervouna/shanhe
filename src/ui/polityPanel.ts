@@ -3,7 +3,7 @@
 import { CITY_STATE } from '../core/data.ts';
 import { NO_POLITY } from '../core/game.ts';
 import type { GameState } from '../core/game.ts';
-import { favourStanding, offerObstacle, peaceMakesVassal } from '../core/query.ts';
+import { favourStanding, offerObstacle } from '../core/query.ts';
 import { t } from '../shared/i18n.ts';
 import type { TranslationKey } from '../shared/i18n.ts';
 import {
@@ -11,11 +11,12 @@ import {
   causeText,
   controlReasonText,
   dealsBetween,
-  diplomaticControls,
   favourRows,
   knownAmbition,
   offerText,
   offersFrom,
+  panelControls,
+  peaceRow,
   peaceText,
   vassalRoomText,
 } from './diplomacy.ts';
@@ -24,7 +25,6 @@ import { button, el, iconOnly } from './dom.ts';
 import { kitViewOf } from './kit.ts';
 import { kitRows } from './kitPanel.ts';
 import { agreementName, polityName, rejectText, resourceName } from './names.ts';
-import { peaceOffers } from './pending.ts';
 import { relationView } from './rules.ts';
 import { counted } from './text.ts';
 import { cssColor, signed } from './view.ts';
@@ -212,13 +212,20 @@ export function polityPanel(view: View, polity: number, onClose: () => void): HT
         answer(false, () => view.act({ type: 'respond', polity: me, offer: offer.id, accept: false })),
       );
     });
-    if (peaceOffers(state).includes(polity)) {
+    // the offer of peace is answered here: while it waits, the controls below have no second button for it
+    const peace = peaceRow(state, me, polity, view.declined);
+    if (peace !== null) {
       offers.push(
         el(
           'div',
-          { class: 'offer', data: { offer: 'peace', vassal: Number(peaceMakesVassal(state, me, polity)) } },
-          el('span', { class: 'option-name', text: peaceText(state, me, polity) }),
-          answer(true, () => view.act({ type: 'makePeace', polity: me, target: polity })),
+          { class: 'offer', data: { offer: 'peace', vassal: Number(peace.vassal), refused: peace.reason ?? '' } },
+          el(
+            'span',
+            { class: 'option-name' },
+            peaceText(state, me, polity),
+            peace.reason !== null && el('span', { class: 'reason', text: rejectText(peace.reason) }),
+          ),
+          answer(true, () => view.act(peace.action), peace.reason !== null),
           answer(false, () => {
             view.declinePeace(polity);
           }),
@@ -227,7 +234,7 @@ export function polityPanel(view: View, polity: number, onClose: () => void): HT
     }
     if (offers.length > 0) body.append(el('section', { id: 'polity-offers' }, ...offers));
 
-    const controls = diplomaticControls(state, me, polity).map((control) => {
+    const controls = panelControls(state, me, polity, view.declined).map((control) => {
       const reason = controlReasonText(control);
       return el(
         'button',
