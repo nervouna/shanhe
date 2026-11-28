@@ -22,8 +22,8 @@ const MAX_SPEED = 6;
  *   if any of its hexes is in view.
  * @param sighted true for a hex the player's nation sees (fog of war);
  *   everything by default, as for the observer. A step between two hexes out
- *   of sight is not played, nor a strike at a hex out of sight or the fall
- *   of a city out of sight. `before` is then the state as the player knows
+ *   of sight is not played, nor a strike at a hex out of sight, the fall of
+ *   a city out of sight, or the death or promotion of a piece out of sight. `before` is then the state as the player knows
  *   it: a unit the fog hides is not on the board and nothing it does is played.
  */
 export function visualEvents(
@@ -97,6 +97,8 @@ export function visualEvents(
       case 'unitKilled': {
         if (!hexOf.has(event.unit)) break;
         hexOf.delete(event.unit);
+        // a piece that walked out of sight and fell there is simply gone when the board is redrawn
+        if (!sighted(event.hex)) break;
         push({ type: 'destroy', unit: event.unit }, [event.hex]);
         break;
       }
@@ -106,7 +108,7 @@ export function visualEvents(
         break;
       case 'unitPromoted': {
         const hex = hexOf.get(event.unit);
-        if (hex !== undefined) push({ type: 'promote', unit: event.unit }, [hex]);
+        if (hex !== undefined && sighted(hex)) push({ type: 'promote', unit: event.unit }, [hex]);
         break;
       }
       case 'cityCaptured':

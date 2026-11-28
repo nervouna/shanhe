@@ -58,11 +58,17 @@ describe('visualEvents under fog', () => {
       { type: 'unitMoved', unit: own, owner: JIA, from: dark, to: darker },
       // and strikes at a hex out of sight
       strike(own, JIA, darker, dark),
+      // a piece that was on the board when it left is promoted and falls out of sight
+      { type: 'unitPromoted', unit: own, level: 1 },
+      { type: 'unitKilled', unit: own, owner: JIA, hex: darker, unitType: 'warrior' },
     ];
     expect(visualEvents(known, events, everywhere, sighted)).toEqual([{ type: 'move', unit: own, path: [home, dark] }]);
     // the observer is shown all of it
     expect(visualEvents(state, events, everywhere).map((event) => event.type)).toEqual([
-      'move', 'melee', 'destroy', 'capture', 'cityStrike', 'move', 'melee',
+      'move', 'melee', 'destroy', 'capture', 'cityStrike', 'move', 'melee', 'promote', 'destroy',
     ]);
+    // in sight, a piece of the board is seen to fall
+    const fall: GameEvent = { type: 'unitKilled', unit: own, owner: JIA, hex: home, unitType: 'warrior' };
+    expect(visualEvents(known, [fall], everywhere, sighted)).toEqual([{ type: 'destroy', unit: own }]);
   });
 });
