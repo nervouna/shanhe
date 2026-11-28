@@ -93,6 +93,13 @@ test('an observer game on the fixture map runs to its end', async ({ page }) => 
   await page.keyboard.press('Escape');
   await page.click('#speed [data-speed="2"]');
   expect(await page.evaluate(() => window.__shanhe?.ui.observer?.speed)).toBe(2);
+  // the menu stays put under the observer's clock too: its controls take ordinary clicks
+  await page.click('#menu-button');
+  await page.click('#menu-quality [data-quality="medium"]');
+  expect(await page.evaluate(() => window.__shanhe?.ui.settings.quality)).toBe('medium');
+  await page.click('#menu-quality [data-quality="auto"]');
+  await page.click('#menu-close');
+  expect(await page.evaluate(() => window.__shanhe?.ui.panel)).toBeNull();
   // nothing sounds under automation: the engine never starts
   expect(await page.evaluate(() => window.__shanhe?.ui.sound)).toMatchObject({ silent: true, unlocked: false });
 
@@ -401,8 +408,10 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
 
 test('nation select shows a kit, a unique unit is in the build menu, and the settings survive a reload', async ({ page }) => {
   const errors = collectErrors(page);
-  // the kits belong to the nations of the real map; nothing is drawn
-  await open(page, '/?render=off');
+  if (viewport !== null) await page.setViewportSize(viewport);
+  // the kits belong to the nations of the real map; nothing is drawn, unless pictures are wanted
+  const url = captureDir === undefined ? '/?render=off' : '/';
+  await open(page, url);
   const ui = (): Promise<NonNullable<Window['__shanhe']>['ui']> =>
     page.evaluate(() => {
       const handle = window.__shanhe;
@@ -542,7 +551,7 @@ test('nation select shows a kit, a unique unit is in the build menu, and the set
   expect((await ui()).sound).toMatchObject({ silent: true, unlocked: false, volume: 0.25, muted: true });
   await expect(page.locator('#menu h3').first()).toHaveText('Quality');
 
-  await open(page, '/?render=off');
+  await open(page, url);
   const after = await ui();
   expect(after.settings).toEqual(changed);
   expect(after.scale).toEqual({ setting: 'large', factor: 1.3 });

@@ -1679,10 +1679,15 @@ export function createApp(options: AppOptions): App {
 
   const drawMenu = (): void => {
     menuBox.hidden = !menuOpen || screen !== 'game';
-    if (menuBox.hidden) {
-      fill(menuBox);
-      return;
-    }
+    if (menuBox.hidden) return;
+    const now = settings.current;
+    // rebuilt only when what it shows changed: an observer's clock redraws the page while the menu is open,
+    // and the volume slider must stay under the pointer
+    const signature = [now.quality, now.scale, now.language, now.animationSpeed, now.muted, scale, board.renderer.backend].join('|');
+    fillWhen(menuBox, signature, () => menuNodes());
+  };
+
+  const menuNodes = (): HTMLElement[] => {
     const now = settings.current;
     const volume = el('input', { id: 'menu-volume', label: t('menu.volume'), data: { value: now.volume } });
     volume.type = 'range';
@@ -1703,8 +1708,7 @@ export function createApp(options: AppOptions): App {
       changeSettings({ scale: value });
     });
     scaleRow.dataset.scale = String(scale);
-    fill(
-      menuBox,
+    return [
       el(
         'div',
         { class: 'menu-actions' },
@@ -1746,7 +1750,7 @@ export function createApp(options: AppOptions): App {
         }, { id: 'menu-close' }),
       ),
       el('div', { class: 'footnote', id: 'backend', text: t('hud.backend', { backend: t(`backend.${board.renderer.backend}`) }) }),
-    );
+    ];
   };
 
   // ------------------------------------------------------- start and end
