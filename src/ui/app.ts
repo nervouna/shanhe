@@ -29,6 +29,7 @@ import { icon } from './icons.ts';
 import type { IconName } from './icons.ts';
 import { NATION_SORTS, kitViewOf, listNations, nationEntries, regionsOf } from './kit.ts';
 import type { NationEntry, NationSort } from './kit.ts';
+import { beyondSupply, capitalLines, supplyOf, supplyWarning } from './balance.ts';
 import { difficultyMark, kitRows } from './kitPanel.ts';
 import { LENSES } from './lens.ts';
 import type { Lens } from './lens.ts';
@@ -849,8 +850,9 @@ export function createApp(options: AppOptions): App {
       const summary = politySummary(s, player());
       const gold = `${Math.floor(polity?.gold ?? 0)} ${signed(summary.net)}`;
       const morale = summary.morale === null ? '—' : String(summary.morale);
+      const supply = supplyOf(s, player());
       const signature = [
-        player(), getLanguage(), gold, summary.yields.science, summary.yields.culture, morale, kitOpen,
+        player(), getLanguage(), gold, summary.yields.science, summary.yields.culture, morale, kitOpen, supply.value,
       ].join('|');
       fillWhen(topLeft, signature, () => {
         // the nation's name opens its kit; a nation without one (a test map) has nothing to open
@@ -867,9 +869,18 @@ export function createApp(options: AppOptions): App {
           },
         });
         nation.style.setProperty('--nation', cssColor(map().polities[player()]?.color ?? 0x888888));
+        // the fighting units against what the cities supply, next to the gold the excess is paid from
+        const supplied = stat('unit', t('hud.supply'), supply.value, 'stat-supply');
+        supplied.title = supply.text;
+        supplied.setAttribute('aria-label', supply.text);
+        supplied.classList.toggle('status', supply.over);
+        supplied.dataset.used = String(supply.used);
+        supplied.dataset.limit = String(supply.limit);
+        supplied.dataset.surcharge = String(supply.surcharge);
         return [
           nation,
           stat('gold', yieldName('gold'), gold, 'stat-gold'),
+          supplied,
           stat('science', yieldName('science'), signed(summary.yields.science), 'stat-science'),
           stat('culture', yieldName('culture'), signed(summary.yields.culture), 'stat-culture'),
           stat('morale', t('hud.morale'), morale, 'stat-morale'),
@@ -1178,14 +1189,28 @@ export function createApp(options: AppOptions): App {
     );
     if (view.queue.length === 0) queueList.append(el('li', { class: 'empty', text: '—' }));
 
-    const group = (title: string, id: string, nodes: HTMLElement[]): HTMLElement | null =>
+    const group = (title: string, id: string, nodes: (HTMLElement | null)[]): HTMLElement | null =>
       nodes.length === 0 ? null : el('section', { id }, el('h3', { text: title }), ...nodes);
+    // what makes this city's yields differ from another's: the seat of the nation
+    const capital = capitalLines(state(), zone);
+    const capitalRow =
+      capital.length > 0 &&
+      el(
+        'div',
+        { class: 'line', id: 'city-capital' },
+        el('span', { class: 'tag', text: t('city.capital') }),
+        ...capital.map((line) => el('span', { data: { yield: line.yield, percent: line.percent }, text: line.text })),
+      );
+    const supply = supplyOf(state(), city.owner);
+    const warning = supplyWarning(supply);
+    const fighting = view.units.filter((option) => option.item.kind === 'unit' && beyondSupply(supply, option.item.unit)).length;
 
     const body = el(
       'div',
       { class: 'scroll' },
       facts,
       yieldsRow,
+      capitalRow,
       strikes &&
         button(t('city.airStrike'), () => {
           striking = aiming ? null : { city: zone, hexes: strikeHexes };
@@ -1207,11 +1232,20 @@ export function createApp(options: AppOptions): App {
       focusRow,
       el('h3', { text: t('city.queue') }),
       queueList,
-      group(t('city.units'), 'build-units', view.units.map((option) => {
-        // the key is the item the rules take; the name is what the nation really builds
-        const key = `unit:${option.item.kind === 'unit' ? option.item.unit : ''}`;
-        return buyable(option, key, optionButton(itemName(map(), option.item, me), option, key, queue(option.item)));
-      })),
+      group(t('city.units'), 'build-units', [
+        // one more fighting unit would stand beyond the supply limit: what that costs
+        warning !== null && fighting > 0
+          ? el('div', { class: 'reason', id: 'supply-warning', data: { gold: supply.nextUnit }, text: warning })
+          : null,
+        ...view.units.map((option) => {
+          // the key is the item the rules take; the name is what the nation really builds
+          const unit = option.item.kind === 'unit' ? option.item.unit : '';
+          const key = `unit:${unit}`;
+          const node = optionButton(itemName(map(), option.item, me), option, key, queue(option.item));
+          if (beyondSupply(supply, unit)) node.dataset.supply = 'over';
+          return buyable(option, key, node);
+        }),
+      ].filter((node) => node !== null)),
       group(t('city.buildings'), 'build-buildings', view.buildings.map((option) => {
         const key = `building:${option.item.kind === 'building' ? option.item.building : ''}`;
         const name = option.item.kind === 'building' ? buildingName(option.item.building) : '';
