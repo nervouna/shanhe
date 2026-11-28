@@ -57,7 +57,7 @@ export interface Lighting {
    * @param tilt of the view above the horizon, in radians.
    * @param dirty whether anything that casts a shadow changed since the last
    *   call. `moving` says that only pieces in motion did: the far cascade
-   *   then follows at half the rate.
+   *   then follows at a third of the rate.
    * @param seconds of drawn time since the start, for the drift of the sun.
    * @returns whether a cascade is drawn again in the next frame.
    */
@@ -218,7 +218,7 @@ export function createLighting(scene: Scene, renderer: WebGPURenderer, mapSpan: 
   placeAxes();
 
   let shadowDraws = 0;
-  let farTurn = false;
+  let farTurn = 0;
 
   return {
     sunDirection,
@@ -242,11 +242,11 @@ export function createLighting(scene: Scene, renderer: WebGPURenderer, mapSpan: 
       sun.updateMatrixWorld();
 
       let redraw = false;
-      farTurn = !farTurn;
+      farTurn = (farTurn + 1) % 3;
       cascades.forEach((cascade, index) => {
         const refit = stepped || cascadeNeedsFit(cascade.fit, target.x, target.z, distance);
-        // pieces in motion: the far cascade is drawn every other frame
-        const changed = dirty === true || (dirty === 'moving' && (index === 0 || farTurn));
+        // pieces in motion: the far cascade is drawn every third frame
+        const changed = dirty === true || (dirty === 'moving' && (index === 0 || farTurn === 0));
         if (!refit && !changed) return;
         if (refit) {
           const half = cascadeHalf(index, distance, mapSpan);
