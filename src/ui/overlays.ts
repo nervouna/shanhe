@@ -7,7 +7,7 @@ import { dictionaries, getLanguage, t } from '../shared/i18n.ts';
 import type { TranslationKey } from '../shared/i18n.ts';
 import { standingWith } from './diplomacy.ts';
 import type { Standing } from './diplomacy.ts';
-import { button, el } from './dom.ts';
+import { button, el, iconOnly, stat } from './dom.ts';
 import {
   buildingName,
   eraName,
@@ -44,16 +44,12 @@ function sheet(id: string, title: string, view: View, extra: (Node | null)[], bo
       {},
       el('h1', { text: title }),
       el('div', { class: 'stats' }, ...extra),
-      button('×', () => {
+      iconOnly('close', t('menu.close'), () => {
         view.closeOverlay();
       }, { class: 'close', id: 'overlay-close' }),
     ),
     body,
   );
-}
-
-function stat(label: string, value: string, id: string): HTMLElement {
-  return el('span', { class: 'stat', id }, el('span', { class: 'stat-label', text: label }), value);
 }
 
 // ------------------------------------------------------------------- techs
@@ -95,6 +91,8 @@ export function techOverlay(view: View): HTMLElement {
   const height = y(layout.rows - 1) + NODE.height;
   const position = new Map(layout.nodes.map((node) => [node.tech, node]));
   const separator = getLanguage() === 'zh' ? '、' : ', ';
+  // the tree is the player's own: their nation's unique items stand in it, nobody else's
+  const nation = view.map.polities[player]?.id ?? '';
 
   const lines = document.createElementNS(SVG, 'svg');
   lines.setAttribute('class', 'tree-lines');
@@ -132,7 +130,14 @@ export function techOverlay(view: View): HTMLElement {
     const tech: TechId = node.tech;
     const info = views.get(tech);
     if (info === undefined) continue;
-    const unlocks = techUnlocks(tech).map((unlock) => unlockText(view, unlock)).join(separator);
+    const unlocked = techUnlocks(tech, nation);
+    const unlocks = unlocked.map((unlock) => unlockText(view, unlock)).join(separator);
+    const gains = el('span', { class: 'tech-unlocks', title: unlocks });
+    unlocked.forEach((unlock, index) => {
+      if (index > 0) gains.append(separator);
+      const unique = 'unique' in unlock && unlock.unique;
+      gains.append(unique ? el('span', { class: 'unique', text: unlockText(view, unlock), data: { unique: unlock.kind } }) : unlockText(view, unlock));
+    });
     const meta = t('tech.cost', { cost: info.cost }) + (info.turns === null ? '' : ` · ${t('count.turns', { turns: info.turns })}`);
     const chosen = info.status === 'open' || info.status === 'current';
     const item = el(
@@ -152,7 +157,7 @@ export function techOverlay(view: View): HTMLElement {
       },
       el('span', { class: 'tech-name', text: techName(tech) }),
       info.status !== 'known' && el('span', { class: 'tech-meta', text: meta }),
-      el('span', { class: 'tech-unlocks', text: unlocks, title: unlocks }),
+      gains,
     );
     item.style.left = `${x(node.era)}px`;
     item.style.top = `${y(node.row)}px`;
@@ -165,7 +170,7 @@ export function techOverlay(view: View): HTMLElement {
     'tech-overlay',
     t('hud.research'),
     view,
-    [stat(yieldName('science'), signed(science), 'tech-science')],
+    [stat('science', yieldName('science'), signed(science), 'tech-science')],
     el('div', { class: 'scroll sheet-body' }, tree),
   );
 }
@@ -200,7 +205,7 @@ export function policyOverlay(view: View, local: PolicyOverlayState): HTMLElemen
     { id: 'policy-slots' },
     ...self.slots.map((card, slot) => {
       const reason = picked === null ? null : check(state, { type: 'slotPolicy', polity: player, policy: picked, slot });
-      return el(
+      const place = el(
         'button',
         {
           class: `policy-slot${card === null ? ' empty' : ''}`,
@@ -215,6 +220,18 @@ export function policyOverlay(view: View, local: PolicyOverlayState): HTMLElemen
         el('span', { class: 'card-name', text: card === null ? t('policy.empty') : policyName(card) }),
         card !== null && el('span', { class: 'card-effect', text: policyEffect(card) }),
         picked !== null && reason !== null && el('span', { class: 'reason', text: rejectText(reason) }),
+      );
+      // a card can be taken out again: the slot then stays empty until the player fills it
+      const empty = { type: 'slotPolicy', polity: player, policy: null, slot } as const;
+      return el(
+        'div',
+        { class: 'slot-wrap' },
+        place,
+        card !== null &&
+          iconOnly('close', t('policy.clear'), () => {
+            view.act(empty);
+            view.refresh();
+          }, { class: 'slot-clear', data: { clear: slot }, disabled: view.busy || check(state, empty) !== null }),
       );
     }),
   );
@@ -271,7 +288,7 @@ export function policyOverlay(view: View, local: PolicyOverlayState): HTMLElemen
     t('hud.policy'),
     view,
     [
-      stat(yieldName('culture'), `${Math.floor(self.cultureProgress)}/${cost}`, 'policy-culture'),
+      stat('culture', yieldName('culture'), `${Math.floor(self.cultureProgress)}/${cost}`, 'policy-culture'),
       swaps === '' ? null : el('span', { class: 'stat', id: 'policy-swaps', text: swaps }),
     ],
     el('div', { class: 'scroll sheet-body' }, slots, grid),
@@ -320,8 +337,9 @@ export function politiesOverlay(view: View, local: PolitiesOverlayState): HTMLEl
       ...rows.map((row) => {
         const entry = map.polities[row.polity];
         const standing = player === NO_POLITY ? null : standingWith(state, player, row.polity);
-        const name = el('span', { class: 'swatch', text: polityName(map, row.polity) });
-        name.style.borderColor = cssColor(entry?.color ?? 0x888888);
+        // a button, so that the row can be opened from the keyboard; its click is the row's
+        const name = el('button', { class: 'swatch row-open', text: polityName(map, row.polity) });
+        name.style.setProperty('--nation', cssColor(entry?.color ?? 0x888888));
         const kind = entry?.kind === 'cityState' ? ` · ${t('polity.cityState')}` : '';
         return el(
           'tr',
@@ -378,7 +396,7 @@ export function victoryOverlay(view: View): HTMLElement {
       ...progress.lines.map((line) => {
         const key: TranslationKey = `victory.${line.kind}`;
         const leader = el('span', { class: 'swatch', text: polityName(map, line.leader) });
-        leader.style.borderColor = cssColor(map.polities[line.leader]?.color ?? 0x888888);
+        leader.style.setProperty('--nation', cssColor(map.polities[line.leader]?.color ?? 0x888888));
         return el(
           'tr',
           { class: line.leader === player ? 'mine' : '', data: { victory: line.kind, leader: line.leader } },

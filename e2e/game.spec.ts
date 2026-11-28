@@ -74,11 +74,27 @@ test('an observer game on the fixture map runs to its end', async ({ page }) => 
   // research and policies are the player's: an observer has neither overlay
   await page.keyboard.press('t');
   expect(await page.evaluate(() => window.__shanhe?.ui.overlay)).toBeNull();
-  // the observer's clock redraws the HUD every turn: the click is sent without waiting for the button to stand still
-  await page.locator('#victory-button').dispatchEvent('click');
+  // the observer's clock redraws the HUD every turn, but the buttons of the top bar and the speed
+  // control are not rebuilt: they are the same nodes turns later, and an ordinary click lands on them
+  await page.evaluate(() => {
+    for (const id of ['#victory-button', '#polities-button', '#menu-button', '#speed [data-speed="2"]']) {
+      const node = document.querySelector<HTMLElement>(id);
+      if (node === null) throw new Error(`${id} is missing`);
+      node.dataset.kept = '1';
+    }
+  });
+  expect((await page.evaluate(() => window.__shanhe?.runTurns(3)))?.turns).toBe(3);
+  for (const id of ['#victory-button', '#polities-button', '#menu-button', '#speed [data-speed="2"]']) {
+    await expect(page.locator(id)).toHaveAttribute('data-kept', '1');
+  }
+  await page.click('#victory-button');
   expect(await page.evaluate(() => window.__shanhe?.ui.overlay)).toBe('victory');
   expect(await page.locator('#victory tbody tr').count()).toBe(3);
   await page.keyboard.press('Escape');
+  await page.click('#speed [data-speed="2"]');
+  expect(await page.evaluate(() => window.__shanhe?.ui.observer?.speed)).toBe(2);
+  // nothing sounds under automation: the engine never starts
+  expect(await page.evaluate(() => window.__shanhe?.ui.sound)).toMatchObject({ silent: true, unlocked: false });
 
   const report = await page.evaluate(() => window.__shanhe?.runTurns(400));
   if (report === undefined) throw new Error('runTurns returned nothing');
@@ -154,7 +170,7 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
 
   // Enter is the main button. It ends the turn only when nothing is pending:
   // every kind of pending item is answered the way a player would.
-  const done = { research: 0, unlocked: 0, slotted: 0, routes: 0, offers: 0, enterKept: 0 };
+  const done = { research: 0, unlocked: 0, slotted: 0, routes: 0, offers: 0, enterKept: 0, aids: 0 };
   for (let step = 0; (await turnOf()) < 13; step++) {
     expect(step, 'the main button never offered the next turn').toBeLessThan(300);
     const kind = await main();
@@ -190,6 +206,11 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
     } else if (kind === 'unit') {
       await page.keyboard.press('Enter');
       await expect(page.locator('#selection')).toBeVisible();
+      // the reach of the selected piece goes to the renderer as selection aids
+      const aids = (await ui()).aids;
+      expect(aids).not.toBeNull();
+      expect(aids?.reachable ?? 0).toBeGreaterThan(0);
+      done.aids++;
       await page.click('#selection [data-action="sleep"]');
     } else if (kind === 'research') {
       await expect(page.locator('#main-action')).toHaveText('选择研究');
@@ -289,6 +310,7 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
   expect(done.unlocked).toBeGreaterThan(0);
   expect(done.slotted).toBeGreaterThan(0);
   expect(done.offers).toBeGreaterThan(0);
+  expect(done.aids).toBeGreaterThan(0);
   expect((await ui()).enterApplied).toBe(1);
   // under automation the board shows every change at once: nothing was played
   const played = await page.evaluate(() =>
@@ -326,8 +348,26 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
   expect((await ui()).overlay).toBe('tech');
   await page.keyboard.press('p');
   expect((await ui()).overlay).toBe('policy');
+  // a card can be taken out of its slot; the slot then waits for nothing
+  const filled = (await self()).slots.findIndex((card) => card !== null);
+  expect(filled).toBeGreaterThanOrEqual(0);
+  const waiting = await main();
+  await page.click(`#policy-slots [data-clear="${filled}"]`);
+  expect((await self()).slots[filled]).toBeNull();
+  await expect(page.locator(`#policy-slots .policy-slot[data-slot="${filled}"]`)).toHaveClass(/empty/);
   await page.keyboard.press('p');
   expect((await ui()).overlay).toBeNull();
+  // unless a card was waiting to be unlocked anyway, the emptied slot asks for nothing
+  console.log(`policies before the slot was emptied: main button "${waiting}"`);
+  if (waiting !== 'policy') expect(await main()).not.toBe('policy');
+  // the keyboard reaches every control: Tab moves the focus, and Enter then presses what has it, not the main button
+  await page.locator('#victory-button').focus();
+  await page.keyboard.press('Tab');
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe('menu-button');
+  await page.keyboard.press('Enter');
+  expect((await ui()).panel).toBe('menu');
+  await page.keyboard.press('Escape');
+  expect((await ui()).panel).toBeNull();
 
   // the lenses of the minimap
   await page.click('#lenses [data-lens="diplomacy"]');
@@ -356,6 +396,159 @@ test('a player game: research, policies, a trade route, an offer and twelve turn
   expect(await page.evaluate(() => window.__shanhe?.state.player)).toBe(0);
   expect((await ui()).scale.setting).toBe('small');
   expect(await page.evaluate(() => window.__shanhe?.state.routes.length)).toBeGreaterThan(0);
+  expect(errors).toEqual([]);
+});
+
+test('nation select shows a kit, a unique unit is in the build menu, and the settings survive a reload', async ({ page }) => {
+  const errors = collectErrors(page);
+  // the kits belong to the nations of the real map; nothing is drawn
+  await open(page, '/?render=off');
+  const ui = (): Promise<NonNullable<Window['__shanhe']>['ui']> =>
+    page.evaluate(() => {
+      const handle = window.__shanhe;
+      if (handle === undefined) throw new Error('window.__shanhe is not set');
+      return handle.ui;
+    });
+
+  // nation select: 50 nations, the 12 default majors marked, no kit until one is highlighted
+  const before = await ui();
+  expect(before.start).toMatchObject({ region: 'all', sort: 'region', chosen: null });
+  expect(before.start?.nations).toHaveLength(50);
+  expect(before.kit).toBeNull();
+  expect(before.sound).toMatchObject({ silent: true, unlocked: false });
+  await expect(page.locator('#nations .nation')).toHaveCount(50);
+  await expect(page.locator('#nations .nation[data-major="1"]')).toHaveCount(12);
+  await expect(page.locator('#kit-card')).toHaveCount(0);
+
+  await page.click('[data-nation="qi"]');
+  expect((await ui()).kit).toEqual({ nation: 'qi', where: 'start' });
+  const card = page.locator('#kit-card');
+  await expect(card).toHaveAttribute('data-nation', 'qi');
+  await expect(card.locator('[data-kit="trait"] .kit-name')).toHaveText('鱼盐之利');
+  // the numbers in the effect texts come from the rules' data
+  await expect(card.locator('[data-kit="trait"] .kit-effect')).toHaveText(/^近海格与滨水陆地格金 \+\d+$/);
+  await expect(card.locator('[data-kit="leader"] .kit-name')).toContainText('仲父');
+  await expect(card.locator('[data-kit="leader"] .kit-name')).toContainText('管仲');
+  await expect(card.locator('[data-kit="leader"] .kit-effect')).toHaveText(/^每座市集金 \+\d+$/);
+  await expect(card.locator('[data-kit="unit"] .kit-name')).toContainText('技击士');
+  await expect(card.locator('[data-kit="unit"] .piece')).toHaveText('技');
+  await expect(card.locator('[data-kit="building"] .kit-name')).toContainText('稷下学宫');
+  await expect(card.locator('[data-kit="specialty"] .kit-name')).toHaveText('海盐');
+  await expect(card.locator('.difficulty')).toHaveAttribute('data-difficulty', /^(easy|normal|hard|veryHard)$/);
+  await capture(page, 'kit-start');
+
+  // filter by region, sort by difficulty
+  await page.click('#regions [data-region="north"]');
+  expect((await ui()).start).toMatchObject({ region: 'north', chosen: 'qi' });
+  await expect(page.locator('#nations .nation')).toHaveCount(8);
+  await page.click('#regions [data-region="all"]');
+  await page.click('#nation-sort [data-sort="hard"]');
+  const order = ['easy', 'normal', 'hard', 'veryHard'];
+  const ranks = await page
+    .locator('#nations .nation')
+    .evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.difficulty ?? ''));
+  expect(ranks).toHaveLength(50);
+  for (let i = 1; i < ranks.length; i++) {
+    expect(order.indexOf(ranks[i] ?? '')).toBeLessThanOrEqual(order.indexOf(ranks[i - 1] ?? ''));
+  }
+  expect((await ui()).start?.sort).toBe('hard');
+  // the other language
+  await page.click('#language');
+  await expect(card.locator('[data-kit="trait"] .kit-name')).toHaveText('Fish and Salt');
+  await expect(card.locator('[data-kit="unit"] .kit-name')).toContainText('Jiji infantry');
+  await page.click('#language');
+
+  // play 齐, whose unique unit is of the Ancient era: it is the garrison, and the build menu names it
+  await page.click('#play');
+  await expect(page.locator('#player-nation')).toHaveText('齐');
+  await page.evaluate(() => window.__shanhe?.startGame({ nation: 'qi', seed: 1 }));
+  await expect(page.locator('#turn-counter')).toHaveAttribute('data-turn', '1');
+  expect((await ui()).kit).toBeNull();
+  const garrison = await page.evaluate(() => {
+    const state = window.__shanhe?.state;
+    return (state?.units ?? []).filter((unit) => unit.owner === state?.player).map((unit) => unit.type);
+  });
+  expect(garrison).toContain('jijiInfantry');
+
+  // the nation's name in the top bar opens its kit
+  await page.click('#player-nation');
+  expect(await ui()).toMatchObject({ panel: 'kit', kit: { nation: 'qi', where: 'own' } });
+  await expect(page.locator('#kit-panel')).toHaveAttribute('data-nation', 'qi');
+  await expect(page.locator('#kit-panel [data-kit="unit"] .kit-name')).toContainText('技击士');
+  await capture(page, 'kit-own');
+  await page.keyboard.press('Escape');
+  expect((await ui()).panel).toBeNull();
+
+  // the game opens on the capital: a click in the middle of the map selects its garrison and opens the city
+  const middle = await page.evaluate(() => {
+    const handle = window.__shanhe;
+    if (handle === undefined) throw new Error('window.__shanhe is not set');
+    const { state } = handle;
+    const x = Math.round(window.innerWidth / 2);
+    const y = Math.round(window.innerHeight / 2);
+    return {
+      x,
+      y,
+      picked: handle.render.pickHex(x, y),
+      capital: state.map.zones[state.polities[state.player]?.capital ?? -1]?.siteHex ?? -1,
+    };
+  });
+  expect(middle.picked).toBe(middle.capital);
+  await page.mouse.click(middle.x, middle.y);
+  expect((await ui()).panel).toBe('city');
+  // the unit panel names the unique unit and shows its own character, engraved in gold
+  await expect(page.locator('#unit-name')).toHaveText('技击士');
+  await expect(page.locator('#selection .piece')).toHaveText('技');
+  await expect(page.locator('#selection .piece')).toHaveAttribute('data-unique', '1');
+  expect((await ui()).aids?.reachable ?? 0).toBeGreaterThan(0);
+  // the build menu: the item is the generic unit's, the name the unique unit's; so in the queue
+  const option = page.locator('#city-panel [data-build="unit:warrior"]');
+  await expect(option.locator('.option-name')).toHaveText('技击士');
+  await expect(page.locator('#city-panel [data-buy="unit:warrior"]')).toBeVisible();
+  await option.click();
+  await expect(page.locator('#city-queue li .option-name')).toHaveText('技击士');
+  await capture(page, 'kit-city');
+  await page.click('#city-close');
+
+  // the tech tree is the nation's own: its unique building stands where the academy would
+  await page.keyboard.press('t');
+  await expect(page.locator('#tech-tree .tech[data-tech="writing"] .unique')).toHaveText('稷下学宫');
+  await page.keyboard.press('Escape');
+
+  // another nation's panel shows its kit and how its leader plays
+  const yan = await page.evaluate(() => window.__shanhe?.state.map.polities.findIndex((polity) => polity.id === 'yan') ?? -1);
+  await page.click(`#majors .major[data-polity="${yan}"]`);
+  expect(await ui()).toMatchObject({ panel: 'polity', polity: yan, kit: { nation: 'yan', where: 'polity' } });
+  await expect(page.locator('#polity-personality')).toHaveAttribute('data-personality', /^[a-z]+$/);
+  await expect(page.locator('#polity-kit')).toHaveAttribute('data-nation', 'yan');
+  await expect(page.locator('#polity-kit [data-kit="unit"] .kit-name')).toContainText('幽州突骑');
+  await page.click('#polity-close');
+
+  // the settings: each control changes its setting, and all of them are there after a reload
+  expect((await ui()).settings).toEqual({ quality: 'auto', scale: 'auto', language: 'zh', animationSpeed: 1, volume: 0.6, muted: false });
+  await page.click('#menu-button');
+  expect((await ui()).panel).toBe('menu');
+  await page.click('#menu-quality [data-quality="low"]');
+  expect(await page.evaluate(() => window.__shanhe?.render.renderer.quality)).toBe('low');
+  await page.click('#menu-speed [data-speed="2"]');
+  await page.click('#menu-mute');
+  await expect(page.locator('#menu-mute')).toHaveAttribute('aria-pressed', 'true');
+  await page.locator('#menu-volume').fill('0.25');
+  await page.click('#menu-scale [data-scale="large"]');
+  await capture(page, 'settings');
+  await page.click('#menu-language');
+  const changed = { quality: 'low', scale: 'large', language: 'en', animationSpeed: 2, volume: 0.25, muted: true };
+  expect((await ui()).settings).toEqual(changed);
+  expect((await ui()).sound).toMatchObject({ silent: true, unlocked: false, volume: 0.25, muted: true });
+  await expect(page.locator('#menu h3').first()).toHaveText('Quality');
+
+  await open(page, '/?render=off');
+  const after = await ui();
+  expect(after.settings).toEqual(changed);
+  expect(after.scale).toEqual({ setting: 'large', factor: 1.3 });
+  expect(await page.evaluate(() => window.__shanhe?.render.renderer.quality)).toBe('low');
+  expect(await page.evaluate(() => document.documentElement.lang)).toBe('en');
+  await expect(page.locator('#continue')).toBeVisible();
   expect(errors).toEqual([]);
 });
 
