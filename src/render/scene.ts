@@ -7,8 +7,15 @@
 import type { Language } from '../shared/i18n.ts';
 import type { RenderBackend } from '../shared/types.ts';
 import type { CameraState } from './cameraRig.ts';
+import type { CityFamilyId } from './cityGen.ts';
+import type { PostEffect, PostEffectState } from './postEffects.ts';
 import type { Quality } from './renderScale.ts';
 
+export { CityFamily, familyOfPolity } from './cityGen.ts';
+export type { CityFamilyId } from './cityGen.ts';
+export { LANDMARK_IDS } from './landmarks.ts';
+export { POST_EFFECTS } from './postEffects.ts';
+export type { PostEffect, PostEffectState } from './postEffects.ts';
 export { QUALITY_TIERS } from './renderScale.ts';
 export type { Quality } from './renderScale.ts';
 
@@ -59,6 +66,50 @@ export interface RenderCity {
    * on the site of a capital zone of the map counts as one.
    */
   readonly capital?: boolean;
+  /**
+   * The architectural family the city is built in; {@link familyOfPolity}
+   * gives the family of a polity. Central Plains if omitted.
+   */
+  readonly family?: CityFamilyId;
+  /**
+   * How far the city has come, 0 (ancient) to 5 (modern), as {@link PieceEra}:
+   * from the industrial era on it has works with chimneys, in the modern
+   * era towers. 0 if omitted.
+   */
+  readonly era?: PieceEraId;
+  /** Whether the city has walls. None if omitted. */
+  readonly walls?: boolean;
+  /** How many buildings the city has built: every third adds a public building. 0 if omitted. */
+  readonly buildings?: number;
+  /**
+   * The unique building that stands in the city: the id of its nation in
+   * the map's polity list, one of {@link LANDMARK_IDS}. None if omitted or
+   * for an id without a landmark.
+   */
+  readonly landmark?: string;
+}
+
+/** What has been built on a hex. Values of `RenderScene.improvements`. */
+export const Improvement = {
+  /** Fields with furrows; terraces on slopes. */
+  Farm: 1,
+  /** Fenced grazing land with a herd. */
+  Pasture: 2,
+  /** A pit head with its spoil heap. */
+  Mine: 3,
+  /** Boats and fish traps, on a water hex. */
+  Fishery: 4,
+} as const;
+export type ImprovementId = (typeof Improvement)[keyof typeof Improvement];
+
+/** One trade route, drawn as a faint dotted line in its owner's colour. */
+export interface RenderRoute {
+  /** The hexes the route passes, in order. */
+  readonly path: readonly number[];
+  /** The polity that owns the route. */
+  readonly polity: number;
+  /** Whether it is a sea route: drawn over the water instead of on the ground. */
+  readonly sea: boolean;
 }
 
 /** What the player knows about a hex. Values of `RenderScene.fog`. */
@@ -91,6 +142,12 @@ export interface RenderScene {
    * drawn slightly desaturated.
    */
   readonly fog: Uint8Array | null;
+  /** Improvements by hex index. None if omitted. */
+  readonly improvements?: ReadonlyMap<number, ImprovementId>;
+  /** Roads by hex index: 1 for a road, 2 for a railway. Drawn through the hex centres. None if omitted. */
+  readonly roads?: ReadonlyMap<number, 1 | 2>;
+  /** Trade routes. None if omitted. */
+  readonly routes?: readonly RenderRoute[];
 }
 
 /** A hex to mark, for selections, move ranges and the like. */
@@ -200,6 +257,16 @@ export interface FrameStats {
   readonly labels: number;
   /** Whether an animation started by {@link Renderer.play} is running. */
   readonly animating: boolean;
+  /**
+   * Shadow cascades drawn since the renderer started. The number only grows,
+   * and stands still while nothing that casts a shadow changes and the view
+   * stays on the ground the cascades cover.
+   */
+  readonly shadowDraws: number;
+  /** Trees drawn in the last frame; 0 from far away, where forests are colour and relief only. */
+  readonly trees: number;
+  /** Opacity of the cloud layer over the map: 0 near the ground, where only cloud shadows show. */
+  readonly cloudLayer: number;
 }
 
 export interface RendererOptions {
@@ -260,10 +327,22 @@ export interface Renderer {
   /**
    * Sets the quality tier. `auto`, the default, lowers the render scale
    * when frames run long and restores it when they do not; the other tiers
-   * hold a fixed resolution and level of detail.
+   * hold a fixed resolution and level of detail. Each tier also has its set
+   * of effects of the finish, none at `low`; switches set with
+   * {@link Renderer.setEffects} are dropped.
    */
   setQuality(quality: Quality): void;
   readonly quality: Quality;
+  /**
+   * Switches effects of the finish on or off by hand, on top of what the
+   * quality tier asks for. The switches add to the ones set before; `null`
+   * clears them all, so that every effect follows the tier again, and so
+   * does {@link Renderer.setQuality}. An effect the backend does not carry stays
+   * off whatever is asked.
+   */
+  setEffects(overrides: Readonly<Partial<Record<PostEffect, boolean>>> | null): void;
+  /** The effects of the finish that run now: tier, switches and backend taken together. */
+  getEffects(): PostEffectState;
   /** Sets the language of the polity names on the political map. */
   setLanguage(language: Language): void;
   /**

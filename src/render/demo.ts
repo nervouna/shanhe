@@ -1,7 +1,9 @@
 /**
  * The render demo (`/?demo=render`): sample pieces and cities placed from
- * the map's own data, a frame-time readout, and buttons that play every
- * animation, switch the quality tier and jump between the three views.
+ * the map's own data, a gallery of cities of every family and era with
+ * improvements, roads and routes (`demoGallery.ts`), a frame-time readout,
+ * and buttons that play every animation, switch the quality tier and each
+ * effect of the finish, turn the fog of war on, and jump between the views.
  */
 
 import { indexToOffset, hexNeighbors } from '../shared/hex.ts';
@@ -9,7 +11,8 @@ import { t } from '../shared/i18n.ts';
 import type { TranslationKey } from '../shared/i18n.ts';
 import { Terrain, isWaterTerrain } from '../shared/mapData.ts';
 import type { MapData } from '../shared/mapData.ts';
-import { PieceEra, QUALITY_TIERS } from './scene.ts';
+import { createDemoGallery } from './demoGallery.ts';
+import { FogState, POST_EFFECTS, PieceEra, QUALITY_TIERS, familyOfPolity } from './scene.ts';
 import type { PieceEraId, Renderer, RenderCity, RenderScene, RenderUnit, VisualEvent } from './scene.ts';
 
 const DEMO_UNITS = 60;
@@ -50,6 +53,7 @@ export function createDemoScene(map: MapData): RenderScene {
     polity: zone.polity,
     population: zone.capital ? 9 + (i % 3) * 4 : 2 + (i % 4) * 2,
     name: zone.cityNameZh,
+    family: familyOfPolity(map.polities[zone.polity]?.id ?? ''),
   }));
   const cityHexes = new Set(cities.map((city) => city.hex));
 
@@ -135,12 +139,12 @@ export function attachFrameReadout(renderer: Renderer): () => void {
     if (stats.frames - shown < 15 && shown !== 0) return;
     shown = stats.frames;
     readout.textContent = `${stats.frameMs.toFixed(1)} ms`;
-    details.textContent = t('demo.stats', {
+    details.textContent = `${t('demo.stats', {
       scale: stats.renderScale.toFixed(2),
       draws: stats.drawCalls,
       triangles: stats.triangles,
       labels: stats.labels,
-    });
+    })} · ${t('demo.stats.more', { trees: stats.trees, shadows: stats.shadowDraws })}`;
   });
   return () => {
     stop();
@@ -262,9 +266,10 @@ export function createDemoStage(map: MapData, scene: RenderScene): DemoStage | n
  * Adds the demo's buttons to the page: one per animation, the quality tiers
  * and the three views. For automated checks the element carries
  * `data-played`, the number of animations that have finished,
- * `data-stage-hex`, the hex the animations start on, and `data-stage`, the
- * actors as JSON: the unit ids of attacker and defender, the defender's hex
- * and the attacker's path.
+ * `data-stage-hex`, the hex the animations start on, `data-stage`, the
+ * actors as JSON (the unit ids of attacker and defender, the defender's hex
+ * and the attacker's path), `data-gallery`, what the gallery holds, as
+ * JSON, `data-effects`, the effects that run, as JSON, and `data-fog`.
  *
  * @returns a function that removes the buttons.
  */
@@ -318,15 +323,47 @@ export function attachDemoControls(renderer: Renderer, map: MapData, scene: Rend
     return element;
   };
 
+  // the gallery: cities of every family and era, pieces of every material,
+  // improvements, roads and routes, laid out around the stage
+  const taken = new Set<number>([...scene.cities.map((city) => city.hex), ...scene.units.map((unit) => unit.hex)]);
+  if (stage !== null) {
+    for (const hex of [stage.attacker.hex, stage.defender.hex, ...stage.path, ...stage.reachable]) taken.add(hex);
+  }
+  const gallery = createDemoGallery(
+    map,
+    taken,
+    (family, era) => t('demo.city', { family: t(`demo.family.${family}`), era: era + 1 }),
+    stage?.attacker.hex ?? scene.cities[0]?.hex ?? 0,
+  );
+  panel.dataset.gallery = JSON.stringify({
+    cities: gallery.cities.length,
+    firstCity: gallery.cities[0]?.hex ?? null,
+    units: gallery.units.length,
+    improvements: gallery.improvements.size,
+    roads: gallery.roads.size,
+    routes: gallery.routes.length,
+  });
+
   // the board as the demo last set it
-  let units = stage === null ? [...scene.units] : [
+  let units = stage === null ? [...scene.units, ...gallery.units] : [
     ...scene.units.filter((unit) => unit.hex !== stage.attacker.hex && unit.hex !== stage.defender.hex && !stage.path.includes(unit.hex)),
+    ...gallery.units,
     stage.attacker,
     stage.defender,
   ];
   let overrides = new Map(scene.ownerOverrides);
+  let fog: Uint8Array | null = null;
   const show = (): void => {
-    renderer.setScene({ ...scene, units, ownerOverrides: overrides });
+    renderer.setScene({
+      ...scene,
+      units,
+      cities: [...scene.cities, ...gallery.cities],
+      ownerOverrides: overrides,
+      fog,
+      improvements: gallery.improvements,
+      roads: gallery.roads,
+      routes: gallery.routes,
+    });
   };
   show();
 
@@ -427,6 +464,28 @@ export function attachDemoControls(renderer: Renderer, map: MapData, scene: Rend
     renderer.setLanguage(names);
   });
 
+  const galleryCity = gallery.cities[0];
+  if (galleryCity !== undefined) {
+    button(views, 'demo-gallery', 'demo.gallery', () => {
+      renderer.focusHex(galleryCity.hex, { distance: limits().min * 3.2 });
+    });
+  }
+  button(views, 'demo-fog', 'demo.fog', () => {
+    // the western half of the map out of view: remembered, with a strip never seen
+    if (fog === null) {
+      fog = new Uint8Array(map.width * map.height).fill(FogState.Visible);
+      for (let hex = 0; hex < fog.length; hex++) {
+        const col = hex % map.width;
+        if (col < map.width / 2) fog[hex] = col < map.width / 6 ? FogState.Unseen : FogState.Remembered;
+      }
+    } else {
+      fog = null;
+    }
+    panel.dataset.fog = fog === null ? 'off' : 'on';
+    show();
+  });
+  panel.dataset.fog = 'off';
+
   const tiers = row();
   const tierButtons = QUALITY_TIERS.map((tier) =>
     button(tiers, `demo-quality-${tier}`, `demo.quality.${tier}`, () => {
@@ -434,10 +493,23 @@ export function attachDemoControls(renderer: Renderer, map: MapData, scene: Rend
       mark();
     }),
   );
+  // one switch per effect of the finish; a lit button is an effect that runs
+  const effects = row();
+  const effectButtons = POST_EFFECTS.map((effect) =>
+    button(effects, `demo-fx-${effect}`, `demo.fx.${effect}`, () => {
+      renderer.setEffects({ [effect]: !renderer.getEffects()[effect] });
+      mark();
+    }),
+  );
   const mark = (): void => {
     tierButtons.forEach((element, i) => {
       element.style.background = QUALITY_TIERS[i] === renderer.quality ? '#b3382a' : 'transparent';
     });
+    const running = renderer.getEffects();
+    effectButtons.forEach((element, i) => {
+      element.style.background = running[POST_EFFECTS[i] as (typeof POST_EFFECTS)[number]] ? '#2f6f5e' : 'transparent';
+    });
+    panel.dataset.effects = JSON.stringify(running);
   };
   mark();
 
