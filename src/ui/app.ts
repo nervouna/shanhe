@@ -17,7 +17,8 @@ import type { TranslationKey } from '../shared/i18n.ts';
 import type { MapData } from '../shared/mapData.ts';
 import { orderAids } from './aids.ts';
 import { playSpeed, visualEvents } from './animation.ts';
-import { pieceOf, sceneOf, wholeMapView } from './board.ts';
+import { pieceOf, remember, sceneOf, wholeMapView } from './board.ts';
+import type { BoardMemory, BoardView } from './board.ts';
 import { createTradeSection } from './cityTrade.ts';
 import { standingWith } from './diplomacy.ts';
 import { button, el, fill, fillWhen, iconButton, iconOnly, stat } from './dom.ts';
@@ -75,7 +76,8 @@ import type { ScaleSetting } from './scale.ts';
 import { ANIMATION_SPEEDS, QUALITY_OPTIONS, VOLUME_STEP, browserStorage, createSettingsStore } from './settings.ts';
 import type { Settings } from './settings.ts';
 import { browserAudio, createSoundEngine, cuesFor, gameSound } from './sound.ts';
-import { clearAutosave, readAutosave, writeAutosave } from './storage.ts';
+import { knownState, sightOf } from './sight.ts';
+import { clearAutosave, readAutosave, readMemory, writeAutosave, writeMemory } from './storage.ts';
 import type { MapSource } from './storage.ts';
 import { createWorkerRunner } from './turnRunner.ts';
 import { cssColor, signed } from './view.ts';
@@ -186,6 +188,12 @@ export interface UiSnapshot {
     readonly turnEnds: number;
     readonly attackTarget: number | null;
   } | null;
+  /**
+   * Fog of war on the board as the renderer has it: whether the scene has
+   * fog (a player's game; never the observer's), and how many units of the
+   * state it leaves out because the player does not see them.
+   */
+  readonly fog: { readonly on: boolean; readonly hiddenUnits: number };
 }
 
 export interface App {
@@ -282,6 +290,10 @@ export function createApp(options: AppOptions): App {
   /** The state the board shows, or will show once the animations that are running have ended. */
   let boardState: GameState | null = null;
   let boardLanguage = getLanguage();
+  /** What the player remembers of the board out of their sight; null until they have looked, and for the observer. */
+  let memory: BoardMemory | null = null;
+  /** The scene the renderer was last given: whether it had fog, and how many units of its state it left out. */
+  let shown = { fog: false, hidden: 0 };
   /** The state as of the last change the host reported: what the next change's events start from. */
   let lastState: GameState | null = null;
   let animating = false;
@@ -720,13 +732,34 @@ export function createApp(options: AppOptions): App {
     board.renderer.setSelectionAids(aids);
   };
 
+  /** The player's sight of a state with what they remember, or null for the observer, who sees everything. */
+  const viewOf = (s: GameState): BoardView | null => {
+    const sight = sightOf(s);
+    if (sight === null) return null;
+    memory ??= remember(null, s, sight);
+    return { sight, memory };
+  };
+
+  /** The player looks at the current state: what is in sight joins what they remember. */
+  const look = (): void => {
+    const sight = sightOf(state());
+    memory = sight === null ? null : remember(memory, state(), sight);
+  };
+
+  /** Hands the renderer the board of a state as the player knows it. */
+  const drawBoard = (s: GameState): void => {
+    boardState = s;
+    boardLanguage = getLanguage();
+    const scene = sceneOf(s, boardLanguage, viewOf(s));
+    shown = { fog: scene.fog !== null, hidden: s.units.length - scene.units.length };
+    board.renderer.setScene(scene);
+  };
+
   /** Puts the current state on the board, ending whatever was playing. */
   const showBoard = (): void => {
     playToken++;
     animating = false;
-    boardState = state();
-    boardLanguage = getLanguage();
-    board.renderer.setScene(sceneOf(boardState, boardLanguage));
+    drawBoard(state());
   };
 
   /**
@@ -780,13 +813,17 @@ export function createApp(options: AppOptions): App {
     if (animating || boardState !== before) {
       playToken++;
       animating = false;
-      boardState = before;
-      boardLanguage = getLanguage();
-      renderer.setScene(sceneOf(before, boardLanguage));
+      drawBoard(before);
     }
     const seen = viewTest();
-    const visual = visualEvents(before, events, (hex) =>
-      seen(hex) || (around >= 0 && hexDistance(before, hex, around) <= FOLLOW_RADIUS),
+    // under fog only what the player's nation saw happen is played, by the pieces that were on its board
+    const was = sightOf(before);
+    const now = sightOf(state());
+    const visual = visualEvents(
+      knownState(before),
+      events,
+      (hex) => seen(hex) || (around >= 0 && hexDistance(before, hex, around) <= FOLLOW_RADIUS),
+      was === null ? undefined : (hex) => was.visible[hex] === 1 || now?.visible[hex] === 1,
     );
     if (visual.length === 0) {
       showBoard();
@@ -1573,6 +1610,12 @@ export function createApp(options: AppOptions): App {
 
   // -------------------------------------------------------- saves and menu
 
+  /** Stores the game, and with it what the player remembers of the board. */
+  const save = (): void => {
+    writeAutosave(board.source, state());
+    if (memory !== null) writeMemory(board.source, state(), memory);
+  };
+
   const enterGame = (): void => {
     screen = state().result === null ? 'game' : 'end';
     select(null);
@@ -1590,7 +1633,10 @@ export function createApp(options: AppOptions): App {
     paused = false;
     enterQueued = false;
     lastState = state();
-    if (state().result === null) writeAutosave(board.source, state());
+    // a game that is continued brings back what the player remembered of the board
+    memory = sightOf(state()) === null ? null : readMemory(board.source, state());
+    look();
+    if (state().result === null) save();
     // the game opens on the player's capital with its zone in view; an observer sees the whole map
     const home = observing() ? -1 : capitalHex(player());
     if (home >= 0) board.renderer.focusHex(home, { frame: 'zone', immediate: true });
@@ -2119,8 +2165,10 @@ export function createApp(options: AppOptions): App {
       case 'started':
         playToken++;
         animating = false;
+        memory = null;
         return;
       case 'action':
+        look();
         collect(change.events);
         settle();
         present(before, change.events);
@@ -2128,6 +2176,7 @@ export function createApp(options: AppOptions): App {
       case 'turn':
         focus = null;
         clearHover();
+        look();
         collect(change.events);
         settle();
         if (!change.burst && !observing() && screen === 'game') {
@@ -2148,7 +2197,7 @@ export function createApp(options: AppOptions): App {
         return;
       case 'busy':
         if (!host.busy && host.playing) {
-          if (state().result === null) writeAutosave(board.source, state());
+          if (state().result === null) save();
           settle();
         }
         refresh();
@@ -2437,6 +2486,7 @@ export function createApp(options: AppOptions): App {
           return { silent, unlocked, volume, muted, era };
         })(),
         aids: screen === 'game' ? aidsShown : null,
+        fog: { on: shown.fog, hiddenUnits: shown.hidden },
       };
     },
     startGame,

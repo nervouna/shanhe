@@ -20,11 +20,17 @@ const MAX_SPEED = 6;
  *   events is not on the board yet.
  * @param inView true for a hex the player is looking at. An event is kept
  *   if any of its hexes is in view.
+ * @param sighted true for a hex the player's nation sees (fog of war);
+ *   everything by default, as for the observer. A step between two hexes out
+ *   of sight is not played, nor a strike at a hex out of sight or the fall
+ *   of a city out of sight. `before` is then the state as the player knows
+ *   it: a unit the fog hides is not on the board and nothing it does is played.
  */
 export function visualEvents(
   before: GameState,
   events: readonly GameEvent[],
   inView: (hex: number) => boolean,
+  sighted: (hex: number) => boolean = () => true,
 ): VisualEvent[] {
   const { map } = before;
   const topo = topologyOf(map);
@@ -48,6 +54,8 @@ export function visualEvents(
       case 'unitExpelled': {
         if (!hexOf.has(event.unit)) break;
         hexOf.set(event.unit, event.to);
+        // out of sight the piece is not followed: it stays where it was last seen until the board is redrawn
+        if (!sighted(event.from) && !sighted(event.to)) break;
         const last = out.at(-1);
         if (
           event.type === 'unitMoved' &&
@@ -67,7 +75,7 @@ export function visualEvents(
         break;
       }
       case 'combat': {
-        if (!hexOf.has(event.unit)) break;
+        if (!hexOf.has(event.unit) || !sighted(event.target)) break;
         const siege = unitDef(typeOf.get(event.unit) ?? '').unitClass === 'siege';
         const type = event.ranged ? (siege ? 'siege' : 'ranged') : 'melee';
         push({ type, unit: event.unit, targetHex: event.target }, [event.from, event.target]);
@@ -76,13 +84,13 @@ export function visualEvents(
       case 'cityStrike': {
         const cityHex = siteOf(event.city);
         const targetHex = hexOf.get(event.unit);
-        if (cityHex < 0 || targetHex === undefined) break;
+        if (cityHex < 0 || targetHex === undefined || !sighted(targetHex)) break;
         push({ type: 'cityStrike', cityHex, targetHex }, [cityHex, targetHex]);
         break;
       }
       case 'airStrike': {
         const cityHex = siteOf(event.city);
-        if (cityHex < 0) break;
+        if (cityHex < 0 || !sighted(event.target)) break;
         push({ type: 'cityStrike', cityHex, targetHex: event.target }, [cityHex, event.target]);
         break;
       }
@@ -106,7 +114,7 @@ export function visualEvents(
         const zone = event.type === 'cityCaptured' ? event.city : event.zone;
         const cityHex = siteOf(zone);
         const hexes = topo.zoneHexes[zone] ?? [];
-        if (cityHex < 0 || event.to < 0 || hexes.length === 0) break;
+        if (cityHex < 0 || event.to < 0 || hexes.length === 0 || !sighted(cityHex)) break;
         // a captured city's zone is also reported as transferred: one sweep is enough
         const last = out.at(-1);
         if (last !== undefined && last.event.type === 'capture' && last.event.cityHex === cityHex) break;
