@@ -10,7 +10,10 @@ Rules:
 - Every tech after the Ancient era has 1–2 prerequisites, all from earlier eras (see [Prerequisites](#prerequisites)). Ancient techs have none. Within an era the order is free.
 - A tech can be researched once its era has been entered. Entering the next era requires at least 4 techs of the current era; a nation's era is the highest it has entered, and each nation has its own.
 - **Catch-up**: a tech already known by any other living nation or city-state costs 20% less.
-- Cost per tech by era: 7, 32, 100, 250, 720, 1000 science. With these the leading major nation enters the Modern era around turn 110–127 and knows 35–40 of the 40 techs when the game ends (fewer when it wins by science before turn 150); the other major nations end with 22 or more.
+- Cost per tech by era: 7, 32, 100, 240, 560, 740 science, before the three percentages below, which add up.
+- **The calendar.** The game's calendar gives every era 25 turns (Ancient on turns 1–25, Modern from turn 126). A tech of an era the calendar has not reached yet is ahead of its time and costs 100% more for each era it is ahead. A tech of an era the calendar has left behind is common knowledge and costs 30% less for each era, up to two eras. This is what keeps the leader near the pace of 25 turns an era and lets the others catch up.
+- **The size of the realm.** Every city beyond a nation's first adds 15% to the cost of its techs, up to ten cities beyond the first. A large realm learns slowly; a nation of one city pays the plain cost.
+- With these the first major nation enters the Modern era on turns 120–130 in most games, and no nation knows all 40 techs when the game ends.
 - **Simplified-AI nations and city-states do not research.** They know a tech once half of the researching nations (the living major nations and the player) know it, and their era follows from what they know.
 - A unit, building or improvement is available only with its tech. The settler needs no tech: it needs the Classical era.
 
@@ -131,7 +134,7 @@ Ancient techs have no prerequisite.
 - **New Crops**: farms may also be built on hills.
 - **Railway**: the roads on the nation's land become railways (see "Roads" in [03-gameplay.md](03-gameplay.md)).
 - **Trade routes and off-map ports** (Currency, Guilds, Banking, Ocean Navigation): each of the first three adds a trade route slot; Currency opens the off-map land ports to the nation's routes and Ocean Navigation the sea exits (see "Trade" in [03-gameplay.md](03-gameplay.md)).
-- **Endgame project** 天宫工程: three stages built one after the other in the capital, 470 production each. The first needs Rocketry, the second Electronics, the third Information Networks. Only the major nations and the player can build it; completing the third stage wins the game.
+- **Endgame project** 天宫工程: three stages built one after the other in the capital, 120 production each: what takes time is the three techs, not the building. The first needs Rocketry, the second Electronics, the third Information Networks. Only the major nations and the player can build it; completing the third stage wins the game.
 
 ## Generic unit roster
 

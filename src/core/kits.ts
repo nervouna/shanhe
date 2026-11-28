@@ -292,7 +292,7 @@ const KIT_TABLE = {
   shu: {
     // 天府之国: cities ringed by mountains gain food and defence.
     trait: [
-      { type: 'cityYield', yields: { food: 1 }, city: { mountainsNear: 2, capital: true } },
+      { type: 'cityYield', yields: { food: 1 }, city: { mountainsNear: 2 } },
       { type: 'cityStrength', percent: 20, city: { mountainsNear: 2 } },
     ],
     unit: 'repeatingCrossbowman', building: 'dujiangyan', buildingKind: 'improvement', specialty: 'shu-brocade',

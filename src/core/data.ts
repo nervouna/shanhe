@@ -1263,6 +1263,8 @@ export const AI = {
   researchAtWar: { military: 4, science: 3, economy: 2, naval: 1 },
   /** Taken off a tech's score per era it lies beyond the oldest tech still open, so an era is finished first. */
   researchEraStep: 10,
+  /** Added to the score of the tech that brings air strikes, for a nation at war or out for conquest. */
+  researchAirPower: 3,
   /**
    * Policies: how much it wants a card of each kind, at peace and at war. A
    * diplomacy card counts only for a polity that has what the card works on.

@@ -7,6 +7,8 @@
 import { NO_RESOURCE } from '../shared/mapData.ts';
 import {
   AI,
+  BUILDINGS,
+  BUILDING_IDS,
   ERAS,
   PROJECT,
   RESEARCH,
@@ -274,6 +276,9 @@ export function upgradeTargetFor(ctx: Ctx, unit: Unit): UnitDef | null {
 
 // -------------------------------------------------------- research choice
 
+/** The techs that unlock a building with an air strike. */
+const AIR_TECHS: readonly TechId[] = BUILDING_IDS.filter((id) => BUILDINGS[id].airStrike).map((id) => BUILDINGS[id].tech);
+
 /**
  * The tech `polity` should research next for the stages of the project it
  * has not built: the first of their techs it lacks or, once it has entered
@@ -345,13 +350,15 @@ export function suggestResearch(ctx: Ctx, polity: number): TechId | null {
   const oldest = Math.min(...open.map((tech) => TECHS[tech].era));
   // The leader's style adds to the kinds of tech it cares for.
   const nation = nationOf(ctx, polity);
-  const style = styleFor(nation, ambitionOf(ctx.state.seed, polity, nation));
+  const ambition = ambitionOf(ctx.state.seed, polity, nation);
+  const style = styleFor(nation, ambition);
   let best: TechId | null = null;
   let bestScore = -Infinity;
   for (const tech of open) {
     const def = TECHS[tech];
     const kind = def.kind === 'naval' && coastal ? 'economy' : def.kind;
-    const score = weights[kind] + (style.research[def.kind] ?? 0) - AI.researchEraStep * (def.era - oldest);
+    const air = (fighting || ambition === 'conquest') && AIR_TECHS.includes(tech) ? AI.researchAirPower : 0;
+    const score = weights[kind] + (style.research[def.kind] ?? 0) + air - AI.researchEraStep * (def.era - oldest);
     if (score > bestScore) {
       bestScore = score;
       best = tech;
